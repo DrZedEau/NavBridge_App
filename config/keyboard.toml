@@ -1,0 +1,21 @@
+# Slint logical key names. Multiple physical/logical keys may map to one action.
+[bindings]
+up = ["Up", "W"]
+down = ["Down"]
+left = ["Left"]
+right = ["Right", "D"]
+select = ["Return", "Space"]
+back = ["Backspace"]
+home = ["Escape", "Home"]
+quit = ["Q"]
+# Global day/night toggle, one switch per press.
+toggle_night_mode = ["Tab"]
+
+# Phone actions on the AA/CarPlay screen (one command per press).
+next_track = ["N"]
+previous_track = ["B"]
+voice_assistant = ["V"]
+answer_call = ["A"]
+phone_home = ["H"]
+pause_music = ["P"]
+resume_music = ["S"]

@@ -1,0 +1,24 @@
+[package]
+name = "navbridge-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Raspberry Pi OS FFmpeg exposes additional SAND/RPI pixel formats. Keep this
+# target-specific so ordinary x86/Linux CI builds against stock FFmpeg too.
+rpi-ffmpeg = ["ffmpeg-next/rpi"]
+
+[dependencies]
+alsa = "0.11"
+ffmpeg-next = { version = "=9.0.0", default-features = false, features = ["codec", "software-scaling", "format"] }
+navbridge-common = { path = "../common" }
+rusb = "0.9.4"
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

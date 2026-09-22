@@ -1,0 +1,39 @@
+# NavBridge backend. The frontend has its own configuration.
+socket_path = "/run/navbridge/core.sock"
+snapshot_interval_ms = 500
+
+[usb]
+scan_interval_ms = 750
+read_size = 32768
+# Keep reads short so heartbeat scheduling is responsive.
+io_timeout_ms = 100
+# FastCarPlay uses a multi-second write timeout; 100 ms is too short for
+# adapter firmware that has not yet posted its accessory read.
+write_timeout_ms = 3000
+# Protocol reference: reset, wait ~3 seconds, then rediscover/open again.
+reset_delay_ms = 3000
+# Pace initialization writes so the adapter can process its file/config queue.
+init_command_delay_ms = 120
+
+[carplay]
+# Carlinkit keepalive. 2 seconds is deliberately below the adapter timeout.
+heartbeat_ms = 2000
+fps = 60
+# AA/CarPlay logical density. Restart the app after changing (default: 160).
+# Higher values generally make interface elements larger; resolution stays 800x480.
+dpi = 160
+media_delay_ms = 300
+autoconnect = true
+left_hand_drive = true
+wifi_5ghz = true
+# Applied automatically during dongle initialization, before auto-connect.
+# Max 15 characters: ASCII letters/digits, spaces, '-' and '_'.
+# Empty string leaves that name unchanged.
+bluetooth_name = "NavBridge"
+wifi_name = "NavBridge"
+
+[audio]
+enabled = true
+# plug converts rates/channels; dmix mixes music, navigation and call streams.
+playback_device = 'plug:SLAVE="dmix:CARD=CODEC,DEV=0"'
+capture_device = "plughw:CARD=CODEC,DEV=0"

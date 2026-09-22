@@ -1,0 +1,306 @@
+export component AppWindow inherits Window {
+    width: 400px;
+    height: 240px;
+    title: "NavBridge";
+    background: #080b10;
+
+    // 0 menu, 1 AA/CarPlay, 2 System, 3 IBUS
+    in property <int> screen: 0;
+    in property <int> menu-index: 0;
+    in property <bool> core-connected: false;
+    in property <string> core-label: "core offline";
+    in property <string> usb-label: "No dongle";
+    in property <string> carplay-status: "Waiting";
+    in property <image> carplay-frame;
+    in property <bool> video-active: false;
+    in property <string> cpu-usage: "n/a";
+    in property <string> ram-usage: "n/a";
+    in property <string> cpu-temperature: "n/a";
+    in property <string> dongle-status: "n/a";
+    in property <string> dongle-model: "n/a";
+    in property <string> dongle-firmware: "n/a";
+    in property <int> pairing-index: 0;
+    in property <int> system-page: 0;
+    in property <string> gnss-receiver: "n/a";
+    in property <string> gnss-status: "n/a";
+    in property <string> gnss-satellites: "n/a";
+    in property <string> gnss-position: "n/a";
+    in property <string> gnss-altitude: "n/a";
+    in property <string> gnss-speed: "n/a";
+    in property <string> gnss-hdop: "n/a";
+    in property <string> gnss-utc: "n/a";
+
+    in property <bool> pairing-available: false;
+    in property <string> pairing-hint;
+    in property <string> connected-phone: "n/a";
+    in property <string> connection-type: "n/a";
+    in property <string> connection-transport: "n/a";
+    in property <string> audio-output-rate: "n/a";
+    in property <string> app-resolution: "n/a";
+    in property <string> phone-resolution: "n/a";
+    in property <string> ibus-status: "IBUS development placeholder";
+
+    callback key-event(string, bool, bool);
+
+    // Keyboard is the only UI interaction path.
+    forward-focus: keyboard;
+    keyboard := FocusScope {
+        width: 100%;
+        height: 100%;
+        key-pressed(event) => {
+            root.key-event(event.text, true, event.repeat);
+            accept
+        }
+        key-released(event) => {
+            root.key-event(event.text, false, false);
+            accept
+        }
+    }
+
+    if root.screen == 0: Rectangle {
+        x: 0px; y: 0px; width: 400px; height: 240px;
+        background: #080b10;
+
+        Text {
+            x: 16px; y: 10px; width: 180px; height: 28px;
+            text: "NAVBRIDGE";
+            color: #f3f6fb;
+            font-size: 20px;
+            font-weight: 700;
+        }
+        Text {
+            x: 205px; y: 13px; width: 178px; height: 20px;
+            text: root.core-label;
+            color: root.core-connected ? #65e89f : #ff6b6b;
+            font-size: 11px;
+            horizontal-alignment: right;
+        }
+
+        Rectangle {
+            x: 16px; y: 51px; width: 368px; height: 48px;
+            border-radius: 7px;
+            background: root.menu-index == 0 ? #225c9c : #151c27;
+            Text {
+                x: 16px; width: 336px; height: 48px;
+                text: "AA / CARPLAY";
+                color: #ffffff;
+                font-size: 18px;
+                vertical-alignment: center;
+            }
+        }
+        Rectangle {
+            x: 16px; y: 106px; width: 368px; height: 48px;
+            border-radius: 7px;
+            background: root.menu-index == 1 ? #225c9c : #151c27;
+            Text {
+                x: 16px; width: 336px; height: 48px;
+                text: "SYSTEM";
+                color: #ffffff;
+                font-size: 18px;
+                vertical-alignment: center;
+            }
+        }
+        Rectangle {
+            x: 16px; y: 161px; width: 368px; height: 48px;
+            border-radius: 7px;
+            background: root.menu-index == 2 ? #225c9c : #151c27;
+            Text {
+                x: 16px; width: 336px; height: 48px;
+                text: "IBUS";
+                color: #ffffff;
+                font-size: 18px;
+                vertical-alignment: center;
+            }
+        }
+        Text {
+            x: 16px; y: 216px; width: 368px; height: 16px;
+            text: root.usb-label;
+            color: #7f8fa6;
+            font-size: 10px;
+        }
+    }
+
+    if root.screen == 1: Rectangle {
+        // Session is negotiated at 800x480 @ 160 DPI. The backend performs
+        // software H.264 decode and publishes this exact 400x240 presentation.
+        x: 0px; y: 0px; width: 400px; height: 240px;
+        background: #020305;
+
+        if root.video-active: Image {
+            x: 0px; y: 0px; width: 400px; height: 240px;
+            source: root.carplay-frame;
+        }
+
+        if !root.video-active: Rectangle {
+            x: 0px; y: 0px; width: 400px; height: 240px;
+            background: #020305;
+            Text {
+                x: 12px; y: 12px; width: 376px; height: 28px;
+                text: "AA / CARPLAY";
+                color: #ffffff;
+                font-size: 20px;
+                font-weight: 700;
+            }
+            Text {
+                x: 12px; y: 53px; width: 376px; height: 70px;
+                text: root.carplay-status;
+                color: #b9c6d8;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+            if root.pairing-available: Rectangle {
+                x: 12px; y: 128px; width: 376px; height: 78px;
+                background: #020305;
+                for label[index] in ["Pair phone", "Retry connection"]: Rectangle {
+                    x: index * 192px; y: 0px; width: 184px; height: 38px;
+                    border-radius: 5px;
+                    background: root.pairing-index == index ? #174c39 : #111823;
+                    border-width: 1px;
+                    border-color: root.pairing-index == index ? #67dba0 : #253244;
+                    Text {
+                        width: parent.width; height: parent.height;
+                        text: label; color: #ffffff; font-size: 14px;
+                        horizontal-alignment: center; vertical-alignment: center;
+                    }
+                }
+                Text {
+                    y: 44px; width: 376px; height: 30px;
+                    text: root.pairing-hint; color: #b9c6d8; font-size: 12px;
+                    wrap: word-wrap;
+                }
+            }
+            Text {
+                x: 12px; y: 211px; width: 376px; height: 18px;
+                text: root.pairing-available ? "ARROWS choose   ENTER confirm   ESC menu" : "ESC menu";
+                color: #6f7c8e;
+                font-size: 10px;
+            }
+        }
+    }
+
+    if root.screen == 2: Rectangle {
+        x: 0px; y: 0px; width: 400px; height: 240px;
+        background: #080b10;
+        Text {
+            x: 12px; y: 5px; width: 376px; height: 23px;
+            text: "System  " + (root.system-page + 1) + "/3";
+            color: #ffffff; font-size: 17px; font-weight: 700;
+        }
+        for group[index] in [
+            { title: "Compute Module 5", rows: [
+                { label: "CPU Usage", value: root.cpu-usage },
+                { label: "RAM Usage", value: root.ram-usage },
+                { label: "CPU temperature", value: root.cpu-temperature },
+            ] },
+            { title: "Dongle", rows: [
+                { label: "Dongle Status", value: root.dongle-status },
+                { label: "Dongle model", value: root.dongle-model },
+                { label: "Dongle firmware", value: root.dongle-firmware },
+            ] },
+            { title: "Phone", rows: [
+                { label: "Connected phone", value: root.connected-phone },
+                { label: "Connection type", value: root.connection-type },
+                { label: "Wireless / wired", value: root.connection-transport },
+            ] },
+            { title: "Audio - Video", rows: [
+                { label: "Audio Output Sampling Rate", value: root.audio-output-rate },
+                { label: "Video App Resolution", value: root.app-resolution },
+                { label: "Video AA/CarPlay Resolution", value: root.phone-resolution },
+            ] },
+        ]: Rectangle {
+            visible: root.system-page < 2 && (index < 2 ? 0 : 1) == root.system-page;
+            x: 8px;
+            y: 32px + (index == 0 || index == 2 ? 0px : 92px);
+            width: 384px; height: 86px;
+            border-radius: 4px;
+            background: #101722;
+            Text {
+                x: 8px; y: 4px; width: 368px; height: 18px;
+                text: group.title; color: #67dba0; font-size: 14px; font-weight: 700;
+            }
+            for row[row-index] in group.rows: Rectangle {
+                x: 8px; y: 25px + row-index * 19px; width: 368px; height: 19px;
+                background: transparent;
+                Text {
+                    x: 0px; y: 0px; width: 180px; height: 19px;
+                    text: row.label; color: #9eacc0; font-size: 11px;
+                    horizontal-alignment: left; vertical-alignment: center;
+                    wrap: no-wrap; overflow: elide;
+                }
+                Text {
+                    x: 192px; y: 0px; width: 176px; height: 19px;
+                    text: row.value; color: #ffffff; font-size: 12px;
+                    horizontal-alignment: right; vertical-alignment: center;
+                    wrap: no-wrap; overflow: elide;
+                }
+            }
+        }
+        if root.system-page == 2: Rectangle {
+            x: 8px; y: 32px; width: 384px; height: 178px;
+            border-radius: 4px; background: #101722;
+            Text {
+                x: 8px; y: 3px; width: 368px; height: 20px;
+                text: "GNSS Signal"; color: #67dba0; font-size: 14px; font-weight: 700;
+            }
+            for row[index] in [
+                { label: "Receiver", value: root.gnss-receiver },
+                { label: "Status / Fix", value: root.gnss-status },
+                { label: "Satellites (used / view)", value: root.gnss-satellites },
+                { label: "Latitude / Longitude", value: root.gnss-position },
+                { label: "Altitude (MSL)", value: root.gnss-altitude },
+                { label: "Speed", value: root.gnss-speed },
+                { label: "HDOP", value: root.gnss-hdop },
+                { label: "UTC (fix time)", value: root.gnss-utc }
+            ]: Rectangle {
+                x: 8px; y: 25px + index * 18px; width: 368px; height: 18px;
+                Text {
+                    x: 0px; y: 0px; width: 140px; height: 18px;
+                    text: row.label; color: #9eacc0; font-size: 11px;
+                    horizontal-alignment: left; vertical-alignment: center;
+                    wrap: no-wrap; overflow: elide;
+                }
+                Text {
+                    x: 152px; y: 0px; width: 216px; height: 18px;
+                    text: row.value; color: #ffffff; font-size: 11px;
+                    horizontal-alignment: right; vertical-alignment: center;
+                    wrap: no-wrap; overflow: elide;
+                }
+            }
+        }
+        Text {
+            x: 12px; y: 217px; width: 376px; height: 18px;
+            text: "ARROWS: Pages                         BACK / ESC: Menu";
+            color: #6f7c8e; font-size: 10px;
+        }
+    }
+
+    if root.screen == 3: Rectangle {
+        x: 0px; y: 0px; width: 400px; height: 240px;
+        background: #080b10;
+        Text {
+            x: 12px; y: 12px; width: 376px; height: 28px;
+            text: "IBUS";
+            color: #ffffff;
+            font-size: 20px;
+            font-weight: 700;
+        }
+        Rectangle {
+            x: 12px; y: 60px; width: 376px; height: 116px;
+            border-radius: 6px;
+            background: #111823;
+            Text {
+                x: 12px; y: 12px; width: 352px; height: 92px;
+                text: root.ibus-status;
+                color: #b9c6d8;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+        }
+        Text {
+            x: 12px; y: 211px; width: 376px; height: 18px;
+            text: "BACK menu";
+            color: #6f7c8e;
+            font-size: 10px;
+        }
+    }
+}

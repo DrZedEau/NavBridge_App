@@ -1,0 +1,31 @@
+[Unit]
+Description=NavBridge direct KMS display and keyboard frontend
+Wants=navbridge-core.service
+After=navbridge-core.service systemd-user-sessions.service
+Conflicts=getty@tty1.service
+After=getty@tty1.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+SupplementaryGroups=video render input
+WorkingDirectory=/opt/navbridge
+ExecStart=/opt/navbridge/bin/navbridge-ui --config /etc/navbridge/frontend.toml --keyboard /etc/navbridge/keyboard.toml
+Restart=on-failure
+RestartSec=2
+Environment=RUST_LOG=info
+Environment=SLINT_BACKEND=linuxkms-software
+Environment=SLINT_FULLSCREEN=1
+EnvironmentFile=-/etc/navbridge/display.env
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,24 @@
+[package]
+name = "navbridge-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[features]
+default = []
+direct-kms = ["slint/backend-linuxkms-noseat"]
+
+[dependencies]
+navbridge-common = { path = "../common" }
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+slint = { version = "1.17.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-2"] }
+
+[build-dependencies]
+slint-build = "1.17.1"

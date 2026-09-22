@@ -1,0 +1,22 @@
+[Unit]
+Description=NavBridge dongle, audio and GNSS backend
+Wants=gpsd.socket
+After=local-fs.target sound.target gpsd.socket
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+SupplementaryGroups=plugdev audio
+WorkingDirectory=/opt/navbridge
+RuntimeDirectory=navbridge
+RuntimeDirectoryMode=0770
+ExecStart=/opt/navbridge/bin/navbridge-core --config /etc/navbridge/core.toml
+Restart=on-failure
+RestartSec=2
+Environment=RUST_LOG=info
+UMask=0007
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,4 @@
+# Slint frontend configuration. The UI canvas is always 400x240.
+socket_path = "/run/navbridge/core.sock"
+fullscreen = false
+reconnect_ms = 1000
