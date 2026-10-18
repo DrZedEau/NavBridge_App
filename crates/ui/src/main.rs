@@ -1,22 +1,24 @@
 mod config;
+mod frame_watch;
 mod input;
 mod ipc;
 
 use std::cell::RefCell;
 use std::env;
 use std::io::{self, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::Instant;
 
 use config::{KeyboardConfig, UiConfig};
 use input::{KeyAction, KeyMap};
 use ipc::IpcEvent;
 use navbridge_common::{
-    AppSnapshot, CarplayEvent, ClientCommand, NavigationKey, ServerEvent, MEDIA_HEIGHT,
-    MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH, VIDEO_FRAME_HEADER_SIZE, VIDEO_FRAME_MAGIC, VIDEO_FRAME_PATH,
+    AppSnapshot, ClientCommand, Ignition, NavigationKey, ProjectionEvent, ServerEvent,
+    VehicleSnapshot, MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH, VIDEO_FRAME_HEADER_SIZE,
+    VIDEO_FRAME_MAGIC, VIDEO_FRAME_PATH,
 };
-use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, Timer, TimerMode};
+use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer};
 use tracing_subscriber::EnvFilter;
 
 slint::include_modules!();
@@ -24,20 +26,54 @@ slint::include_modules!();
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
     Menu = 0,
-    Carplay = 1,
+    Projection = 1,
     System = 2,
-    Ibus = 3,
+    Settings = 3,
+    CarPlay = 4,
+}
+
+/// The menu's tiles, left to right: Android Auto, CarPlay, Settings, System.
+const MENU_ITEMS: usize = 4;
+/// System pages: module and USB, video and audio, GNSS, and the car's I-Bus.
+const SYSTEM_PAGES: usize = 4;
+/// The projection DPIs Settings offers.
+const DPI_CHOICES: [u32; 2] = [160, 140];
+
+/// Settings' rows, top to bottom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Setting {
+    Wireless,
+    Dpi,
+    Volume,
+    Microphone,
+}
+const SETTINGS: [Setting; 4] = [
+    Setting::Wireless,
+    Setting::Dpi,
+    Setting::Volume,
+    Setting::Microphone,
+];
+
+/// The projection video the core asks the phone for, from its hello.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VideoSettings {
+    width: u32,
+    height: u32,
+    dpi: u32,
+    fps: u32,
 }
 
 struct UiState {
     screen: Screen,
     menu_index: usize,
-    pairing_index: usize,
+    /// The chosen row in Settings, and whether Enter opened it to change it.
+    settings_index: usize,
+    settings_editing: bool,
     system_page: usize,
     core_connected: bool,
-    core_message: String,
-    carplay_hidden_by_phone: bool,
+    projection_hidden_by_phone: bool,
     snapshot: AppSnapshot,
+    video: Option<VideoSettings>,
     held_navigation: Option<NavigationKey>,
     video_sequence: std::cell::Cell<Option<u64>>,
 }
@@ -47,12 +83,13 @@ impl Default for UiState {
         Self {
             screen: Screen::Menu,
             menu_index: 0,
-            pairing_index: 0,
+            settings_index: 0,
+            settings_editing: false,
             system_page: 0,
             core_connected: false,
-            core_message: "core offline".into(),
-            carplay_hidden_by_phone: false,
+            projection_hidden_by_phone: false,
             snapshot: AppSnapshot::default(),
+            video: None,
             held_navigation: None,
             video_sequence: std::cell::Cell::new(None),
         }
@@ -64,13 +101,14 @@ impl UiState {
         self.core_connected = false;
         self.held_navigation = None;
         self.snapshot = AppSnapshot::default();
-        self.carplay_hidden_by_phone = false;
+        self.video = None;
+        self.projection_hidden_by_phone = false;
         self.video_sequence.set(None);
     }
     fn show_projection(&self) -> bool {
         self.core_connected
-            && self.screen == Screen::Carplay
-            && (self.snapshot.carplay.phone_connected || self.snapshot.carplay.streaming)
+            && self.screen == Screen::Projection
+            && (self.snapshot.projection.phone_connected || self.snapshot.projection.streaming)
     }
 }
 
@@ -100,7 +138,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let state = Rc::new(RefCell::new(UiState::default()));
     render_state(&ui, &state.borrow());
 
-    let (command_tx, event_rx) = ipc::spawn(ui_config.socket_path.clone(), ui_config.reconnect_ms);
+    // The menu's clock, checked every second and redrawn when the minute changes.
+    ui.set_clock(clock_text().into());
+    let clock = slint::Timer::default();
+    {
+        let weak = ui.as_weak();
+        clock.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_secs(1),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    let now = clock_text();
+                    if ui.get_clock() != now.as_str() {
+                        ui.set_clock(now.into());
+                    }
+                }
+            },
+        );
+    }
+
+    let weak = ui.as_weak();
+    let (command_tx, event_rx) = ipc::spawn(
+        ui_config.socket_path.clone(),
+        ui_config.reconnect_ms,
+        move || {
+            let _ = weak.upgrade_in_event_loop(|ui| ui.invoke_core_message());
+        },
+    );
 
     {
         let state = Rc::clone(&state);
@@ -122,13 +186,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // IPC runs on a worker thread. This tiny timer transfers already-parsed
-    // state into Slint's main/UI thread without coupling the UI to backend code.
-    let ipc_timer = Timer::default();
+    // IPC runs on a worker thread, which wakes this handler for each message
+    // from the core to apply it on Slint's main/UI thread.
     {
         let state = Rc::clone(&state);
         let weak = ui.as_weak();
-        ipc_timer.start(TimerMode::Repeated, Duration::from_millis(50), move || {
+        ui.on_core_message(move || {
             let Some(ui) = weak.upgrade() else {
                 return;
             };
@@ -137,15 +200,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             while let Ok(event) = event_rx.try_recv() {
                 changed = true;
                 match event {
-                    IpcEvent::Connected => {
-                        state.core_connected = true;
-                        state.core_message = "core connected".into();
-                    }
+                    IpcEvent::Connected => state.core_connected = true,
                     IpcEvent::Disconnected(reason) => {
+                        tracing::debug!(%reason, "core offline");
                         state.disconnect_projection();
                         ui.set_video_active(false);
-                        ui.set_carplay_frame(Image::default());
-                        state.core_message = format!("core offline: {}", short(&reason, 28));
+                        ui.set_projection_frame(Image::default());
                     }
                     IpcEvent::Server(ServerEvent::Hello {
                         ui_width,
@@ -153,6 +213,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         media_width,
                         media_height,
                         media_dpi,
+                        media_fps,
                         ..
                     }) => {
                         // Reject an incompatible backend early: the frontend can
@@ -161,48 +222,52 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             || (media_width, media_height) != (MEDIA_WIDTH, MEDIA_HEIGHT)
                             || media_dpi == 0
                         {
+                            tracing::warn!("core media geometry mismatch");
                             state.core_connected = false;
-                            state.core_message = "core media geometry mismatch".into();
+                        } else {
+                            state.video = Some(VideoSettings {
+                                width: media_width,
+                                height: media_height,
+                                dpi: media_dpi,
+                                fps: media_fps,
+                            });
                         }
                     }
                     IpcEvent::Server(ServerEvent::Snapshot { snapshot }) => {
-                        let was_connected = state.snapshot.carplay.phone_connected;
-                        let now_connected = snapshot.carplay.phone_connected;
+                        let was_connected = state.snapshot.projection.phone_connected;
+                        let now_connected = snapshot.projection.phone_connected;
                         state.snapshot = snapshot;
 
                         // Snapshot transition is a safety net for a UI that was
                         // started/reconnected after the real-time event occurred.
-                        if now_connected && !was_connected && !state.carplay_hidden_by_phone {
-                            state.screen = Screen::Carplay;
+                        if now_connected && !was_connected && !state.projection_hidden_by_phone {
+                            state.screen = Screen::Projection;
                         } else if was_connected && !now_connected {
-                            state.carplay_hidden_by_phone = false;
-                            if state.screen == Screen::Carplay {
+                            state.projection_hidden_by_phone = false;
+                            if state.screen == Screen::Projection {
                                 state.screen = Screen::Menu;
                             }
                         }
                     }
-                    IpcEvent::Server(ServerEvent::CarplayEvent { event }) => match event {
-                        CarplayEvent::PhoneConnected => {
-                            state.carplay_hidden_by_phone = false;
-                            state.screen = Screen::Carplay;
+                    IpcEvent::Server(ServerEvent::ProjectionEvent { event }) => match event {
+                        ProjectionEvent::PhoneConnected => {
+                            state.projection_hidden_by_phone = false;
+                            state.screen = Screen::Projection;
                         }
-                        CarplayEvent::StreamingReady => {
-                            if !state.carplay_hidden_by_phone {
-                                state.screen = Screen::Carplay;
+                        ProjectionEvent::StreamingReady => {
+                            if !state.projection_hidden_by_phone {
+                                state.screen = Screen::Projection;
                             }
                         }
-                        CarplayEvent::PhoneDisconnected => {
-                            state.carplay_hidden_by_phone = false;
+                        ProjectionEvent::PhoneDisconnected => {
+                            state.projection_hidden_by_phone = false;
                             state.screen = Screen::Menu;
                         }
-                        CarplayEvent::RequestHostUi => {
-                            state.carplay_hidden_by_phone = true;
+                        ProjectionEvent::RequestHostUi => {
+                            state.projection_hidden_by_phone = true;
                             state.screen = Screen::Menu;
                         }
                     },
-                    IpcEvent::Server(ServerEvent::Error { message }) => {
-                        state.core_message = format!("core error: {}", short(&message, 28));
-                    }
                 }
             }
             if changed {
@@ -213,49 +278,42 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Projection frames are exchanged out-of-band through tmpfs. The USB/backend
     // session remains 800x480; FFmpeg publishes an exact 400x240 RGBA view for
-    // Slint so video never travels through the JSON control socket.
-    let video_timer = Timer::default();
+    // Slint so video never travels through the JSON control socket. Each frame
+    // is loaded as soon as the core publishes it; LinuxKMS shows it at the
+    // next vblank.
     {
         let state = Rc::clone(&state);
         let weak = ui.as_weak();
-        video_timer.start(TimerMode::Repeated, Duration::from_millis(33), move || {
+        let frame_stats = env::var_os("NAVBRIDGE_FRAME_STATS").is_some();
+        let mut sample_start = Instant::now();
+        let mut sample_frames = 0u64;
+        ui.on_frame_ready(move || {
             let Some(ui) = weak.upgrade() else {
                 return;
             };
-
-            let show_projection = {
-                let state = state.borrow();
-                state.show_projection()
-            };
-            if !show_projection {
-                ui.set_video_active(false);
+            if !refresh_projection(&ui, &state.borrow()) || !frame_stats {
                 return;
             }
-
-            let previous = state.borrow().video_sequence.get();
-            // Open once: atomic replacement cannot mix a header from one frame
-            // with pixels from another. Unchanged frames cost only 20 bytes.
-            let result = std::fs::File::open(VIDEO_FRAME_PATH)
-                .and_then(|mut file| read_projection(&mut file, previous));
-            match result {
-                Ok(Some((sequence, pixels))) => {
-                    state.borrow().video_sequence.set(Some(sequence));
-                    ui.set_carplay_frame(Image::from_rgba8(pixels));
-                }
-                Ok(None) => return,
-                Err(_) => {
-                    ui.set_video_active(false);
-                    ui.set_carplay_frame(Image::default());
-                    return;
-                }
+            sample_frames += 1;
+            let seconds = sample_start.elapsed().as_secs_f64();
+            if seconds >= 5.0 {
+                tracing::info!(
+                    fps = sample_frames as f64 / seconds,
+                    frames = sample_frames,
+                    seconds,
+                    "projection UI frame updates"
+                );
+                sample_start = Instant::now();
+                sample_frames = 0;
             }
-            ui.set_video_active(true);
         });
     }
+    let weak = ui.as_weak();
+    frame_watch::spawn(Path::new(VIDEO_FRAME_PATH), move || {
+        let _ = weak.upgrade_in_event_loop(|ui| ui.invoke_frame_ready());
+    })?;
 
     ui.run()?;
-    drop(video_timer);
-    drop(ipc_timer);
     Ok(())
 }
 
@@ -293,7 +351,7 @@ fn handle_key_event(
         }
         return;
     }
-    if repeat && (state.screen != Screen::System || action == KeyAction::ToggleNightMode) {
+    if repeat && !repeats(state, action) {
         return;
     }
     handle_action(state, action, commands);
@@ -304,8 +362,12 @@ fn handle_action(
     action: KeyAction,
     commands: &std::sync::mpsc::Sender<ClientCommand>,
 ) {
-    if action == KeyAction::ToggleNightMode {
-        let _ = commands.send(ClientCommand::ToggleNightMode);
+    if let KeyAction::NightMode(enabled) = action {
+        let _ = commands.send(ClientCommand::SetNightMode { enabled });
+        return;
+    }
+    if let KeyAction::ParkingBrake(engaged) = action {
+        let _ = commands.send(ClientCommand::SetParkingBrake { engaged });
         return;
     }
     if action == KeyAction::Quit {
@@ -313,9 +375,24 @@ fn handle_action(
         let _ = slint::quit_event_loop();
         return;
     }
+    // The pairing code shows over any screen and takes Enter and Back.
+    if state.snapshot.bluetooth.confirm.is_some()
+        && matches!(action, KeyAction::Select | KeyAction::Back)
+    {
+        let accept = action == KeyAction::Select;
+        let _ = commands.send(ClientCommand::ConfirmPairing { accept });
+        state.snapshot.bluetooth.confirm = None;
+        return;
+    }
     if action == KeyAction::Home {
         release_navigation(state, commands);
-        state.carplay_hidden_by_phone = true;
+        // As when the phone asks for the car's screen: it can stop its video.
+        if state.screen == Screen::Projection
+            && (state.snapshot.projection.phone_connected || state.snapshot.projection.streaming)
+        {
+            let _ = commands.send(ClientCommand::HideProjection);
+        }
+        state.projection_hidden_by_phone = true;
         state.screen = Screen::Menu;
         return;
     }
@@ -323,35 +400,40 @@ fn handle_action(
     match state.screen {
         Screen::Menu => match action {
             KeyAction::Up | KeyAction::Left => {
-                state.menu_index = state.menu_index.checked_sub(1).unwrap_or(2)
+                state.menu_index = (state.menu_index + MENU_ITEMS - 1) % MENU_ITEMS
             }
-            KeyAction::Down | KeyAction::Right => state.menu_index = (state.menu_index + 1) % 3,
+            KeyAction::Down | KeyAction::Right => {
+                state.menu_index = (state.menu_index + 1) % MENU_ITEMS
+            }
             KeyAction::Select => {
                 state.screen = match state.menu_index {
                     0 => {
-                        // Reopening projection is local navigation. Re-applying
-                        // Android settings here can interrupt an active session.
-                        state.carplay_hidden_by_phone = false;
-                        if state.snapshot.carplay.phone_connected
-                            || state.snapshot.carplay.streaming
+                        // Reopening projection only gives the phone its video
+                        // focus back; the session itself keeps running.
+                        state.projection_hidden_by_phone = false;
+                        if state.snapshot.projection.phone_connected
+                            || state.snapshot.projection.streaming
                         {
-                            let _ = commands.send(ClientCommand::ResumeCarplay);
-                        } else {
-                            let _ = commands.send(ClientCommand::StartCarplay);
+                            let _ = commands.send(ClientCommand::ResumeProjection);
                         }
-                        Screen::Carplay
+                        Screen::Projection
                     }
-                    1 => {
+                    1 => Screen::CarPlay,
+                    2 => {
+                        state.settings_index = 0;
+                        state.settings_editing = false;
+                        Screen::Settings
+                    }
+                    _ => {
                         state.system_page = 0;
                         Screen::System
                     }
-                    _ => Screen::Ibus,
                 }
             }
             _ => {}
         },
-        Screen::Carplay => {
-            if state.core_connected && state.snapshot.carplay.phone_connected {
+        Screen::Projection => {
+            if state.core_connected && state.snapshot.projection.phone_connected {
                 if let KeyAction::Phone(action) = action {
                     release_navigation(state, commands);
                     let _ = commands.send(ClientCommand::PhoneAction { action });
@@ -360,44 +442,49 @@ fn handle_action(
                     let _ = commands.send(ClientCommand::NavigationInput { key, pressed: true });
                     state.held_navigation = Some(key);
                 }
-            } else if state.core_connected
-                && state.snapshot.usb.selected.is_some()
-                && !state.snapshot.carplay.streaming
-            {
-                match action {
-                    KeyAction::Up | KeyAction::Down | KeyAction::Left | KeyAction::Right => {
-                        state.pairing_index = 1 - state.pairing_index
-                    }
-                    KeyAction::Select => {
-                        let _ = commands.send(if state.pairing_index == 0 {
-                            ClientCommand::PairPhone
-                        } else {
-                            ClientCommand::StartCarplay
-                        });
-                    }
-                    _ => (),
-                }
+            } else {
+                waiting_page(state, action, commands);
             }
         }
         Screen::System => match action {
-            KeyAction::Up | KeyAction::Left => state.system_page = (state.system_page + 2) % 3,
-            KeyAction::Down | KeyAction::Right => state.system_page = (state.system_page + 1) % 3,
+            KeyAction::Up | KeyAction::Left => {
+                state.system_page = (state.system_page + SYSTEM_PAGES - 1) % SYSTEM_PAGES
+            }
+            KeyAction::Down | KeyAction::Right => {
+                state.system_page = (state.system_page + 1) % SYSTEM_PAGES
+            }
             KeyAction::Back => state.screen = Screen::Menu,
             _ => (),
         },
-        Screen::Ibus => {
-            if action == KeyAction::Back {
-                state.screen = Screen::Menu;
+        // Left/Right choose a row and Enter opens it; then Left/Right change
+        // its value and Enter or Back close it again.
+        Screen::Settings => {
+            let rows = SETTINGS.len();
+            let index = settings_index(state);
+            match (state.settings_editing, action) {
+                (false, KeyAction::Left | KeyAction::Up) => {
+                    state.settings_index = (index + rows - 1) % rows
+                }
+                (false, KeyAction::Right | KeyAction::Down) => {
+                    state.settings_index = (index + 1) % rows
+                }
+                (false, KeyAction::Select) if state.core_connected => state.settings_editing = true,
+                (false, KeyAction::Back) => state.screen = Screen::Menu,
+                (true, KeyAction::Right | KeyAction::Up) => change_setting(state, true, commands),
+                (true, KeyAction::Left | KeyAction::Down) => change_setting(state, false, commands),
+                (true, KeyAction::Select | KeyAction::Back) => state.settings_editing = false,
+                _ => (),
             }
         }
+        Screen::CarPlay => waiting_page(state, action, commands),
     }
 }
 
 fn render_state(ui: &AppWindow, state: &UiState) {
     if ui.get_screen() != state.screen as i32 {
         ui.set_video_active(false);
-        ui.set_carplay_frame(Image::default());
-        let baseline = if state.screen == Screen::Carplay {
+        ui.set_projection_frame(Image::default());
+        let baseline = if state.screen == Screen::Projection {
             std::fs::File::open(VIDEO_FRAME_PATH)
                 .ok()
                 .and_then(|mut file| read_frame_header(&mut file).ok())
@@ -408,169 +495,130 @@ fn render_state(ui: &AppWindow, state: &UiState) {
     }
     ui.set_screen(state.screen as i32);
     ui.set_menu_index(state.menu_index as i32);
-    ui.set_pairing_index(state.pairing_index as i32);
     ui.set_system_page(state.system_page as i32);
-    ui.set_pairing_available(
-        state.core_connected
-            && state.snapshot.usb.selected.is_some()
-            && !state.snapshot.carplay.phone_connected
-            && !state.snapshot.carplay.streaming,
-    );
-    let name = &state.snapshot.carplay.dongle_bluetooth_name;
-    ui.set_pairing_hint(if name.is_empty() {
-        "Enable Bluetooth and Wi-Fi on your phone".into()
-    } else {
-        format!("Bluetooth: {name}").into()
-    });
     ui.set_core_connected(state.core_connected);
-    ui.set_core_label(state.core_message.clone().into());
+    let (bt, wifi, gnss) = status_lights(&state.snapshot);
+    ui.set_bt_led(bt);
+    ui.set_wifi_led(wifi);
+    ui.set_gnss_led(gnss);
 
-    let usb_label = state
-        .snapshot
-        .usb
-        .selected
-        .as_ref()
-        .map(|usb| {
-            format!(
-                "USB {:04x}:{:04x}  bus {}:{}  {}",
-                usb.vendor_id, usb.product_id, usb.bus, usb.address, usb.speed
-            )
-        })
-        .or_else(|| {
-            state
-                .snapshot
-                .usb
-                .error
-                .as_ref()
-                .map(|e| format!("USB error: {e}"))
-        })
-        .unwrap_or_else(|| "No compatible dongle detected".into());
-    ui.set_usb_label(short(&usb_label, 58).into());
+    let projection = &state.snapshot.projection;
+    ui.set_projection_status(projection.status.clone().into());
 
-    let carplay = &state.snapshot.carplay;
-    ui.set_carplay_status(carplay.status.clone().into());
-    ui.set_ibus_status(state.snapshot.ibus_status.clone().into());
-
-    ui.set_gnss_receiver(
-        if state.core_connected {
-            available(&state.snapshot.gnss.receiver)
-        } else {
-            "Unavailable".into()
-        }
-        .into(),
-    );
-    ui.set_gnss_status(
-        if state.core_connected {
-            available(&state.snapshot.gnss.status)
-        } else {
-            "Unavailable".into()
-        }
-        .into(),
-    );
-    ui.set_gnss_satellites(
-        if state.core_connected {
-            available(&state.snapshot.gnss.satellites)
-        } else {
-            "Unavailable".into()
-        }
-        .into(),
-    );
-    ui.set_gnss_position(
-        if state.core_connected {
-            available(&state.snapshot.gnss.position)
-        } else {
-            "Unavailable".into()
-        }
-        .into(),
-    );
-    ui.set_gnss_altitude(
-        if state.core_connected {
-            available(&state.snapshot.gnss.altitude)
-        } else {
-            "Unavailable".into()
-        }
-        .into(),
-    );
-    ui.set_gnss_speed(
-        if state.core_connected {
-            available(&state.snapshot.gnss.speed)
-        } else {
-            "Unavailable".into()
-        }
-        .into(),
-    );
-    ui.set_gnss_hdop(
-        if state.core_connected {
-            available(&state.snapshot.gnss.hdop)
-        } else {
-            "Unavailable".into()
-        }
-        .into(),
-    );
-    ui.set_gnss_utc(
-        if state.core_connected {
-            available(&state.snapshot.gnss.utc)
-        } else {
-            "Unavailable".into()
-        }
-        .into(),
-    );
+    let gnss = &state.snapshot.gnss;
+    let core =
+        |value: &str| -> slint::SharedString { core_value(state.core_connected, value).into() };
+    ui.set_gnss_receiver(core(&gnss.receiver));
+    ui.set_gnss_status(core(&gnss.status));
+    ui.set_gnss_satellites(core(&gnss.satellites));
+    ui.set_gnss_position(core(&gnss.position));
+    ui.set_gnss_altitude(core(&gnss.altitude));
+    ui.set_gnss_speed(core(&gnss.speed));
+    ui.set_gnss_hdop(core(&gnss.hdop));
+    ui.set_gnss_utc(core(&gnss.utc));
     ui.set_cpu_usage(available(&state.snapshot.system.cpu_usage).into());
     ui.set_ram_usage(available(&state.snapshot.system.memory).into());
     ui.set_cpu_temperature(available(&state.snapshot.system.cpu_temp).into());
-    let (status, model, firmware) = dongle_details(&state.snapshot, state.core_connected);
-    ui.set_dongle_status(status.into());
-    ui.set_dongle_model(model.into());
-    ui.set_dongle_firmware(firmware.into());
-    let connected = state.core_connected && (carplay.phone_connected || carplay.streaming);
+    let (status, model) = usb_connection_details(&state.snapshot, state.core_connected);
+    ui.set_usb_device_status(status.into());
+    ui.set_usb_device_name(model.into());
+    let connected = state.core_connected && (projection.phone_connected || projection.streaming);
     ui.set_connected_phone(
         if connected {
-            known(&carplay.phone_name)
+            known(&projection.phone_name)
         } else {
             "Not connected".into()
         }
         .into(),
     );
-    ui.set_connection_type(
-        if connected {
-            match carplay.connection_method.as_str() {
-                "AndroidAuto" => "Android Auto".into(),
-                "CarPlay" => "CarPlay".into(),
-                _ => "Unknown".into(),
+    // On the panel, the window takes the display mode; until it is shown, the
+    // size this UI is designed for.
+    let size = ui.window().size();
+    let (width, height) = if size.width > 0 && size.height > 0 {
+        (size.width, size.height)
+    } else {
+        (UI_WIDTH, UI_HEIGHT)
+    };
+    ui.set_ui_resolution(format!("{width}x{height}").into());
+    // The DPI chosen in Settings, which the core reports, over its hello's.
+    let video = state.video.map(|video| VideoSettings {
+        dpi: match state.snapshot.projection.dpi {
+            0 => video.dpi,
+            dpi => dpi,
+        },
+        ..video
+    });
+    let (resolution, dpi_fps) = projection_video(video);
+    ui.set_projection_resolution(resolution.into());
+    ui.set_projection_dpi_fps(dpi_fps.into());
+    let audio = &state.snapshot.system.audio;
+    ui.set_audio_codec(core(&audio.codec));
+    ui.set_audio_sample_rate(core(&audio.sample_rate));
+    ui.set_audio_volume(core(&audio.volume));
+    ui.set_wireless_enabled(state.snapshot.wireless.enabled);
+    ui.set_wireless_status(core(&state.snapshot.wireless.status));
+    let rows: Vec<SettingsRow> = SETTINGS
+        .into_iter()
+        .map(|row| {
+            let (label, value) = setting_text(state, row);
+            SettingsRow {
+                label: label.into(),
+                value: value.into(),
             }
-        } else {
-            "n/a".to_string()
+        })
+        .collect();
+    ui.set_settings_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+    ui.set_settings_index(settings_index(state) as i32);
+    ui.set_settings_editing(state.settings_editing);
+    ui.set_pair_option(pair_option(state));
+    ui.set_settings_note(settings_note(state).into());
+    ui.set_bluetooth_status(state.snapshot.bluetooth.status.clone().into());
+    let pairing = state.snapshot.bluetooth.confirm.as_ref();
+    ui.set_pairing_request(pairing.is_some());
+    if let Some(request) = pairing {
+        ui.set_pairing_device(request.device.clone().into());
+        ui.set_pairing_code(spaced(&request.code).into());
+    }
+    let vehicle = &state.snapshot.vehicle;
+    ui.set_vehicle_status(vehicle_status(vehicle, state.core_connected).into());
+    ui.set_vehicle_speed(reading(vehicle.speed_kmh, "km/h").into());
+    ui.set_vehicle_gnss_speed(gnss_speed(&state.snapshot.gnss.speed).into());
+    ui.set_vehicle_rpm(reading(vehicle.rpm, "rpm").into());
+    ui.set_vehicle_coolant(reading(vehicle.coolant_c, "°C").into());
+    ui.set_vehicle_outside(reading(vehicle.outside_c, "°C").into());
+    ui.set_vehicle_ignition(ignition_text(vehicle.ignition).into());
+    ui.set_vehicle_odometer(odometer(vehicle.odometer_km).into());
+    // Frames that arrive while projection cannot be shown are skipped; pick up
+    // the newest one as soon as it can be, without waiting for the phone.
+    refresh_projection(ui, state);
+}
+
+/// Shows the newest projection frame if the UI has not shown it yet. Returns
+/// whether a new frame went on screen.
+fn refresh_projection(ui: &AppWindow, state: &UiState) -> bool {
+    if !state.show_projection() {
+        ui.set_video_active(false);
+        return false;
+    }
+    let previous = state.video_sequence.get();
+    // Open once: atomic replacement cannot mix a header from one frame
+    // with pixels from another. Unchanged frames cost only 20 bytes.
+    let result = std::fs::File::open(VIDEO_FRAME_PATH)
+        .and_then(|mut file| read_projection(&mut file, previous));
+    match result {
+        Ok(Some((sequence, pixels))) => {
+            state.video_sequence.set(Some(sequence));
+            ui.set_projection_frame(Image::from_rgba8(pixels));
+            ui.set_video_active(true);
+            true
         }
-        .into(),
-    );
-    ui.set_connection_transport(
-        if connected {
-            known(&carplay.connection_transport)
-        } else {
-            "n/a".into()
+        Ok(None) => false,
+        Err(_) => {
+            ui.set_video_active(false);
+            ui.set_projection_frame(Image::default());
+            false
         }
-        .into(),
-    );
-    ui.set_audio_output_rate(
-        if state.core_connected {
-            available(&state.snapshot.system.audio_output_rate)
-        } else {
-            "Unavailable".into()
-        }
-        .into(),
-    );
-    ui.set_app_resolution(format!("{UI_WIDTH} x {UI_HEIGHT}").into());
-    ui.set_phone_resolution(
-        if connected && carplay.source_video_width > 0 && carplay.source_video_height > 0 {
-            format!(
-                "{} x {}",
-                carplay.source_video_width, carplay.source_video_height
-            )
-        } else {
-            "n/a".into()
-        }
-        .into(),
-    );
+    }
 }
 
 fn known(value: &str) -> String {
@@ -589,14 +637,277 @@ fn available(value: &str) -> String {
     }
 }
 
-fn dongle_details(snapshot: &AppSnapshot, core_connected: bool) -> (String, String, String) {
+/// With wireless mode on, the Android Auto and CarPlay pages offer pairing a
+/// phone.
+fn pair_option(state: &UiState) -> bool {
+    state.core_connected && state.snapshot.wireless.enabled
+}
+
+/// The Android Auto page while there is no phone, and CarPlay's: Enter pairs a
+/// phone in wireless mode, and Back returns to the menu.
+fn waiting_page(
+    state: &mut UiState,
+    action: KeyAction,
+    commands: &std::sync::mpsc::Sender<ClientCommand>,
+) {
+    match action {
+        KeyAction::Select if pair_option(state) => {
+            let _ = commands.send(ClientCommand::StartPairing);
+        }
+        KeyAction::Back => state.screen = Screen::Menu,
+        _ => (),
+    }
+}
+
+fn settings_index(state: &UiState) -> usize {
+    state.settings_index.min(SETTINGS.len() - 1)
+}
+
+fn selected_setting(state: &UiState) -> Setting {
+    SETTINGS[settings_index(state)]
+}
+
+/// Changes the open row's value, up or down: wireless mode and the DPI switch,
+/// the levels move by 5%.
+fn change_setting(
+    state: &mut UiState,
+    up: bool,
+    commands: &std::sync::mpsc::Sender<ClientCommand>,
+) {
+    if !state.core_connected {
+        return;
+    }
+    let setting = selected_setting(state);
+    let snapshot = &mut state.snapshot;
+    let audio = &mut snapshot.system.audio;
+    // Each change shows at once; the core's next snapshot confirms it.
+    match setting {
+        Setting::Wireless => {
+            let enabled = !snapshot.wireless.enabled;
+            let _ = commands.send(ClientCommand::SetWireless { enabled });
+            snapshot.wireless.enabled = enabled;
+        }
+        Setting::Dpi => {
+            let dpi = match snapshot.projection.dpi {
+                dpi if dpi == DPI_CHOICES[0] => DPI_CHOICES[1],
+                _ => DPI_CHOICES[0],
+            };
+            let _ = commands.send(ClientCommand::SetDpi { dpi });
+            snapshot.projection.dpi = dpi;
+        }
+        Setting::Volume => {
+            if let Some(percent) = audio.volume_percent.map(|percent| step(percent, up)) {
+                let _ = commands.send(ClientCommand::SetVolume { percent });
+                audio.volume_percent = Some(percent);
+            }
+        }
+        Setting::Microphone => {
+            if let Some(percent) = audio.microphone_percent.map(|percent| step(percent, up)) {
+                let _ = commands.send(ClientCommand::SetMicrophone { percent });
+                audio.microphone_percent = Some(percent);
+            }
+        }
+    }
+}
+
+/// The next 5% step from a level, which the codec may report between steps.
+fn step(percent: u8, up: bool) -> u8 {
+    let nearest = (u16::from(percent) + 2) / 5 * 5;
+    let next = if up {
+        nearest + 5
+    } else {
+        nearest.saturating_sub(5)
+    };
+    next.min(100) as u8
+}
+
+/// Held keys repeat while paging through System and changing a level.
+fn repeats(state: &UiState, action: KeyAction) -> bool {
+    match state.screen {
+        Screen::System => !matches!(action, KeyAction::NightMode(_) | KeyAction::ParkingBrake(_)),
+        Screen::Settings => {
+            state.settings_editing
+                && matches!(
+                    action,
+                    KeyAction::Left | KeyAction::Right | KeyAction::Up | KeyAction::Down
+                )
+                && matches!(
+                    selected_setting(state),
+                    Setting::Volume | Setting::Microphone
+                )
+        }
+        _ => false,
+    }
+}
+
+fn setting_text(state: &UiState, row: Setting) -> (&'static str, String) {
+    let snapshot = &state.snapshot;
+    let percent = |level: Option<u8>| level.map_or_else(|| "n/a".into(), |p| format!("{p}%"));
+    match row {
+        Setting::Wireless => (
+            "WIRELESS",
+            if snapshot.wireless.enabled {
+                "ON"
+            } else {
+                "OFF"
+            }
+            .into(),
+        ),
+        Setting::Dpi => (
+            "VIDEO DPI",
+            match snapshot.projection.dpi {
+                0 => "n/a".into(),
+                dpi => dpi.to_string(),
+            },
+        ),
+        Setting::Volume => (
+            "AUDIO VOLUME",
+            percent(snapshot.system.audio.volume_percent),
+        ),
+        Setting::Microphone => (
+            "MICROPHONE",
+            percent(snapshot.system.audio.microphone_percent),
+        ),
+    }
+}
+
+/// About the selected row.
+fn settings_note(state: &UiState) -> String {
+    if !state.core_connected {
+        return "The core is offline.".into();
+    }
+    let audio = &state.snapshot.system.audio;
+    match selected_setting(state) {
+        Setting::Wireless => available(&state.snapshot.wireless.status),
+        Setting::Dpi => "160 or 140; the phone gets it when it next connects.".into(),
+        Setting::Volume if audio.volume_percent.is_some() => {
+            "The USB codec's output (PCM2912A speaker level).".into()
+        }
+        Setting::Microphone if audio.microphone_percent.is_some() => {
+            "The USB codec's microphone gain.".into()
+        }
+        Setting::Volume | Setting::Microphone => "The USB codec is not connected.".into(),
+    }
+}
+
+/// The menu's status lights: Bluetooth ready for phones, the hotspot up, and a
+/// GNSS fix, orange while a receiver has none.
+fn status_lights(snapshot: &AppSnapshot) -> (LedState, LedState, LedState) {
+    let light = |on: bool| if on { LedState::On } else { LedState::Off };
+    let gnss = if !snapshot.gnss.position.trim().is_empty() {
+        LedState::On
+    } else if !snapshot.gnss.receiver.trim().is_empty() {
+        LedState::Waiting
+    } else {
+        LedState::Off
+    };
+    (
+        light(snapshot.bluetooth.ready),
+        light(snapshot.wireless.hotspot),
+        gnss,
+    )
+}
+
+/// Local time, "14:05".
+fn clock_text() -> String {
+    // SAFETY: localtime_r fills the tm it is given, from the current time.
+    let local = unsafe {
+        let now = libc::time(std::ptr::null_mut());
+        let mut local: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&now, &mut local);
+        local
+    };
+    format!("{:02}:{:02}", local.tm_hour, local.tm_min)
+}
+
+/// "123 456", as phones show pairing codes.
+fn spaced(code: &str) -> String {
+    match (code.get(..3), code.get(3..)) {
+        (Some(head), Some(tail)) if code.len() == 6 => format!("{head} {tail}"),
+        _ => code.into(),
+    }
+}
+
+/// A reading the core reports, which is unavailable while it is not connected.
+fn core_value(connected: bool, value: &str) -> String {
+    if connected {
+        available(value)
+    } else {
+        "Unavailable".into()
+    }
+}
+
+/// The I-Bus link, with how many frames it carried.
+fn vehicle_status(vehicle: &VehicleSnapshot, core_connected: bool) -> String {
+    let status = core_value(core_connected, &vehicle.status);
+    match (core_connected, vehicle.frames, vehicle.bad_lines) {
+        (false, ..) | (true, 0, 0) => status,
+        (true, frames, 0) => format!("{status} · {frames} frames"),
+        (true, frames, bad) => format!("{status} · {frames} frames, {bad} damaged"),
+    }
+}
+
+/// "120 km/h", or "n/a" until the car has said.
+fn reading(value: Option<impl std::fmt::Display>, unit: &str) -> String {
+    value.map_or_else(|| "n/a".into(), |value| format!("{value} {unit}"))
+}
+
+/// The GNSS speed beside the car's own, while there is a fix.
+fn gnss_speed(speed: &str) -> String {
+    if speed.trim().is_empty() {
+        String::new()
+    } else {
+        format!("GPS {speed}")
+    }
+}
+
+fn ignition_text(ignition: Option<Ignition>) -> String {
+    match ignition {
+        None => "n/a",
+        Some(Ignition::Off) => "Off",
+        Some(Ignition::Accessory) => "Position 1",
+        Some(Ignition::On) => "On",
+        Some(Ignition::Starting) => "Starting",
+    }
+    .into()
+}
+
+/// "123 456 km".
+fn odometer(km: Option<u32>) -> String {
+    let Some(km) = km else {
+        return "n/a".into();
+    };
+    let digits = km.to_string();
+    let mut grouped = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            grouped.push(' ');
+        }
+        grouped.push(digit);
+    }
+    format!("{grouped} km")
+}
+
+/// The projection resolution and DPI / FPS rows. CarPlay is not part of this
+/// build, so only Android Auto has a resolution.
+fn projection_video(video: Option<VideoSettings>) -> (String, String) {
+    match video {
+        Some(v) => (
+            format!("AA {}x{} · CarPlay n/a", v.width, v.height),
+            format!("{} / {}", v.dpi, v.fps),
+        ),
+        None => ("Unavailable".into(), "Unavailable".into()),
+    }
+}
+
+fn usb_connection_details(snapshot: &AppSnapshot, core_connected: bool) -> (String, String) {
     if !core_connected {
-        return ("Unavailable".into(), "n/a".into(), "n/a".into());
+        return ("Unavailable".into(), "n/a".into());
     }
     let Some(device) = snapshot.usb.selected.as_ref() else {
-        return ("Not detected".into(), "n/a".into(), "n/a".into());
+        return ("Not detected".into(), "n/a".into());
     };
-    let status = if snapshot.carplay.phone_connected {
+    let status = if snapshot.projection.phone_connected {
         "Connected"
     } else {
         "Detected"
@@ -606,11 +917,7 @@ fn dongle_details(snapshot: &AppSnapshot, core_connected: bool) -> (String, Stri
     } else {
         device.product.clone()
     };
-    (
-        status.into(),
-        model,
-        available(&snapshot.carplay.dongle_firmware),
-    )
+    (status.into(), model)
 }
 
 fn read_frame_header(reader: &mut impl Read) -> io::Result<u64> {
@@ -646,15 +953,6 @@ fn read_projection(
     Ok(Some((sequence, pixels)))
 }
 
-fn short(value: &str, max_chars: usize) -> String {
-    let mut chars = value.chars();
-    let mut out: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        out.push('…');
-    }
-    out
-}
-
 fn parse_args() -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
     let mut ui = PathBuf::from("config/frontend.toml");
     let mut keyboard = PathBuf::from("config/keyboard.toml");
@@ -682,35 +980,133 @@ mod navigation_tests {
 
     fn connected_projection() -> UiState {
         let mut state = UiState {
-            screen: Screen::Carplay,
+            screen: Screen::Projection,
             core_connected: true,
             ..UiState::default()
         };
-        state.snapshot.carplay.phone_connected = true;
+        state.snapshot.projection.phone_connected = true;
         state
     }
 
     #[test]
-    fn tab_toggles_once_per_press_on_every_screen() {
+    fn page_keys_set_day_and_night_once_per_press_on_every_screen() {
         let config: KeyboardConfig =
             toml::from_str(include_str!("../../../config/keyboard.toml")).unwrap();
         let map = KeyMap::new(&config).unwrap();
-        let tab: slint::SharedString = slint::platform::Key::Tab.into();
-        let action = map.action_for(tab.as_str()).unwrap();
-        assert_eq!(action, KeyAction::ToggleNightMode);
-        for screen in [Screen::Menu, Screen::Carplay, Screen::System, Screen::Ibus] {
-            let mut state = UiState {
-                screen,
-                ..UiState::default()
-            };
-            let (tx, rx) = mpsc::channel();
-            handle_key_event(&mut state, action, true, false, &tx);
-            handle_key_event(&mut state, action, true, true, &tx);
-            handle_key_event(&mut state, action, false, false, &tx);
-            assert!(matches!(rx.try_recv(), Ok(ClientCommand::ToggleNightMode)));
-            assert!(rx.try_recv().is_err());
-            assert_eq!(state.screen, screen);
+        for (key, night) in [
+            (slint::platform::Key::PageUp, false),
+            (slint::platform::Key::PageDown, true),
+        ] {
+            let text: slint::SharedString = key.into();
+            let action = map.action_for(text.as_str()).unwrap();
+            assert_eq!(action, KeyAction::NightMode(night));
+            for screen in [
+                Screen::Menu,
+                Screen::Projection,
+                Screen::System,
+                Screen::Settings,
+                Screen::CarPlay,
+            ] {
+                let mut state = UiState {
+                    screen,
+                    ..UiState::default()
+                };
+                let (tx, rx) = mpsc::channel();
+                handle_key_event(&mut state, action, true, false, &tx);
+                handle_key_event(&mut state, action, true, true, &tx);
+                handle_key_event(&mut state, action, false, false, &tx);
+                assert!(matches!(
+                    rx.try_recv(),
+                    Ok(ClientCommand::SetNightMode { enabled }) if enabled == night
+                ));
+                assert!(rx.try_recv().is_err());
+                assert_eq!(state.screen, screen);
+            }
         }
+    }
+
+    #[test]
+    fn control_and_alt_report_the_parking_brake_once_per_press_on_every_screen() {
+        let config: KeyboardConfig =
+            toml::from_str(include_str!("../../../config/keyboard.toml")).unwrap();
+        let map = KeyMap::new(&config).unwrap();
+        for (key, engaged) in [
+            (slint::platform::Key::Control, true),
+            (slint::platform::Key::ControlR, true),
+            (slint::platform::Key::Alt, false),
+        ] {
+            let text: slint::SharedString = key.into();
+            let action = map.action_for(text.as_str()).unwrap();
+            assert_eq!(action, KeyAction::ParkingBrake(engaged));
+            for screen in [
+                Screen::Menu,
+                Screen::Projection,
+                Screen::System,
+                Screen::Settings,
+                Screen::CarPlay,
+            ] {
+                let mut state = UiState {
+                    screen,
+                    ..UiState::default()
+                };
+                let (tx, rx) = mpsc::channel();
+                handle_key_event(&mut state, action, true, false, &tx);
+                handle_key_event(&mut state, action, true, true, &tx);
+                handle_key_event(&mut state, action, false, false, &tx);
+                assert!(matches!(
+                    rx.try_recv(),
+                    Ok(ClientCommand::SetParkingBrake { engaged: sent }) if sent == engaged
+                ));
+                assert!(rx.try_recv().is_err());
+                assert_eq!(state.screen, screen);
+            }
+        }
+    }
+
+    #[test]
+    fn older_keyboard_files_get_the_mode_and_play_pause_keys() {
+        let config: KeyboardConfig = toml::from_str(
+            r#"
+            [bindings]
+            up = ["Up"]
+            down = ["Down"]
+            left = ["Left"]
+            right = ["Right"]
+            select = ["Return"]
+            back = ["Backspace"]
+            home = ["Escape"]
+            quit = ["Q"]
+            toggle_night_mode = ["Tab"]
+            pause_music = ["P"]
+            resume_music = ["S"]
+            "#,
+        )
+        .unwrap();
+        let map = KeyMap::new(&config).unwrap();
+        let page_up: slint::SharedString = slint::platform::Key::PageUp.into();
+        let tab: slint::SharedString = slint::platform::Key::Tab.into();
+        assert_eq!(
+            map.action_for(page_up.as_str()),
+            Some(KeyAction::NightMode(false))
+        );
+        assert_eq!(
+            map.action_for("p"),
+            Some(KeyAction::Phone(navbridge_common::PhoneAction::PlayPause))
+        );
+        assert_eq!(map.action_for(tab.as_str()), None);
+        assert_eq!(map.action_for("s"), None);
+        let (control, alt): (slint::SharedString, slint::SharedString) = (
+            slint::platform::Key::Control.into(),
+            slint::platform::Key::Alt.into(),
+        );
+        assert_eq!(
+            map.action_for(control.as_str()),
+            Some(KeyAction::ParkingBrake(true))
+        );
+        assert_eq!(
+            map.action_for(alt.as_str()),
+            Some(KeyAction::ParkingBrake(false))
+        );
     }
 
     #[test]
@@ -723,17 +1119,19 @@ mod navigation_tests {
             ("b", navbridge_common::PhoneAction::PreviousTrack),
             ("v", navbridge_common::PhoneAction::VoiceAssistant),
             ("a", navbridge_common::PhoneAction::AnswerCall),
+            ("e", navbridge_common::PhoneAction::EndCall),
             ("h", navbridge_common::PhoneAction::PhoneHome),
-            ("p", navbridge_common::PhoneAction::PauseMusic),
-            ("s", navbridge_common::PhoneAction::ResumeMusic),
+            ("m", navbridge_common::PhoneAction::OpenMaps),
+            ("s", navbridge_common::PhoneAction::OpenMedia),
+            ("p", navbridge_common::PhoneAction::PlayPause),
         ] {
             let action = map.action_for(letter).unwrap();
             assert_eq!(action, KeyAction::Phone(expected));
             assert_eq!(map.action_for(&letter.to_uppercase()), Some(action));
             let mut state = UiState::default();
-            state.screen = Screen::Carplay;
+            state.screen = Screen::Projection;
             state.core_connected = true;
-            state.snapshot.carplay.phone_connected = true;
+            state.snapshot.projection.phone_connected = true;
             let (tx, rx) = std::sync::mpsc::channel();
             handle_key_event(&mut state, action, true, false, &tx);
             handle_key_event(&mut state, action, true, true, &tx);
@@ -742,10 +1140,10 @@ mod navigation_tests {
                 matches!(rx.try_recv(), Ok(ClientCommand::PhoneAction { action }) if action == expected)
             );
             assert!(rx.try_recv().is_err());
-            assert_eq!(state.screen, Screen::Carplay);
-            state.snapshot.carplay.phone_connected = false;
+            assert_eq!(state.screen, Screen::Projection);
+            state.snapshot.projection.phone_connected = false;
             handle_key_event(&mut state, action, true, false, &tx);
-            state.snapshot.carplay.phone_connected = true;
+            state.snapshot.projection.phone_connected = true;
             state.screen = Screen::System;
             handle_key_event(&mut state, action, true, false, &tx);
             assert!(rx.try_recv().is_err());
@@ -775,75 +1173,76 @@ mod navigation_tests {
             assert!(
                 matches!(commands[1], ClientCommand::NavigationInput { key, pressed: false } if key == expected)
             );
-            assert_eq!(state.screen, Screen::Carplay);
+            assert_eq!(state.screen, Screen::Projection);
         }
     }
 
     #[test]
-    fn home_releases_phone_key_and_returns_to_menu() {
+    fn home_releases_phone_key_hides_projection_and_returns_to_menu() {
         let (tx, rx) = mpsc::channel();
         let mut state = connected_projection();
         handle_key_event(&mut state, KeyAction::Select, true, false, &tx);
         handle_key_event(&mut state, KeyAction::Home, true, false, &tx);
         handle_key_event(&mut state, KeyAction::Select, false, false, &tx);
         assert_eq!(state.screen, Screen::Menu);
-        assert!(state.carplay_hidden_by_phone);
+        assert!(state.projection_hidden_by_phone);
         let commands: Vec<_> = rx.try_iter().collect();
-        assert_eq!(commands.len(), 2);
+        assert_eq!(commands.len(), 3);
         assert!(matches!(
             commands[1],
             ClientCommand::NavigationInput { pressed: false, .. }
         ));
+        assert!(matches!(commands[2], ClientCommand::HideProjection));
+        // Already in the menu: nothing more to hide.
+        handle_key_event(&mut state, KeyAction::Home, true, false, &tx);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
-    fn menu_entry_release_does_not_click_phone_and_pairing_selection_works() {
+    fn menu_entry_release_does_not_click_phone_and_waiting_view_sends_nothing() {
         let (tx, rx) = mpsc::channel();
         let mut state = UiState::default();
         handle_key_event(&mut state, KeyAction::Select, true, false, &tx);
+        assert_eq!(state.screen, Screen::Projection);
         state.core_connected = true;
-        state.snapshot.carplay.phone_connected = true;
+        state.snapshot.projection.phone_connected = true;
         handle_key_event(&mut state, KeyAction::Select, false, false, &tx);
-        assert!(matches!(rx.try_recv(), Ok(ClientCommand::StartCarplay)));
-        assert!(rx.try_recv().is_err());
-        state.snapshot.carplay.phone_connected = false;
-        handle_key_event(&mut state, KeyAction::Select, true, false, &tx);
         assert!(
             rx.try_recv().is_err(),
-            "cannot pair without a detected dongle"
+            "the menu's Select release reached the phone"
         );
+        // Until a phone connects, the projection view has nothing to act on.
+        state.snapshot.projection.phone_connected = false;
         state.snapshot.usb.selected = Some(navbridge_common::UsbDeviceInfo::default());
-        handle_key_event(&mut state, KeyAction::Select, true, false, &tx);
-        handle_key_event(&mut state, KeyAction::Select, true, true, &tx);
-        handle_key_event(&mut state, KeyAction::Select, false, false, &tx);
-        assert!(matches!(rx.try_recv(), Ok(ClientCommand::PairPhone)));
+        for action in [KeyAction::Select, KeyAction::Right, KeyAction::Home] {
+            handle_key_event(&mut state, action, true, false, &tx);
+        }
         assert!(rx.try_recv().is_err());
-        handle_key_event(&mut state, KeyAction::Right, true, false, &tx);
-        handle_key_event(&mut state, KeyAction::Select, true, false, &tx);
-        assert!(matches!(rx.try_recv(), Ok(ClientCommand::StartCarplay)));
     }
 
     #[test]
     fn system_round_trip_preserves_phone_session_and_keyboard_routing() {
         let (tx, rx) = mpsc::channel();
         let mut state = connected_projection();
+        // Menu, left to System (the last tile), back, right to Android Auto.
         for action in [
             KeyAction::Home,
-            KeyAction::Down,
+            KeyAction::Left,
             KeyAction::Select,
             KeyAction::Back,
-            KeyAction::Up,
+            KeyAction::Right,
             KeyAction::Select,
         ] {
             handle_key_event(&mut state, action, true, false, &tx);
             handle_key_event(&mut state, action, false, false, &tx);
         }
-        assert_eq!(state.screen, Screen::Carplay);
-        assert!(!state.carplay_hidden_by_phone);
-        assert!(matches!(rx.try_recv(), Ok(ClientCommand::ResumeCarplay)));
+        assert_eq!(state.screen, Screen::Projection);
+        assert!(!state.projection_hidden_by_phone);
+        assert!(matches!(rx.try_recv(), Ok(ClientCommand::HideProjection)));
+        assert!(matches!(rx.try_recv(), Ok(ClientCommand::ResumeProjection)));
         assert!(
             rx.try_recv().is_err(),
-            "reopening a connected session must not send StartCarplay"
+            "leaving and reopening a connected session only moves its video focus"
         );
         handle_key_event(&mut state, KeyAction::Right, true, false, &tx);
         handle_key_event(&mut state, KeyAction::Right, false, false, &tx);
@@ -868,12 +1267,229 @@ mod navigation_tests {
         let (tx, rx) = mpsc::channel();
         let mut state = connected_projection();
         state.screen = Screen::Menu;
-        state.snapshot.carplay.phone_connected = false;
-        state.snapshot.carplay.streaming = true;
+        state.snapshot.projection.phone_connected = false;
+        state.snapshot.projection.streaming = true;
         handle_key_event(&mut state, KeyAction::Select, true, false, &tx);
-        assert_eq!(state.screen, Screen::Carplay);
-        assert!(matches!(rx.try_recv(), Ok(ClientCommand::ResumeCarplay)));
+        assert_eq!(state.screen, Screen::Projection);
+        assert!(matches!(rx.try_recv(), Ok(ClientCommand::ResumeProjection)));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn menu_tiles_wrap_and_open_their_screens() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = UiState::default();
+        // From Android Auto, left wraps round to System.
+        handle_key_event(&mut state, KeyAction::Left, true, false, &tx);
+        assert_eq!(state.menu_index, 3);
+        handle_key_event(&mut state, KeyAction::Right, true, false, &tx);
+        assert_eq!(state.menu_index, 0);
+        for (index, screen) in [
+            (0, Screen::Projection),
+            (1, Screen::CarPlay),
+            (2, Screen::Settings),
+            (3, Screen::System),
+        ] {
+            state.screen = Screen::Menu;
+            state.menu_index = index;
+            handle_key_event(&mut state, KeyAction::Select, true, false, &tx);
+            assert_eq!(state.screen, screen);
+            // Back returns to the menu, here even from the phone's waiting view.
+            handle_key_event(&mut state, KeyAction::Back, true, false, &tx);
+            assert_eq!(state.screen, Screen::Menu);
+        }
+        assert!(rx.try_recv().is_err(), "no phone, nothing for the core");
+        // System's four pages, the I-Bus last, wrap both ways.
+        state.screen = Screen::System;
+        state.system_page = 0;
+        handle_key_event(&mut state, KeyAction::Left, true, false, &tx);
+        assert_eq!(state.system_page, 3);
+        handle_key_event(&mut state, KeyAction::Right, true, false, &tx);
+        assert_eq!(state.system_page, 0);
+    }
+
+    #[test]
+    fn settings_rows_are_chosen_with_left_right_and_opened_with_enter() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = UiState {
+            screen: Screen::Settings,
+            core_connected: true,
+            ..UiState::default()
+        };
+        let press = |state: &mut UiState, action, repeat| {
+            handle_key_event(state, action, true, repeat, &tx);
+        };
+        // Left/Right only move between the rows, and wrap.
+        press(&mut state, KeyAction::Right, false);
+        assert_eq!(selected_setting(&state), Setting::Dpi);
+        press(&mut state, KeyAction::Left, false);
+        press(&mut state, KeyAction::Left, false);
+        assert_eq!(selected_setting(&state), Setting::Microphone);
+        press(&mut state, KeyAction::Right, false);
+        assert_eq!(selected_setting(&state), Setting::Wireless);
+        assert!(rx.try_recv().is_err(), "choosing a row changed it");
+        // Enter opens Wireless; Left/Right switch it, once per press.
+        press(&mut state, KeyAction::Select, false);
+        assert!(state.settings_editing);
+        press(&mut state, KeyAction::Right, false);
+        press(&mut state, KeyAction::Right, true);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientCommand::SetWireless { enabled: true })
+        ));
+        assert!(rx.try_recv().is_err(), "a held key switched it twice");
+        // A phone on USB does not stop it; a missing core does.
+        state.snapshot.usb.selected = Some(navbridge_common::UsbDeviceInfo::default());
+        press(&mut state, KeyAction::Left, false);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientCommand::SetWireless { enabled: false })
+        ));
+        state.core_connected = false;
+        press(&mut state, KeyAction::Left, false);
+        assert!(rx.try_recv().is_err());
+        state.core_connected = true;
+        // Enter closes the row, then Back returns to the menu.
+        press(&mut state, KeyAction::Select, false);
+        assert!(!state.settings_editing);
+        press(&mut state, KeyAction::Back, false);
+        assert_eq!(state.screen, Screen::Menu);
+        // Without the core, a row does not open.
+        state.screen = Screen::Settings;
+        state.core_connected = false;
+        press(&mut state, KeyAction::Select, false);
+        assert!(!state.settings_editing);
+    }
+
+    #[test]
+    fn open_rows_change_the_dpi_and_the_codec_levels() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = UiState {
+            screen: Screen::Settings,
+            core_connected: true,
+            ..UiState::default()
+        };
+        state.snapshot.projection.dpi = 160;
+        // 15% of the codec's 0-76 range reads back as 14%.
+        state.snapshot.system.audio.volume_percent = Some(14);
+        state.snapshot.system.audio.microphone_percent = Some(48);
+        let press = |state: &mut UiState, action, repeat| {
+            handle_key_event(state, action, true, repeat, &tx);
+        };
+        // The DPI switches between 160 and 140.
+        press(&mut state, KeyAction::Right, false);
+        press(&mut state, KeyAction::Select, false);
+        press(&mut state, KeyAction::Right, false);
+        press(&mut state, KeyAction::Left, false);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientCommand::SetDpi { dpi: 140 })
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientCommand::SetDpi { dpi: 160 })
+        ));
+        // Back closes it too.
+        press(&mut state, KeyAction::Back, false);
+        assert_eq!(state.screen, Screen::Settings);
+        // Levels move in 5% steps from the nearest step; a held key repeats.
+        press(&mut state, KeyAction::Right, false);
+        press(&mut state, KeyAction::Select, false);
+        press(&mut state, KeyAction::Right, false);
+        press(&mut state, KeyAction::Right, true);
+        press(&mut state, KeyAction::Left, false);
+        for expected in [20, 25, 20] {
+            assert!(matches!(
+                rx.try_recv(),
+                Ok(ClientCommand::SetVolume { percent }) if percent == expected
+            ));
+        }
+        press(&mut state, KeyAction::Select, false);
+        press(&mut state, KeyAction::Right, false);
+        press(&mut state, KeyAction::Select, false);
+        press(&mut state, KeyAction::Down, false);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientCommand::SetMicrophone { percent: 45 })
+        ));
+        assert_eq!(
+            (step(100, true), step(0, false), step(13, false)),
+            (100, 0, 10)
+        );
+        // Nothing is sent without the codec.
+        state.snapshot.system.audio.microphone_percent = None;
+        press(&mut state, KeyAction::Down, false);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(setting_text(&state, Setting::Microphone).1, "n/a");
+        assert_eq!(setting_text(&state, Setting::Dpi).1, "160");
+    }
+
+    #[test]
+    fn android_auto_and_carplay_pages_pair_phones_in_wireless_mode() {
+        let (tx, rx) = mpsc::channel();
+        for screen in [Screen::Projection, Screen::CarPlay] {
+            let mut state = UiState {
+                screen,
+                core_connected: true,
+                ..UiState::default()
+            };
+            // Wireless mode off: nothing to pair with.
+            handle_key_event(&mut state, KeyAction::Select, true, false, &tx);
+            assert!(rx.try_recv().is_err(), "{screen:?}");
+            state.snapshot.wireless.enabled = true;
+            handle_key_event(&mut state, KeyAction::Select, true, false, &tx);
+            assert!(matches!(rx.try_recv(), Ok(ClientCommand::StartPairing)));
+            assert_eq!(state.screen, screen);
+        }
+
+        // The phone's code is answered from any screen.
+        let mut state = UiState {
+            screen: Screen::Settings,
+            core_connected: true,
+            ..UiState::default()
+        };
+        let request = navbridge_common::PairingRequest {
+            device: "Pixel 7 Pro".into(),
+            code: "042137".into(),
+        };
+        state.snapshot.bluetooth.confirm = Some(request.clone());
+        handle_key_event(&mut state, KeyAction::Back, true, false, &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientCommand::ConfirmPairing { accept: false })
+        ));
+        assert_eq!(state.screen, Screen::Settings, "Back answered the code");
+        state.snapshot.bluetooth.confirm = Some(request);
+        state.screen = Screen::System;
+        handle_key_event(&mut state, KeyAction::Select, true, false, &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientCommand::ConfirmPairing { accept: true })
+        ));
+        assert_eq!(state.screen, Screen::System);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(spaced("042137"), "042 137");
+    }
+
+    #[test]
+    fn status_lights_follow_bluetooth_the_hotspot_and_the_gnss_fix() {
+        let mut snapshot = AppSnapshot::default();
+        assert_eq!(
+            status_lights(&snapshot),
+            (LedState::Off, LedState::Off, LedState::Off)
+        );
+        snapshot.bluetooth.ready = true;
+        snapshot.wireless.hotspot = true;
+        // A receiver without a fix is orange.
+        snapshot.gnss.receiver = "u-blox (ttyACM1)".into();
+        assert_eq!(
+            status_lights(&snapshot),
+            (LedState::On, LedState::On, LedState::Waiting)
+        );
+        snapshot.gnss.position = "48.85837, 2.29448".into();
+        assert_eq!(status_lights(&snapshot).2, LedState::On);
+        let clock = clock_text();
+        assert!(clock.len() == 5 && clock.as_bytes()[2] == b':', "{clock}");
     }
 
     #[test]
@@ -899,22 +1515,50 @@ mod disconnect_tests {
     #[test]
     fn reconnect_requires_a_fresh_snapshot_before_showing_projection() {
         let mut state = UiState {
-            screen: Screen::Carplay,
+            screen: Screen::Projection,
             core_connected: true,
             ..Default::default()
         };
-        state.snapshot.carplay.streaming = true;
+        state.snapshot.projection.streaming = true;
         state.video_sequence.set(Some(42));
         state.held_navigation = Some(NavigationKey::Up);
+        state.video = Some(VideoSettings {
+            width: 800,
+            height: 480,
+            dpi: 160,
+            fps: 60,
+        });
         assert!(state.show_projection());
         state.disconnect_projection();
         assert!(!state.show_projection());
         assert!(state.held_navigation.is_none());
         assert_eq!(state.video_sequence.get(), None);
+        assert_eq!(state.video, None);
         state.core_connected = true;
         assert!(!state.show_projection());
-        state.snapshot.carplay.streaming = true;
+        state.snapshot.projection.streaming = true;
         assert!(state.show_projection());
+    }
+
+    #[test]
+    fn system_page_shows_core_settings_only_while_connected() {
+        let video = VideoSettings {
+            width: 800,
+            height: 480,
+            dpi: 160,
+            fps: 60,
+        };
+        assert_eq!(
+            projection_video(Some(video)),
+            ("AA 800x480 · CarPlay n/a".into(), "160 / 60".into())
+        );
+        assert_eq!(
+            projection_video(None),
+            ("Unavailable".into(), "Unavailable".into())
+        );
+        assert_eq!(core_value(true, "Speaker 100%"), "Speaker 100%");
+        assert_eq!(core_value(true, " "), "n/a");
+        assert_eq!(core_value(false, "Speaker 100%"), "Unavailable");
     }
 }
 
@@ -948,5 +1592,132 @@ mod frame_read_tests {
         assert!(read_projection(&mut &data[..], None).is_err());
         data[4] ^= 1;
         assert!(read_projection(&mut &data[..], Some(42)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod vehicle_tests {
+    use super::*;
+
+    #[test]
+    fn the_ibus_page_shows_readings_and_what_is_missing() {
+        let vehicle = VehicleSnapshot {
+            status: "Receiving".into(),
+            frames: 1234,
+            bad_lines: 2,
+            ignition: Some(Ignition::On),
+            speed_kmh: Some(120),
+            rpm: Some(3000),
+            coolant_c: Some(90),
+            outside_c: Some(-4),
+            odometer_km: Some(123_456),
+        };
+        assert_eq!(
+            vehicle_status(&vehicle, true),
+            "Receiving · 1234 frames, 2 damaged"
+        );
+        assert_eq!(reading(vehicle.speed_kmh, "km/h"), "120 km/h");
+        assert_eq!(reading(vehicle.rpm, "rpm"), "3000 rpm");
+        assert_eq!(reading(vehicle.outside_c, "°C"), "-4 °C");
+        assert_eq!(ignition_text(vehicle.ignition), "On");
+        assert_eq!(ignition_text(Some(Ignition::Accessory)), "Position 1");
+        assert_eq!(odometer(vehicle.odometer_km), "123 456 km");
+        assert_eq!(odometer(Some(1_000)), "1 000 km");
+        assert_eq!(odometer(Some(987)), "987 km");
+        assert_eq!(gnss_speed("36.0 km/h"), "GPS 36.0 km/h");
+        assert_eq!(gnss_speed(""), "");
+
+        let unknown = VehicleSnapshot {
+            status: "Interface not connected".into(),
+            ..Default::default()
+        };
+        assert_eq!(vehicle_status(&unknown, true), "Interface not connected");
+        assert_eq!(reading(unknown.rpm, "rpm"), "n/a");
+        assert_eq!(ignition_text(unknown.ignition), "n/a");
+        assert_eq!(odometer(unknown.odometer_km), "n/a");
+        // Without the core, nothing is known about the car.
+        assert_eq!(vehicle_status(&vehicle, false), "Unavailable");
+    }
+}
+
+/// Renders the screens as the panel shows them, with sample data, into PPM
+/// images in /tmp: `cargo test -p navbridge-ui --features navbridge-ui/direct-kms
+/// -- --ignored preview`.
+#[cfg(test)]
+mod preview {
+    use super::*;
+    use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
+    use slint::platform::{Platform, WindowAdapter};
+
+    struct Headless(Rc<MinimalSoftwareWindow>);
+
+    impl Platform for Headless {
+        fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[test]
+    #[ignore = "writes preview images to /tmp"]
+    fn preview() {
+        let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+        slint::platform::set_platform(Box::new(Headless(window.clone()))).unwrap();
+        window.set_size(slint::PhysicalSize::new(UI_WIDTH, UI_HEIGHT));
+        let ui = AppWindow::new().unwrap();
+        ui.show().unwrap();
+
+        let mut state = UiState {
+            core_connected: true,
+            ..UiState::default()
+        };
+        let snapshot = &mut state.snapshot;
+        snapshot.bluetooth.ready = true;
+        snapshot.bluetooth.status = "Waiting for Pixel 10".into();
+        snapshot.wireless.enabled = true;
+        snapshot.wireless.hotspot = true;
+        snapshot.wireless.status = "Hotspot NavBridge-984B is on (5 GHz, channel 36)".into();
+        snapshot.gnss.receiver = "u-blox (ttyACM1)".into();
+        snapshot.projection.dpi = 160;
+        snapshot.system.audio.volume_percent = Some(75);
+        snapshot.system.audio.microphone_percent = Some(48);
+        snapshot.vehicle = VehicleSnapshot {
+            status: "Receiving".into(),
+            frames: 1234,
+            bad_lines: 0,
+            ignition: Some(Ignition::On),
+            speed_kmh: Some(88),
+            rpm: Some(2400),
+            coolant_c: Some(90),
+            outside_c: Some(14),
+            odometer_km: Some(187_654),
+        };
+        for (name, screen, page) in [
+            ("menu", Screen::Menu, 0),
+            ("android-auto", Screen::Projection, 0),
+            ("settings", Screen::Settings, 0),
+            ("settings-open", Screen::Settings, 0),
+            ("carplay", Screen::CarPlay, 0),
+            ("system-ibus", Screen::System, 3),
+        ] {
+            state.screen = screen;
+            state.system_page = page;
+            // The audio volume, opened to change it.
+            state.settings_editing = name == "settings-open";
+            state.settings_index = if state.settings_editing { 2 } else { 0 };
+            render_state(&ui, &state);
+            ui.set_clock("14:05".into());
+            ui.window().request_redraw();
+            let mut pixels = vec![slint::Rgb8Pixel::default(); (UI_WIDTH * UI_HEIGHT) as usize];
+            window.draw_if_needed(|renderer| {
+                renderer.render(&mut pixels, UI_WIDTH as usize);
+            });
+            let mut image = format!("P6\n{UI_WIDTH} {UI_HEIGHT}\n255\n").into_bytes();
+            for pixel in &pixels {
+                image.extend_from_slice(&[pixel.r, pixel.g, pixel.b]);
+            }
+            let path = format!("/tmp/navbridge-{name}.ppm");
+            std::fs::write(&path, image).unwrap();
+            println!("{path}");
+        }
     }
 }

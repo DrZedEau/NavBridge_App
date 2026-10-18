@@ -12,13 +12,13 @@ User=@USER@
 Group=@GROUP@
 SupplementaryGroups=video render input
 WorkingDirectory=/opt/navbridge
-ExecStart=/opt/navbridge/bin/navbridge-ui --config /etc/navbridge/frontend.toml --keyboard /etc/navbridge/keyboard.toml
+ExecStart=/opt/navbridge/bin/navbridge-ui --config /opt/navbridge/config/frontend.toml --keyboard /opt/navbridge/config/keyboard.toml
 Restart=on-failure
 RestartSec=2
 Environment=RUST_LOG=info
 Environment=SLINT_BACKEND=linuxkms-software
 Environment=SLINT_FULLSCREEN=1
-EnvironmentFile=-/etc/navbridge/display.env
+EnvironmentFile=-/opt/navbridge/config/display.env
 TTYPath=/dev/tty1
 StandardInput=tty
 StandardOutput=journal

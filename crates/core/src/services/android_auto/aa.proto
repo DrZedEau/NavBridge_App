@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Minimal legacy AA surface. Field layouts checked against mrmees/open-android-auto
+// and aasdk-derived uglyoldbob/android-auto. No Wi-Fi/Bluetooth channels.
+syntax = "proto2";
+message Status { required int32 status = 1; }
+message Open { optional int32 priority = 1; required int32 channel_id = 2; }
+message Ping { required int64 timestamp = 1; }
+message DiscoveryRequest { optional string device_name = 4; optional string device_brand = 5; }
+message AudioConfig { required uint32 sample_rate = 1; required uint32 bit_depth = 2; required uint32 channel_count = 3; }
+message VideoConfig { required uint32 video_resolution = 1; required uint32 video_fps = 2; required uint32 margin_width = 3; required uint32 margin_height = 4; required uint32 dpi = 5; }
+message AVChannel { required uint32 stream_type = 1; optional uint32 audio_type = 2; repeated AudioConfig audio_configs = 3; repeated VideoConfig video_configs = 4; }
+message InputChannel { repeated uint32 supported_keycodes = 1; }
+message AVInputChannel { required uint32 stream_type = 1; required AudioConfig audio_config = 2; }
+message Sensor { required uint32 type = 1; }
+message SensorChannel { repeated Sensor sensors = 1; }
+message Channel { required uint32 channel_id = 1; optional SensorChannel sensor_channel = 2; optional AVChannel av_channel = 3; optional InputChannel input_channel = 4; optional AVInputChannel av_input_channel = 5; }
+message Discovery {
+ repeated Channel channels = 1;
+ required string head_unit_name = 2; required string car_model = 3;
+ required string car_year = 4; required string car_serial = 5;
+ required bool left_hand_drive_vehicle = 6;
+ required string headunit_manufacturer = 7; required string headunit_model = 8;
+ required string sw_build = 9; required string sw_version = 10;
+ required bool can_play_native_media_during_vr = 11;
+}
+message SetupRequest { required uint32 media_codec_type = 1; }
+message SetupResponse { required uint32 media_status = 1; required uint32 max_unacked = 2; repeated uint32 configs = 3; }
+message Start { required int32 session = 1; optional uint32 config = 2; }
+message Ack { required int32 session = 1; optional uint32 value = 2; repeated uint64 receive_timestamps = 3; }
+message Focus { required uint32 type = 1; }
+message VideoFocusRequest { optional uint32 display = 1; required uint32 mode = 2; optional uint32 reason = 3; }
+message VideoFocus { required uint32 mode = 1; required bool unrequested = 2; }
+message MicOpen { required bool open = 1; optional bool anc = 2; optional bool ec = 3; optional int32 max_unacked = 4; }
+message MicResponse { required int32 session = 1; required uint32 value = 2; }
+message Binding { repeated int32 scan_codes = 1; }
+message Button { required uint32 keycode = 1; required bool pressed = 2; required uint32 meta = 3; }
+message Buttons { repeated Button events = 1; }
+message RelativeInput { required uint32 scan_code = 1; required int32 delta = 2; }
+message RelativeInputs { repeated RelativeInput events = 1; }
+message Input { required uint64 timestamp = 1; optional Buttons buttons = 4; optional RelativeInputs relative = 6; }
+message SensorStart { required uint32 sensor_type = 1; optional uint32 minimum_interval = 2; }
+message Night { required bool is_night = 1; }
+// Degrees x 1e7, accuracy in mm, altitude in cm, speed in mm/s, bearing in
+// degrees x 1e6. Current Android Auto has no field 1 (timestamp).
+message Location {
+ required int32 latitude = 2; required int32 longitude = 3;
+ optional uint32 accuracy = 4; optional int32 altitude = 5;
+ optional int32 speed = 6; optional int32 bearing = 7;
+}
+message ParkingBrake { required bool parking_brake = 1; }
+// Restrictions as bits: 0 none (parked), 31 all of them (driving).
+message DrivingStatus { required int32 status = 1; }
+message SensorEvent {
+ repeated Location location = 1; repeated ParkingBrake parking_brake = 7;
+ repeated Night night_mode = 10; repeated DrivingStatus driving_status = 13;
+}
+// Wireless setup over Bluetooth RFCOMM, before the phone joins the head unit's
+// Wi-Fi; layouts from nisargjhaveri/WirelessAndroidAutoDongle. security_mode
+// and access_point_type are enums there: 8 is WPA2 personal, 1 dynamic.
+message WifiStartRequest { required string ip_address = 1; required int32 port = 2; }
+message WifiInfoResponse {
+ required string ssid = 1; required string key = 2; required string bssid = 3;
+ required uint32 security_mode = 4; required uint32 access_point_type = 5;
+}
+// The phone's report on joining the hotspot: 0 when it joined. aa-proxy-rs
+// reads it the same way.
+message WifiConnectStatus { optional int32 status = 1; }

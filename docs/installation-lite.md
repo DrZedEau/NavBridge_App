@@ -1,60 +1,115 @@
-# Install on Raspberry Pi OS Lite
+# NavBridge on Raspberry Pi OS Lite
 
-Use a current **64-bit Raspberry Pi OS Lite** installation on a Pi 5 / Compute Module 5, with networking and a working KMS display. Copy or clone the current NavBridge source, including `Cargo.lock`, into a directory writable by your normal user. The script builds the application on the Pi; it is not a standalone binary downloader.
+Use 64-bit Raspberry Pi OS Lite on Pi 5 / CM5 with a working KMS display.
 
-Run from SSH if you want the display services to start immediately:
+| Script | Purpose |
+| --- | --- |
+| `install_build_deps.sh` | Native build tools, Rust, runtime libraries and USB udev rules. |
+| `build_kms.sh` | Build KMS binaries and assemble a publishable release archive. |
+| `run_kms.sh` | Run the locally built core and UI with temporary config and process cleanup. |
+| `install_systemd.sh` | Install prebuilt binaries, runtime dependencies, udev rules and two services. Never compiles. |
+| `install_runtime_deps.sh` | Runtime libraries, GPSD and udev rules only; no compiler or Rust. |
+
+## Build and run from source
 
 ```bash
-cd ~/NavBridge-Slint
-./scripts/install_lite.sh
+cd ~/NavBridge_App
+./scripts/install_build_deps.sh
+./scripts/build_kms.sh
+./scripts/run_kms.sh
 ```
 
-The script requests sudo for installation. Both `./scripts/install_lite.sh` and `sudo ./scripts/install_lite.sh` select your normal invoking account for the services. A direct root login is rejected because it does not identify a normal user. Rust installation and compilation run as that account, never as root.
+Build as your normal user, without sudo. The dependency installer requests sudo but installs Rust for the invoking account. Missing `Cargo.lock` is generated on the first build; retain it with the source. Subsequent builds use `--locked`. The manual runner escalates for direct KMS/input access, refuses to compete with another NavBridge process, and stops both children when either exits.
 
-## What it installs
+## Publish a release
 
-- Native build dependencies, Rust stable, GPSD and its USB hotplug support.
-- Release binaries at `/opt/navbridge/bin/navbridge-core` and `/opt/navbridge/bin/navbridge-ui`.
-- Configuration copied initially from the checkout to `/etc/navbridge/`.
-- USB rules for Carlinkit vendors `1314` and `08e4`.
-- `navbridge-core.service` and `navbridge-ui.service`, enabled at boot.
+The build produces `dist/navbridge-<bookworm-or-trixie>-arm64.tar.gz` and an unpacked `dist/navbridge/` containing:
 
-Core gets USB/audio supplementary groups. UI gets video/render/input groups and owns `tty1`. The normal tty1 login service is disabled so it cannot compete with the dedicated display. SSH and other virtual terminals remain available. If invoked from tty1 itself, installation automatically defers starting NavBridge until reboot to avoid terminating the installer session.
-
-The UI uses Slint's software KMS backend. It does not need a desktop or a display manager. Display-specific overlays and panel timings remain your OS configuration; this script does not overwrite `/boot/firmware/config.txt`. See [Raspberry Pi display configuration](https://www.raspberrypi.com/documentation/computers/config_txt.html).
-
-## Preview or defer startup
-
-```bash
-./scripts/install_lite.sh --dry-run
-./scripts/install_lite.sh --no-start
+```text
+bin/navbridge-core
+bin/navbridge-ui
+config/*.toml
+packaging/*.service
+packaging/70-navbridge-android.rules
+packaging/50-navbridge-wifi.rules
+scripts/install_systemd.sh
+scripts/install_runtime_deps.sh
+release.info
+README.md
+THIRD_PARTY_NOTICES.md
+LICENSE
 ```
 
-`--dry-run` prints the selected user, installation plan and generated services without installing anything or requesting sudo. `--no-start` installs and enables the app for the next boot; it does not restart an already running copy. GPSD's socket is still enabled immediately. Stop manually launched developer copies before starting the services.
+Publish the complete archive. It contains the binaries, config and installation assets; users do not need source code, Cargo, Rust or development headers. Separate builds are required for Bookworm and Trixie because their FFmpeg/glibc versions differ. The installer checks the release's OS label, ARM64 ELF headers and available dynamic libraries. Existing unpacked bundles are moved aside on repeat builds.
 
-## Configure and operate
+## Install a published release
 
 ```bash
-sudo nano /etc/navbridge/core.toml
-sudo nano /etc/navbridge/keyboard.toml
+tar -xzf navbridge-trixie-arm64.tar.gz
+cd navbridge
+./scripts/install_systemd.sh
+```
+
+Run from SSH to start immediately. The installer takes binaries from `bin/` in a release, or `target/release/` in a checkout. Override with `--binary-dir /path/to/binaries` when needed. It never builds or downloads the application binaries. It installs runtime apt packages from the OS repositories; shared system libraries remain in the OS library directories.
+
+Installed layout:
+
+```text
+/opt/navbridge/bin/navbridge-core
+/opt/navbridge/bin/navbridge-ui
+/opt/navbridge/config/core.toml
+/opt/navbridge/config/frontend.toml
+/opt/navbridge/config/keyboard.toml
+/opt/navbridge/config/display.env
+```
+
+Systemd units are installed in `/etc/systemd/system/` with the invoking account as `User` and its primary group as `Group`, including when invoked through sudo. Direct root logins are rejected. Hardware groups are assigned through the services.
+
+The installer also adds `/etc/polkit-1/rules.d/50-navbridge-wifi.rules`, which lets that account switch the Wi-Fi between the wireless Android Auto hotspot and the home network through NetworkManager. Settings that survive a restart (wireless mode, the projection's DPI, the codec's volume and microphone gain) are kept in `/var/lib/navbridge`.
+
+Existing config under `/opt/navbridge/config` is preserved. For upgrades from the previous layout, existing `/etc/navbridge/*.toml` files are copied into the new directory if it has no corresponding file. Future edits belong under `/opt/navbridge/config`. Both core and frontend socket paths must be `/run/navbridge/core.sock`. Previous installed binaries and units are saved under `/var/backups/navbridge/`.
+
+The UI reserves tty1 and disables its login console. SSH and other terminals remain available. Installation from tty1 automatically defers app startup until reboot. Panel overlays, timings and boot configuration are not modified.
+
+## Preview, defer startup, and manage services
+
+```bash
+./scripts/install_systemd.sh --dry-run
+./scripts/install_systemd.sh --no-start
+./scripts/install_runtime_deps.sh --dry-run
 sudo systemctl restart navbridge-core navbridge-ui
+sudo systemctl stop navbridge-ui navbridge-core
 systemctl status navbridge-core navbridge-ui
 journalctl -u navbridge-core -u navbridge-ui -f
 ```
 
-`/etc/navbridge/frontend.toml` contains UI settings. Both core and frontend must use `socket_path = "/run/navbridge/core.sock"`; the installer checks this. `/etc/navbridge/display.env` accepts optional Slint display environment settings such as `SLINT_DRM_OUTPUT`, `SLINT_DRM_MODE`, `SLINT_KMS_ROTATION`, and `RUST_LOG`.
+Dry runs do not install or activate anything. `--no-start` enables the app for next boot without restarting existing app processes; GPSD's socket is still enabled immediately. Stop manually launched apps before starting services. Optional Slint display settings belong in `/opt/navbridge/config/display.env`.
 
-Edit installed files under `/etc/navbridge`, since service runs do not read the checkout's `config/` files. Repeat installation preserves existing configuration and saves previous installed binaries and service units under `/var/backups/navbridge/`. Stop both services before manually restoring binaries from a backup, then run `sudo systemctl daemon-reload` if you restored service files, and start both services again.
-
-The core and UI restart after failures. The UI can remain running and reconnect if the core is temporarily unavailable. Do not run the developer launcher alongside the services: both would compete for the dongle and display.
-
-To return tty1 to a login console:
+To restore the tty1 login console:
 
 ```bash
 sudo systemctl disable --now navbridge-ui navbridge-core
 sudo systemctl enable --now getty@tty1
 ```
 
-## Validation status
+Package installation requires internet access. A full clean-OS install and reboot test remains necessary before publishing a release.
 
-The installer has been checked with Bash syntax validation and its read-only dry run on the development Pi. Generated systemd units are checked with `systemd-analyze verify`; the installer also checks the real installed paths before enabling them. A full fresh-OS install and reboot test is still required. Creating the installer does not automatically install or activate these services on the development Pi.
+## Wired Android Auto
+
+Connect the Android phone directly to the Pi USB host port using a data cable.
+iPhone CarPlay is not present in this release. Wireless Android Auto is switched
+on from Settings, or at every start by adding `--wireless` to the
+core's `ExecStart` (`sudo systemctl edit navbridge-core`); phones pair over
+Bluetooth, with a code shown on screen, then connect over NavBridge's 5 GHz
+hotspot. Configure `[android_auto]`
+in core.toml; unknown settings stop
+the core with an error. Music, navigation and assistant audio use the USB codec.
+Bluetooth telephone call audio is not implemented. A connected GNSS receiver's
+position is sent to Android Auto.
+
+The core reads the car's I-Bus from the carrier board's ATmega32U4 through the
+`dialout` group; `[ibus] device` in core.toml names its serial port.
+
+The Android USB rule grants plugdev access to AOA and common phone vendors; add
+your phone vendor if absent, then replug the phone.
+OpenSSL runtime libraries are included in the runtime dependency installer.

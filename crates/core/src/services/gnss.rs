@@ -1,5 +1,4 @@
 //! GPSD owns USB discovery and receiver protocol negotiation; never probe unrelated serial ports.
-use super::gnss_forward::{self, GnssFix};
 use navbridge_common::GnssSnapshot;
 use serde_json::Value;
 use std::{
@@ -14,23 +13,52 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Below this speed, GNSS heading is noise rather than the direction of travel.
+const MIN_BEARING_SPEED: f64 = 1.0;
+
+/// A position from the receiver, in degrees, metres and metres per second.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fix {
+    pub latitude: f64,
+    pub longitude: f64,
+    /// Horizontal error estimate.
+    pub accuracy: Option<f64>,
+    /// Above the WGS84 ellipsoid, as Android expects; 3D fixes only.
+    pub altitude: Option<f64>,
+    pub speed: Option<f64>,
+    /// Degrees from true north, only while moving.
+    pub bearing: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum GnssUpdate {
+    /// Whether GPSD reports a receiver.
+    Receiver(bool),
+    Fix(Fix),
+}
+
 pub struct GnssService {
-    fix: Arc<RwLock<Option<GnssFix>>>,
     snapshot: Arc<RwLock<GnssSnapshot>>,
     stop: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
 }
 impl GnssService {
-    pub fn start() -> Self {
+    /// `updates` hears when a receiver comes and goes, and gets every fix.
+    pub fn start(updates: impl Fn(GnssUpdate) + Send + 'static) -> Self {
         let snapshot = Arc::new(RwLock::new(GnssSnapshot {
             status: "Connecting to GPSD".into(),
             ..Default::default()
         }));
-        let fix = Arc::new(RwLock::new(None));
-        let shared_fix = fix.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let (shared, stopped) = (snapshot.clone(), stop.clone());
         let worker = thread::spawn(move || {
+            let mut present = false;
+            let mut receiver = |now_present: bool| {
+                if now_present != present {
+                    present = now_present;
+                    updates(GnssUpdate::Receiver(present));
+                }
+            };
             while !stopped.load(Ordering::Relaxed) {
                 let mut state = Receiver::default();
                 let result = (|| -> std::io::Result<()> {
@@ -50,7 +78,11 @@ impl GnssService {
                                 pending.extend_from_slice(&chunk[..n]);
                                 while let Some(end) = pending.iter().position(|&b| b == b'\n') {
                                     if let Ok(report) = serde_json::from_slice(&pending[..end]) {
-                                        state.report(&report, Instant::now());
+                                        let fix = state.report(&report, Instant::now());
+                                        receiver(!state.selected.is_empty());
+                                        if let Some(fix) = fix {
+                                            updates(GnssUpdate::Fix(fix));
+                                        }
                                     }
                                     pending.drain(..=end);
                                 }
@@ -66,13 +98,12 @@ impl GnssService {
                             Err(e) => return Err(e),
                         }
                         state.expire(Instant::now());
-                        *shared_fix.write().unwrap() = state.fix.clone();
                         *shared.write().unwrap() = state.data.clone();
                     }
                     Ok(())
                 })();
                 let _ = result;
-                *shared_fix.write().unwrap() = None;
+                receiver(false);
                 *shared.write().unwrap() = GnssSnapshot {
                     status: "GPSD unavailable".into(),
                     ..Default::default()
@@ -86,19 +117,10 @@ impl GnssService {
             }
         });
         Self {
-            fix,
             snapshot,
             stop,
             worker: Some(worker),
         }
-    }
-    pub fn forwarding_fix(&self) -> Option<GnssFix> {
-        self.fix
-            .read()
-            .unwrap()
-            .as_ref()
-            .filter(|f| f.fresh(Instant::now()))
-            .cloned()
     }
     pub fn snapshot(&self) -> GnssSnapshot {
         self.snapshot.read().unwrap().clone()
@@ -114,9 +136,6 @@ impl Drop for GnssService {
 }
 #[derive(Default)]
 struct Receiver {
-    fix: Option<GnssFix>,
-    satellites_used: Option<u64>,
-    hdop_value: Option<f64>,
     devices: BTreeMap<String, String>,
     selected: String,
     data: GnssSnapshot,
@@ -130,9 +149,6 @@ impl Receiver {
         if !self.devices.contains_key(&self.selected) {
             self.selected = self.devices.keys().next().cloned().unwrap_or_default();
             self.data = GnssSnapshot::default();
-            self.fix = None;
-            self.satellites_used = None;
-            self.hdop_value = None;
             self.tpv = None;
             self.field_times = [None; 4];
             self.sky = None;
@@ -171,7 +187,9 @@ impl Receiver {
         self.data.speed.clear();
         self.data.utc.clear();
     }
-    fn report(&mut self, v: &Value, now: Instant) {
+    /// Applies a GPSD report, and returns the fix it carries from the
+    /// selected receiver, if any.
+    fn report(&mut self, v: &Value, now: Instant) -> Option<Fix> {
         match v["class"].as_str().unwrap_or("") {
             "DEVICES" => {
                 self.devices.clear();
@@ -187,35 +205,15 @@ impl Receiver {
                 self.select();
             }
             "TPV" | "SKY" => {
-                let Some(path) = v["device"].as_str() else {
-                    return;
-                };
+                let path = v["device"].as_str()?;
                 if self.selected.is_empty() {
                     self.device(&serde_json::json!({"path":path}));
                     self.select();
                 }
                 if path != self.selected {
-                    return;
+                    return None;
                 }
                 if v["class"] == "TPV" {
-                    let used = self
-                        .sky
-                        .filter(|t| now.duration_since(*t) <= Duration::from_secs(5))
-                        .and(self.satellites_used);
-                    let hdop = self
-                        .hdop
-                        .filter(|t| now.duration_since(*t) <= Duration::from_secs(5))
-                        .and(self.hdop_value);
-                    if let Some(fix) = gnss_forward::from_tpv(v, used, hdop, now) {
-                        self.fix = Some(fix);
-                    } else if v["mode"].as_u64().is_some_and(|mode| mode < 2)
-                        || (v.get("lat").is_some()
-                            && v.get("lon").is_some()
-                            && v.get("time").is_some())
-                    {
-                        self.fix = None;
-                    }
-
                     // TPV fields can arrive in separate reports. Only supplied
                     // fields refresh their age; explicit fix loss clears all.
                     self.expire(now);
@@ -256,6 +254,7 @@ impl Receiver {
                             }
                         }
                     }
+                    return fix(v, mode);
                 } else {
                     let sats = v["satellites"].as_array();
                     let used = v["uSat"].as_u64().or_else(|| {
@@ -267,17 +266,16 @@ impl Receiver {
                     if let (Some(u), Some(n)) = (used, view) {
                         self.data.satellites = format!("{u} / {n}");
                         self.sky = Some(now);
-                        self.satellites_used = Some(u);
                     }
                     if let Some(hdop) = number(v, "hdop").filter(|n| *n > 0.0) {
                         self.data.hdop = format!("{hdop:.1}");
                         self.hdop = Some(now);
-                        self.hdop_value = Some(hdop);
                     }
                 }
             }
             _ => {}
         }
+        None
     }
     fn expire(&mut self, now: Instant) {
         for (field, timestamp) in [
@@ -293,9 +291,6 @@ impl Receiver {
                 field.clear();
                 *timestamp = None;
             }
-        }
-        if self.fix.as_ref().is_some_and(|fix| !fix.fresh(now)) {
-            self.fix = None;
         }
         if self
             .tpv
@@ -321,6 +316,22 @@ impl Receiver {
 fn number(v: &Value, key: &str) -> Option<f64> {
     v[key].as_f64().filter(|n| n.is_finite())
 }
+/// The fix in a TPV report, when it carries a valid position.
+fn fix(v: &Value, mode: u64) -> Option<Fix> {
+    let (latitude, longitude) = (number(v, "lat")?, number(v, "lon")?);
+    if mode < 2 || !(-90.0..=90.0).contains(&latitude) || !(-180.0..=180.0).contains(&longitude) {
+        return None;
+    }
+    let speed = number(v, "speed").filter(|s| *s >= 0.0);
+    Some(Fix {
+        latitude,
+        longitude,
+        accuracy: number(v, "eph").or_else(|| Some(number(v, "epx")?.hypot(number(v, "epy")?))),
+        altitude: number(v, "altHAE").filter(|_| mode == 3),
+        speed,
+        bearing: number(v, "track").filter(|_| speed.is_some_and(|s| s >= MIN_BEARING_SPEED)),
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -329,43 +340,72 @@ mod tests {
     #[test]
     #[ignore = "requires a USB receiver managed by local GPSD"]
     fn live_gpsd_receiver() {
-        let service = GnssService::start();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let service = GnssService::start(move |update| {
+            let _ = tx.send(update);
+        });
         thread::sleep(Duration::from_secs(6));
         let snapshot = service.snapshot();
+        let updates: Vec<_> = rx.try_iter().collect();
+        let fixes = updates
+            .iter()
+            .filter(|u| matches!(u, GnssUpdate::Fix(_)))
+            .count();
         println!(
-            "Receiver: {}; status: {}; satellites: {}",
+            "Receiver: {}; status: {}; satellites: {}; fixes passed on: {fixes}",
             snapshot.receiver, snapshot.status, snapshot.satellites
         );
         assert!(
             !snapshot.receiver.is_empty(),
             "GPSD did not report a receiver"
         );
+        assert_eq!(updates.first(), Some(&GnssUpdate::Receiver(true)));
         assert!(
             !snapshot.satellites.is_empty() || snapshot.status.starts_with("Connected"),
             "No decoded receiver reports"
         );
+        if snapshot.status.ends_with("D fix") {
+            assert!(fixes > 0, "a fix was not passed on");
+        }
     }
     #[test]
-    fn forwarding_fix_is_cleared_on_loss_removal_and_staleness() {
-        let now = Instant::now();
+    fn complete_positions_from_the_selected_receiver_become_fixes() {
         let mut r = Receiver::default();
-        let fix = json!({"class":"TPV","device":"a","mode":3,"lat":48.0,"lon":2.0,"time":"2026-09-20T12:00:00Z"});
-        r.report(&fix, now);
-        assert!(r.fix.is_some());
-        r.report(&json!({"class":"TPV","device":"a","mode":1}), now);
-        assert!(r.fix.is_none());
-        r.report(&fix, now);
-        r.report(&json!({"class":"DEVICE","path":"a","activated":0}), now);
-        assert!(r.fix.is_none());
-        r.report(&fix, now);
+        let now = Instant::now();
         r.report(
-            &json!({"class":"TPV","device":"a","mode":3}),
-            now + Duration::from_secs(4),
+            &json!({"class":"DEVICES","devices":[{"path":"a"},{"path":"b"}]}),
+            now,
         );
-        r.expire(now + Duration::from_secs(6));
-        assert!(r.fix.is_none());
+        let tpv = json!({"class":"TPV","device":"a","mode":3,"lat":48.5,"lon":2.25,
+            "altHAE":117.0,"altMSL":71.0,"eph":3.5,"speed":12.5,"track":90.0});
+        assert_eq!(
+            r.report(&tpv, now),
+            Some(Fix {
+                latitude: 48.5,
+                longitude: 2.25,
+                accuracy: Some(3.5),
+                altitude: Some(117.0),
+                speed: Some(12.5),
+                bearing: Some(90.0),
+            })
+        );
+        // Another receiver, no fix, or no position: nothing for the phone.
+        for report in [
+            json!({"class":"TPV","device":"b","mode":3,"lat":1.0,"lon":2.0}),
+            json!({"class":"TPV","device":"a","mode":1,"lat":48.5,"lon":2.25}),
+            json!({"class":"TPV","device":"a","mode":3,"speed":1.0}),
+        ] {
+            assert_eq!(r.report(&report, now), None);
+        }
+        // 2D: no altitude. Barely moving: no heading. No eph: from epx and epy.
+        let slow = json!({"class":"TPV","device":"a","mode":2,"lat":48.5,"lon":2.25,
+            "altHAE":117.0,"epx":3.0,"epy":4.0,"speed":0.2,"track":128.0});
+        let fix = r.report(&slow, now).unwrap();
+        assert_eq!(
+            (fix.altitude, fix.bearing, fix.accuracy),
+            (None, None, Some(5.0))
+        );
     }
-
     #[test]
     fn partial_sky_reports_preserve_counts_without_extending_their_lifetime() {
         let mut r = Receiver::default();

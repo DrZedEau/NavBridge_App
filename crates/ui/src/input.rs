@@ -14,7 +14,11 @@ pub enum KeyAction {
     Back,
     Home,
     Quit,
-    ToggleNightMode,
+    /// Android Auto in day (false) or night (true) mode.
+    NightMode(bool),
+    /// The parking brake on (true) or off (false), for Android Auto's
+    /// driving restrictions.
+    ParkingBrake(bool),
     Phone(PhoneAction),
 }
 
@@ -34,10 +38,17 @@ impl KeyMap {
         add(&mut bindings, &b.back, KeyAction::Back)?;
         add(&mut bindings, &b.home, KeyAction::Home)?;
         add(&mut bindings, &b.quit, KeyAction::Quit)?;
+        add(&mut bindings, &b.normal_mode, KeyAction::NightMode(false))?;
+        add(&mut bindings, &b.night_mode, KeyAction::NightMode(true))?;
         add(
             &mut bindings,
-            &b.toggle_night_mode,
-            KeyAction::ToggleNightMode,
+            &b.parking_brake_on,
+            KeyAction::ParkingBrake(true),
+        )?;
+        add(
+            &mut bindings,
+            &b.parking_brake_off,
+            KeyAction::ParkingBrake(false),
         )?;
         add(
             &mut bindings,
@@ -61,18 +72,28 @@ impl KeyMap {
         )?;
         add(
             &mut bindings,
+            &b.end_call,
+            KeyAction::Phone(PhoneAction::EndCall),
+        )?;
+        add(
+            &mut bindings,
             &b.phone_home,
             KeyAction::Phone(PhoneAction::PhoneHome),
         )?;
         add(
             &mut bindings,
-            &b.pause_music,
-            KeyAction::Phone(PhoneAction::PauseMusic),
+            &b.open_maps,
+            KeyAction::Phone(PhoneAction::OpenMaps),
         )?;
         add(
             &mut bindings,
-            &b.resume_music,
-            KeyAction::Phone(PhoneAction::ResumeMusic),
+            &b.open_media,
+            KeyAction::Phone(PhoneAction::OpenMedia),
+        )?;
+        add(
+            &mut bindings,
+            &b.play_pause,
+            KeyAction::Phone(PhoneAction::PlayPause),
         )?;
         Ok(Self { bindings })
     }
@@ -107,8 +128,16 @@ fn configured_key_to_event_text(name: &str) -> Result<String, String> {
         "escape" | "esc" => Some(Key::Escape),
         "backspace" => Some(Key::Backspace),
         "home" => Some(Key::Home),
+        "pageup" => Some(Key::PageUp),
+        "pagedown" => Some(Key::PageDown),
         "tab" => Some(Key::Tab),
         "space" => Some(Key::Space),
+        // Modifiers on their own, such as a switch the board reports as a key.
+        "control" | "ctrl" => Some(Key::Control),
+        "controlr" | "rightcontrol" => Some(Key::ControlR),
+        "alt" => Some(Key::Alt),
+        "altgr" => Some(Key::AltGr),
+        "shift" => Some(Key::Shift),
         _ => None,
     };
 

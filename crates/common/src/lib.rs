@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 pub const UI_WIDTH: u32 = 400;
 pub const UI_HEIGHT: u32 = 240;
 
-/// Dimensions advertised to CarPlay / Android Auto and used by the media pipeline.
+/// Dimensions advertised to Android Auto and used by the media pipeline.
 pub const MEDIA_WIDTH: u32 = 800;
 pub const MEDIA_HEIGHT: u32 = 480;
 pub const MEDIA_DPI: u32 = 160;
@@ -27,96 +27,82 @@ pub struct UsbDeviceInfo {
     pub speed: String,
     pub manufacturer: String,
     pub product: String,
-    pub selection_reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UsbSnapshot {
     pub selected: Option<UsbDeviceInfo>,
-    pub candidates: Vec<UsbDeviceInfo>,
     pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SystemSnapshot {
     pub cpu_usage: String,
-    #[serde(default)]
-    pub audio_output_rate: String,
     pub memory: String,
     pub cpu_temp: String,
+    #[serde(default)]
+    pub audio: AudioSnapshot,
+}
+
+/// The USB codec that ALSA plays to and records from.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AudioSnapshot {
+    pub codec: String,
+    /// Hardware rates while playback or the microphone runs.
+    pub sample_rate: String,
+    /// Output volume and microphone gain from the ALSA mixer.
+    pub volume: String,
+    /// The same levels in percent, for Settings; absent without the codec.
+    #[serde(default)]
+    pub volume_percent: Option<u8>,
+    #[serde(default)]
+    pub microphone_percent: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum CarplayPhase {
-    WaitingForDongle,
-    DongleReady,
+pub enum ProjectionPhase {
+    WaitingForPhone,
     Starting,
     Running,
     Error,
 }
 
-impl Default for CarplayPhase {
+impl Default for ProjectionPhase {
     fn default() -> Self {
-        Self::WaitingForDongle
+        Self::WaitingForPhone
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CarplaySnapshot {
-    pub phase: CarplayPhase,
+pub struct ProjectionSnapshot {
+    pub phase: ProjectionPhase,
     pub status: String,
-    pub negotiated_width: u32,
-    pub negotiated_height: u32,
-    pub dpi: u32,
     pub phone_connected: bool,
     pub streaming: bool,
-    pub protocol_phase: Option<u32>,
     #[serde(default)]
-    pub dongle_firmware: String,
-    #[serde(default)]
-    pub dongle_bluetooth_name: String,
     pub phone_name: String,
-    pub connection_method: String,
+    /// The DPI the phone is asked for when it connects, as chosen in Settings.
     #[serde(default)]
-    pub connection_transport: String,
-    pub heartbeat_count: u64,
-    pub video_packets: u64,
-    pub video_frames: u64,
-    pub video_dropped: u64,
-    pub source_video_width: u32,
-    pub source_video_height: u32,
+    pub dpi: u32,
 }
 
-impl Default for CarplaySnapshot {
+impl Default for ProjectionSnapshot {
     fn default() -> Self {
         Self {
-            phase: CarplayPhase::WaitingForDongle,
-            status: "Waiting for dongle".into(),
-            negotiated_width: MEDIA_WIDTH,
-            negotiated_height: MEDIA_HEIGHT,
-            dpi: MEDIA_DPI,
+            phase: ProjectionPhase::WaitingForPhone,
+            status: "Connect an Android phone by USB".into(),
             phone_connected: false,
             streaming: false,
-            protocol_phase: None,
-            dongle_firmware: String::new(),
-            dongle_bluetooth_name: String::new(),
             phone_name: String::new(),
-            connection_method: String::new(),
-            connection_transport: String::new(),
-            heartbeat_count: 0,
-            video_packets: 0,
-            video_frames: 0,
-            video_dropped: 0,
-            source_video_width: 0,
-            source_video_height: 0,
+            dpi: 0,
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum CarplayEvent {
+pub enum ProjectionEvent {
     PhoneConnected,
     PhoneDisconnected,
     StreamingReady,
@@ -135,14 +121,83 @@ pub struct GnssSnapshot {
     pub utc: String,
 }
 
+/// Wireless Android Auto: whether it is on, and what the built-in Wi-Fi does.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct WirelessSnapshot {
+    /// On: the built-in Wi-Fi is the hotspot; off: it is on the home network.
+    pub enabled: bool,
+    /// The hotspot is up, so phones can join it.
+    #[serde(default)]
+    pub hotspot: bool,
+    pub status: String,
+}
+
+/// Bluetooth for wireless Android Auto: pairing, and reaching paired phones.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct BluetoothSnapshot {
+    pub status: String,
+    /// NavBridge's services are registered: paired phones can reach it.
+    #[serde(default)]
+    pub ready: bool,
+    /// Phones can find NavBridge and pair with it.
+    pub pairing: bool,
+    /// A phone asks to pair: the user compares the code and confirms.
+    pub confirm: Option<PairingRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PairingRequest {
+    pub device: String,
+    /// Six digits, as the phone shows them.
+    pub code: String,
+}
+
+/// The car, as its I-Bus reports it through the carrier board's
+/// microcontroller. A reading is absent until it is heard, and again once it
+/// is too old to trust.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct VehicleSnapshot {
+    /// What the I-Bus link does, or why it does not.
+    pub status: String,
+    /// Frames heard since the core started, and lines that were not valid
+    /// frames, which point to a wiring or interference problem.
+    pub frames: u64,
+    pub bad_lines: u64,
+    pub ignition: Option<Ignition>,
+    /// The instrument cluster's road speed, in steps of 2 km/h.
+    pub speed_kmh: Option<u16>,
+    /// Engine speed, in steps of 100 rpm.
+    pub rpm: Option<u16>,
+    pub coolant_c: Option<i8>,
+    pub outside_c: Option<i8>,
+    pub odometer_km: Option<u32>,
+}
+
+/// The ignition key's position, as the instrument cluster reports it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Ignition {
+    Off,
+    /// Position 1: radio and accessories.
+    Accessory,
+    /// Position 2: ignition on.
+    On,
+    Starting,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppSnapshot {
     #[serde(default)]
     pub gnss: GnssSnapshot,
     pub usb: UsbSnapshot,
     pub system: SystemSnapshot,
-    pub carplay: CarplaySnapshot,
-    pub ibus_status: String,
+    pub projection: ProjectionSnapshot,
+    #[serde(default)]
+    pub wireless: WirelessSnapshot,
+    #[serde(default)]
+    pub bluetooth: BluetoothSnapshot,
+    #[serde(default)]
+    pub vehicle: VehicleSnapshot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,9 +218,15 @@ pub enum PhoneAction {
     PreviousTrack,
     VoiceAssistant,
     AnswerCall,
+    /// Hangs up, or rejects an incoming call.
+    EndCall,
     PhoneHome,
-    PauseMusic,
-    ResumeMusic,
+    /// The phone's navigation app, such as Google Maps or Waze.
+    OpenMaps,
+    /// The phone's media screen.
+    OpenMedia,
+    /// Pauses or resumes, as the phone knows whether music is playing.
+    PlayPause,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,13 +234,18 @@ pub enum PhoneAction {
 pub enum ClientCommand {
     Hello { client: String },
     RequestSnapshot,
-    ToggleNightMode,
-    StartCarplay,
-    ResumeCarplay,
-    PairPhone,
-    StopCarplay,
+    SetNightMode { enabled: bool },
+    SetParkingBrake { engaged: bool },
+    HideProjection,
+    ResumeProjection,
     NavigationInput { key: NavigationKey, pressed: bool },
     PhoneAction { action: PhoneAction },
+    SetWireless { enabled: bool },
+    SetDpi { dpi: u32 },
+    SetVolume { percent: u8 },
+    SetMicrophone { percent: u8 },
+    StartPairing,
+    ConfirmPairing { accept: bool },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,10 +258,16 @@ pub enum ServerEvent {
         media_width: u32,
         media_height: u32,
         media_dpi: u32,
+        /// Highest frame rate requested from the phone.
+        #[serde(default)]
+        media_fps: u32,
     },
-    Snapshot { snapshot: AppSnapshot },
-    CarplayEvent { event: CarplayEvent },
-    Error { message: String },
+    Snapshot {
+        snapshot: AppSnapshot,
+    },
+    ProjectionEvent {
+        event: ProjectionEvent,
+    },
 }
 
 #[cfg(test)]

@@ -1,240 +1,98 @@
-//! Carlinkit signed 16-bit LE PCM: u32 format, f32 volume, u32 stream,
-//! then samples (or one control byte / four-byte volume ramp duration).
-//! Wire reference: rhysmorgan134/node-carplay src/modules/messages/{readable,sendable}.ts.
-use super::protocol::{ProtocolMessage, CMD_AUDIO, CMD_CONTROL, CMD_PHASE, CMD_UNPLUGGED};
+//! Transport-neutral signed 16-bit little-endian PCM workers. Both threads
+//! sleep until there is work: playback in poll() on a doorbell and its ALSA
+//! buffers, capture in blocking reads while the phone listens.
 use crate::config::AudioConfig;
 use alsa::{
     pcm::{Access, Format, HwParams, PCM},
-    Direction, ValueOr,
+    poll::pollfd,
+    Direction, PollDescriptors, ValueOr,
 };
-use std::collections::{HashMap, VecDeque};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, SyncSender},
-    Arc, Mutex,
+use std::{
+    collections::{HashMap, VecDeque},
+    io::{self, Read, Write},
+    os::{fd::AsRawFd, unix::net::UnixStream},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, SyncSender, TryRecvError},
+        Arc, Condvar, Mutex,
+    },
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
-use tracing::{debug, info, warn};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct AudioFormat {
-    rate: u32,
-    channels: u32,
+use tracing::{info, warn};
+/// How long a stream may stay silent before its PCM is closed.
+const IDLE_CLOSE: Duration = Duration::from_secs(3);
+/// Wait before opening a PCM again after it failed.
+const RETRY: Duration = Duration::from_secs(2);
+const MIC: AudioFormat = AudioFormat {
+    rate: 16000,
+    channels: 1,
+};
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AudioFormat {
+    pub rate: u32,
+    pub channels: u32,
 }
-fn format(code: u32) -> Option<AudioFormat> {
-    let (rate, channels) = match code {
-        1 | 2 => (44100, 2),
-        3 => (8000, 1),
-        4 => (48000, 2),
-        5 => (16000, 1),
-        6 => (24000, 1),
-        7 => (16000, 2),
-        _ => return None,
-    };
-    Some(AudioFormat { rate, channels })
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Stream {
+    Media,
+    Speech,
+    System,
 }
-#[derive(Debug, PartialEq)]
-enum Body<'a> {
-    Control(u8),
-    Volume(f32),
-    Samples(&'a [u8]),
-}
-#[derive(Debug)]
-struct Packet<'a> {
-    code: u32,
-    stream: u32,
-    volume: f32,
-    body: Body<'a>,
-}
-fn parse(data: &[u8]) -> Option<Packet<'_>> {
-    if data.len() < 13 {
-        return None;
+impl Stream {
+    pub fn format(self) -> AudioFormat {
+        match self {
+            Self::Media => AudioFormat {
+                rate: 48000,
+                channels: 2,
+            },
+            Self::Speech | Self::System => AudioFormat {
+                rate: 16000,
+                channels: 1,
+            },
+        }
     }
-    let code = u32::from_le_bytes(data[..4].try_into().ok()?);
-    let volume = f32::from_le_bytes(data[4..8].try_into().ok()?);
-    let stream = u32::from_le_bytes(data[8..12].try_into().ok()?);
-    let body = match data.len() - 12 {
-        1 => Body::Control(data[12]),
-        4 => Body::Volume(f32::from_le_bytes(data[12..16].try_into().ok()?)),
-        n if n % (format(code)?.channels as usize * 2) == 0 => Body::Samples(&data[12..]),
-        _ => return None,
-    };
-    Some(Packet {
-        code,
-        stream,
-        volume,
-        body,
-    })
 }
-fn microphone_message(code: u32, samples: &[i16]) -> ProtocolMessage {
-    let mut data = Vec::with_capacity(12 + samples.len() * 2);
-    data.extend(code.to_le_bytes());
-    data.extend(0_f32.to_le_bytes());
-    data.extend(3_u32.to_le_bytes());
-    for sample in samples {
-        data.extend(sample.to_le_bytes());
-    }
-    ProtocolMessage::new(CMD_AUDIO, data)
-}
-#[derive(Default)]
-struct MicState {
-    generation: u64,
-    active: bool,
-    code: u32,
-}
-struct MicPacket {
-    generation: u64,
-    message: ProtocolMessage,
-    captured: Instant,
+pub struct Capture {
+    pub bytes: Vec<u8>,
+    pub captured: Instant,
+    pub generation: u64,
 }
 enum Playback {
-    Data(Vec<u8>),
-    Reset,
+    Data(u64, Stream, Vec<u8>),
+    Stop(Stream),
 }
-
+#[derive(Default)]
+struct State {
+    generation: u64,
+    mic_generation: u64,
+    mic: bool,
+    duck: bool,
+}
 pub struct AudioPipeline {
     tx: SyncSender<Playback>,
-    mic: Arc<Mutex<MicState>>,
-    rx: Receiver<MicPacket>,
+    rx: Receiver<Capture>,
+    state: Arc<Mutex<State>>,
+    /// Signalled when the microphone is switched on or off, and on stop.
+    mic_changed: Arc<Condvar>,
+    /// Wakes the playback thread for new samples, a reset or a stop.
+    bell: UnixStream,
     stop: Arc<AtomicBool>,
     workers: Vec<JoinHandle<()>>,
+    enabled: bool,
 }
-impl AudioPipeline {
-    pub fn start(config: &AudioConfig) -> Self {
-        let (tx, playback_rx) = mpsc::sync_channel(64);
-        let (mic_tx, rx) = mpsc::sync_channel(8);
-        let mic = Arc::new(Mutex::new(MicState {
-            code: 5,
-            ..Default::default()
-        }));
-        let stop = Arc::new(AtomicBool::new(false));
-        let mut workers = Vec::new();
-        if config.enabled {
-            let device = config.playback_device.clone();
-            let end = stop.clone();
-            workers.push(thread::spawn(move || {
-                playback_worker(&device, playback_rx, &end)
-            }));
-            let device = config.capture_device.clone();
-            let end = stop.clone();
-            let state = mic.clone();
-            workers.push(thread::spawn(move || {
-                capture_worker(&device, mic_tx, state, &end)
-            }));
-            info!(playback = %config.playback_device, capture = %config.capture_device, "USB audio enabled");
-        }
-        Self {
-            tx,
-            mic,
-            rx,
-            stop,
-            workers,
-        }
-    }
-    pub fn active(&self) -> bool {
-        self.mic.lock().unwrap().active
-    }
-    fn recording(&self, active: bool, code: Option<u32>) {
-        let mut state = self.mic.lock().unwrap();
-        let code = code
-            .filter(|c| format(*c).is_some_and(|f| f.channels == 1))
-            .unwrap_or(state.code);
-        if state.active != active || state.code != code {
-            state.generation += 1;
-            state.active = active;
-            state.code = code;
-            info!(active, format = code, "phone microphone request");
-        }
-    }
-    pub fn reset(&self) {
-        self.recording(false, Some(5));
-        // Reset must not be lost behind a full data queue. The worker never
-        // blocks on ALSA, so this is bounded by its 5 ms service interval.
-        let _ = self.tx.send(Playback::Reset);
-    }
-    pub fn receive(&self, message: &ProtocolMessage) {
-        if message.encrypted || self.workers.is_empty() {
-            return;
-        }
-        if message.kind == CMD_UNPLUGGED
-            || (message.kind == CMD_PHASE && message.payload == 0_u32.to_le_bytes())
-        {
-            self.reset();
-            return;
-        }
-        if message.kind == CMD_CONTROL {
-            if message.payload == 1_u32.to_le_bytes() {
-                self.recording(true, None);
-            }
-            if message.payload == 2_u32.to_le_bytes() {
-                self.recording(false, None);
-            }
-        }
-        if message.kind != CMD_AUDIO {
-            return;
-        }
-        let Some(packet) = parse(&message.payload) else {
-            warn!(
-                bytes = message.payload.len(),
-                "invalid/unsupported audio packet"
-            );
-            return;
-        };
-        if let Body::Control(command) = packet.body {
-            info!(
-                command,
-                format = packet.code,
-                stream = packet.stream,
-                "phone audio control"
-            );
-            match command {
-                3 => self.recording(self.active(), Some(packet.code)),
-                4 | 8 => self.recording(true, Some(packet.code)),
-                5 | 9 => self.recording(false, None),
-                _ => (),
-            }
-        }
-        if self
-            .tx
-            .try_send(Playback::Data(message.payload.clone()))
-            .is_err()
-        {
-            debug!("audio queue full; dropping packet to bound latency");
-        }
-    }
-    pub fn outgoing(&self) -> Vec<ProtocolMessage> {
-        let state = self.mic.lock().unwrap();
-        self.rx
-            .try_iter()
-            .take(8)
-            .filter(|p| {
-                state.active
-                    && p.generation == state.generation
-                    && p.captured.elapsed() < Duration::from_millis(200)
-            })
-            .map(|p| p.message)
-            .collect()
-    }
-}
-impl Drop for AudioPipeline {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        for worker in self.workers.drain(..) {
-            let _ = worker.join();
-        }
-    }
-}
-fn open_pcm(device: &str, direction: Direction, fmt: AudioFormat) -> Result<PCM, alsa::Error> {
-    let pcm = PCM::new(device, direction, true)?;
+/// Playback does not block, as its thread waits in poll(). Capture blocks, so
+/// each read waits for the rest of its block.
+pub fn open_pcm(device: &str, direction: Direction, fmt: AudioFormat) -> Result<PCM, alsa::Error> {
+    let pcm = PCM::new(device, direction, direction == Direction::Playback)?;
     {
         let hw = HwParams::any(&pcm)?;
         hw.set_access(Access::RWInterleaved)?;
         hw.set_format(Format::s16())?;
         hw.set_channels(fmt.channels)?;
         hw.set_rate(fmt.rate, ValueOr::Nearest)?;
-        hw.set_buffer_time_near(100_000, ValueOr::Nearest)?;
-        hw.set_period_time_near(20_000, ValueOr::Nearest)?;
+        hw.set_buffer_time_near(100000, ValueOr::Nearest)?;
+        hw.set_period_time_near(20000, ValueOr::Nearest)?;
         pcm.hw_params(&hw)?;
         let sw = pcm.sw_params_current()?;
         sw.set_start_threshold(if direction == Direction::Playback {
@@ -253,94 +111,214 @@ struct Player {
     fmt: AudioFormat,
     last: Instant,
 }
-fn playback_worker(device: &str, rx: Receiver<Playback>, stop: &AtomicBool) {
-    let mut players: HashMap<(u32, u32), Player> = HashMap::new();
-    let mut gains: HashMap<(u32, u32), f32> = HashMap::new();
+impl AudioPipeline {
+    /// `wake` is signalled after each captured microphone block.
+    pub fn start(config: &AudioConfig, wake: SyncSender<()>) -> io::Result<Self> {
+        let (tx, rxplay) = mpsc::sync_channel(64);
+        let (txcapture, rx) = mpsc::sync_channel(8);
+        let (bell, doorbell) = UnixStream::pair()?;
+        bell.set_nonblocking(true)?;
+        doorbell.set_nonblocking(true)?;
+        let state = Arc::new(Mutex::new(State::default()));
+        let mic_changed = Arc::new(Condvar::new());
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut workers = Vec::new();
+        if config.enabled {
+            let (device, s, end) = (config.playback_device.clone(), state.clone(), stop.clone());
+            workers.push(
+                thread::Builder::new()
+                    .name("audio-playback".into())
+                    .spawn(move || playback(&device, rxplay, doorbell, s, end))?,
+            );
+            let (device, s, end) = (config.capture_device.clone(), state.clone(), stop.clone());
+            let changed = mic_changed.clone();
+            workers.push(
+                thread::Builder::new()
+                    .name("audio-capture".into())
+                    .spawn(move || capture(&device, txcapture, wake, s, changed, end))?,
+            );
+        }
+        Ok(Self {
+            tx,
+            rx,
+            state,
+            mic_changed,
+            bell,
+            stop,
+            workers,
+            enabled: config.enabled,
+        })
+    }
+    fn ring(&self) {
+        // A full socket is already readable, so a failed write loses nothing.
+        let _ = (&self.bell).write(&[1]);
+    }
+    pub fn receive_pcm(&self, stream: Stream, bytes: &[u8]) -> bool {
+        let align = stream.format().channels as usize * 2;
+        if !self.enabled
+            || bytes.is_empty()
+            || !bytes.len().is_multiple_of(align)
+            || bytes.len() > 96000
+        {
+            return false;
+        }
+        let s = self.state.lock().unwrap();
+        let queued = self
+            .tx
+            .try_send(Playback::Data(s.generation, stream, bytes.to_vec()))
+            .is_ok();
+        drop(s);
+        if queued {
+            self.ring();
+        }
+        queued
+    }
+    pub fn stop_stream(&self, stream: Stream) {
+        if self.tx.send(Playback::Stop(stream)).is_ok() {
+            self.ring();
+        }
+    }
+    pub fn duck(&self, enabled: bool) {
+        self.state.lock().unwrap().duck = enabled;
+    }
+    pub fn recording(&self, enabled: bool) -> Result<(), String> {
+        if enabled && !self.enabled {
+            return Err("audio disabled".into());
+        }
+        let mut s = self.state.lock().unwrap();
+        s.mic_generation = s.mic_generation.wrapping_add(1);
+        s.mic = enabled;
+        self.mic_changed.notify_all();
+        Ok(())
+    }
+    pub fn reset(&self) {
+        let mut s = self.state.lock().unwrap();
+        s.generation = s.generation.wrapping_add(1);
+        s.mic_generation = s.mic_generation.wrapping_add(1);
+        s.mic = false;
+        s.duck = false;
+        self.mic_changed.notify_all();
+        drop(s);
+        // Retire queued samples now, not when their buffer next has room.
+        self.ring();
+    }
+    pub fn outgoing(&self) -> Vec<Capture> {
+        let s = self.state.lock().unwrap();
+        self.rx
+            .try_iter()
+            .take(8)
+            .filter(|p| {
+                s.mic
+                    && p.generation == s.mic_generation
+                    && p.captured.elapsed() < Duration::from_millis(200)
+            })
+            .collect()
+    }
+}
+impl Drop for AudioPipeline {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        // Taking the lock orders the flag before the capture thread's next
+        // check, so the notification cannot arrive before it waits.
+        drop(self.state.lock());
+        self.mic_changed.notify_all();
+        self.ring();
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
+    }
+}
+fn playback(
+    device: &str,
+    rx: Receiver<Playback>,
+    doorbell: UnixStream,
+    state: Arc<Mutex<State>>,
+    stop: Arc<AtomicBool>,
+) {
+    let mut players: HashMap<Stream, Player> = HashMap::new();
+    let mut generation = 0;
     let mut retry = Instant::now();
     while !stop.load(Ordering::Relaxed) {
-        for event in rx.try_iter().take(64) {
-            let data = match event {
-                Playback::Reset => {
-                    players.clear();
-                    gains.clear();
+        let current = state.lock().unwrap().generation;
+        if current != generation {
+            players.clear();
+            generation = current;
+        }
+        loop {
+            let event = match rx.try_recv() {
+                Ok(event) => event,
+                Err(TryRecvError::Empty) => break,
+                // The pipeline is gone.
+                Err(TryRecvError::Disconnected) => return,
+            };
+            let (g, stream, bytes) = match event {
+                Playback::Stop(stream) => {
+                    players.remove(&stream);
                     continue;
                 }
-                Playback::Data(data) => data,
+                Playback::Data(g, s, b) => (g, s, b),
             };
-            let Some(packet) = parse(&data) else {
+            if g != generation {
                 continue;
-            };
-            let key = (packet.code, packet.stream);
-            match packet.body {
-                Body::Control(2 | 5 | 7 | 9 | 11 | 13) => {
-                    players.remove(&key);
-                }
-                Body::Volume(_) => {
-                    if packet.volume.is_finite() {
-                        gains.insert(key, packet.volume.clamp(0.0, 1.0));
-                    }
-                }
-                Body::Samples(bytes) => {
-                    let Some(fmt) = format(packet.code) else {
-                        continue;
-                    };
-                    if !players.contains_key(&key) {
-                        if Instant::now() < retry || players.len() >= 16 {
-                            continue;
-                        }
-                        match open_pcm(device, Direction::Playback, fmt) {
-                            Ok(pcm) => {
-                                info!(format = packet.code, stream = packet.stream, rate = fmt.rate, channels = fmt.channels, %device, "audio playback opened");
-                                players.insert(
-                                    key,
-                                    Player {
-                                        pcm,
-                                        samples: VecDeque::new(),
-                                        fmt,
-                                        last: Instant::now(),
-                                    },
-                                );
-                            }
-                            Err(err) => {
-                                warn!(%err, %device, "audio playback unavailable; retrying in 2 seconds");
-                                retry = Instant::now() + Duration::from_secs(2);
-                                continue;
-                            }
-                        }
-                    }
-                    let player = players.get_mut(&key).unwrap();
-                    player.last = Instant::now();
-                    let gain = gains.get(&key).copied().unwrap_or(1.0);
-                    if player.samples.len() + bytes.len() / 2
-                        > (fmt.rate * fmt.channels / 2) as usize
-                    {
-                        player.samples.clear();
-                        let _ = player.pcm.drop();
-                        let _ = player.pcm.prepare();
-                        warn!("discarded stale playback backlog");
-                    }
-                    player.samples.extend(
-                        bytes
-                            .as_chunks::<2>()
-                            .0
-                            .iter()
-                            .map(|s| (i16::from_le_bytes([s[0], s[1]]) as f32 * gain) as i16),
-                    );
-                }
-                _ => (),
             }
-        }
-        players.retain(|_, p| {
-            if !p.samples.is_empty() {
-                let result = p
-                    .pcm
-                    .io_i16()
-                    .and_then(|io| io.writei(p.samples.make_contiguous()));
-                match result {
-                    Ok(frames) => {
-                        p.samples.drain(..frames * p.fmt.channels as usize);
+            let fmt = stream.format();
+            if let std::collections::hash_map::Entry::Vacant(entry) = players.entry(stream) {
+                if Instant::now() < retry {
+                    continue;
+                }
+                match open_pcm(device, Direction::Playback, fmt) {
+                    Ok(pcm) => {
+                        info!(?stream, ?fmt, "PCM playback opened");
+                        entry.insert(Player {
+                            pcm,
+                            samples: VecDeque::new(),
+                            fmt,
+                            last: Instant::now(),
+                        });
                     }
-                    Err(e) if e.errno() == 11 => (), // nonblocking EAGAIN
+                    Err(e) => {
+                        warn!(%e,"PCM playback unavailable");
+                        retry = Instant::now() + RETRY;
+                        continue;
+                    }
+                }
+            }
+            let p = players.get_mut(&stream).unwrap();
+            p.last = Instant::now();
+            if p.samples.len() + bytes.len() / 2 > (fmt.rate * fmt.channels / 2) as usize {
+                p.samples.clear();
+                let _ = p.pcm.drop();
+                let _ = p.pcm.prepare();
+            }
+            p.samples.extend(
+                bytes
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|b| i16::from_le_bytes([b[0], b[1]])),
+            );
+        }
+        // Serialize reset with submitting samples so retired generations cannot play.
+        let s = state.lock().unwrap();
+        if s.generation != generation {
+            drop(s);
+            continue;
+        }
+        players.retain(|stream, p| {
+            if !p.samples.is_empty() {
+                let samples = p.samples.make_contiguous();
+                let ducked: Vec<i16>;
+                let data = if *stream == Stream::Media && s.duck {
+                    ducked = samples.iter().map(|x| (*x as f32 * 0.25) as i16).collect();
+                    &ducked[..]
+                } else {
+                    samples
+                };
+                match p.pcm.io_i16().and_then(|io| io.writei(data)) {
+                    Ok(n) => {
+                        p.samples.drain(..n * p.fmt.channels as usize);
+                    }
+                    Err(e) if e.errno() == 11 => (),
                     Err(e) => {
                         if p.pcm.try_recover(e, true).is_err() {
                             return false;
@@ -348,191 +326,178 @@ fn playback_worker(device: &str, rx: Receiver<Playback>, stop: &AtomicBool) {
                     }
                 }
             }
-            p.last.elapsed() < Duration::from_secs(3) || !p.samples.is_empty()
+            p.last.elapsed() < IDLE_CLOSE || !p.samples.is_empty()
         });
-        thread::sleep(Duration::from_millis(5));
+        drop(s);
+        wait_for_work(&doorbell, &players);
     }
 }
-fn capture_worker(
-    device: &str,
-    tx: SyncSender<MicPacket>,
-    state: Arc<Mutex<MicState>>,
-    stop: &AtomicBool,
-) {
-    let mut pcm: Option<PCM> = None;
-    let mut generation = u64::MAX;
-    let mut samples = Vec::new();
-    let mut filled = 0;
-    let mut retry = Instant::now();
-    let mut packets = 0_u64;
-    while !stop.load(Ordering::Relaxed) {
-        let (active, current, code) = {
-            let s = state.lock().unwrap();
-            (s.active, s.generation, s.code)
-        };
-        if generation != current {
-            pcm = None;
-            filled = 0;
-            generation = current;
-            retry = Instant::now();
-            if !active {
-                info!(packets, "microphone capture stopped");
-            }
+/// Sleeps until the doorbell rings, a stream with queued samples has room in
+/// its ALSA buffer, or an idle stream is due to close. Streams with nothing
+/// queued are not watched, as their buffer would always report room.
+fn wait_for_work(doorbell: &UnixStream, players: &HashMap<Stream, Player>) {
+    let bell = pollfd {
+        fd: doorbell.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let mut sources: Vec<&dyn PollDescriptors> = vec![&bell];
+    let mut timeout: Option<Duration> = None;
+    for p in players.values() {
+        if p.samples.is_empty() {
+            let close_in = IDLE_CLOSE.saturating_sub(p.last.elapsed());
+            timeout = Some(timeout.map_or(close_in, |t| t.min(close_in)));
+        } else {
+            sources.push(&p.pcm);
         }
-        if !active {
-            thread::sleep(Duration::from_millis(5));
-            continue;
-        }
-        if pcm.is_none() && Instant::now() >= retry {
-            let fmt = format(code).unwrap();
-            match open_pcm(device, Direction::Capture, fmt).and_then(|p| {
-                p.start()?;
-                Ok(p)
-            }) {
-                Ok(p) => {
-                    samples.resize((fmt.rate / 50) as usize, 0);
-                    pcm = Some(p);
-                    info!(%device, rate = fmt.rate, "microphone capture started");
-                }
-                Err(err) => {
-                    warn!(%err, %device, "microphone unavailable; retrying in 2 seconds");
-                    retry = Instant::now() + Duration::from_secs(2);
-                }
-            }
-        }
-        if let Some(p) = pcm.as_ref() {
-            match p.io_i16().and_then(|io| io.readi(&mut samples[filled..])) {
-                Ok(count) => {
-                    filled += count;
-                    if filled == samples.len() {
-                        let _ = tx.try_send(MicPacket {
-                            generation,
-                            message: microphone_message(code, &samples),
-                            captured: Instant::now(),
-                        });
-                        packets += 1;
-                        filled = 0;
-                        if packets == 1 || packets.is_multiple_of(250) {
-                            debug!(packets, "microphone packets captured");
-                        }
-                    }
-                }
-                Err(e) if e.errno() == 11 => (),
-                Err(e) => {
-                    filled = 0;
-                    if p.try_recover(e, true).is_err() {
-                        pcm = None;
-                        retry = Instant::now() + Duration::from_secs(2);
-                    }
-                }
-            }
-        }
+    }
+    // Rounded up, so an idle stream is past its deadline on return.
+    let millis = timeout.map_or(-1, |t| {
+        t.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32
+    });
+    // poll_all also hands each PCM its results, which plugins such as dmix
+    // need to clear their timer; otherwise poll() would return at once.
+    if alsa::poll::poll_all(&sources, millis).is_err() {
+        // Never spin, whatever went wrong.
         thread::sleep(Duration::from_millis(5));
     }
+    // Drain the doorbell: the caller handles everything queued before it.
+    let mut bytes = [0u8; 64];
+    while matches!((&*doorbell).read(&mut bytes), Ok(n) if n > 0) {}
+}
+fn capture(
+    device: &str,
+    tx: SyncSender<Capture>,
+    wake: SyncSender<()>,
+    state: Arc<Mutex<State>>,
+    mic_changed: Arc<Condvar>,
+    stop: Arc<AtomicBool>,
+) {
+    // Whether the phone still listens to the microphone opened for `generation`.
+    let listening = |s: &State, generation| {
+        s.mic && s.mic_generation == generation && !stop.load(Ordering::Relaxed)
+    };
+    loop {
+        // Sleep until the phone opens the microphone.
+        let generation = {
+            let mut s = state.lock().unwrap();
+            while !s.mic && !stop.load(Ordering::Relaxed) {
+                s = mic_changed.wait(s).unwrap();
+            }
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            s.mic_generation
+        };
+        let still_listening = || listening(&state.lock().unwrap(), generation);
+        if let Err(e) = record(device, generation, still_listening, &tx, &wake) {
+            warn!(%e,"PCM microphone unavailable");
+            // Try again later, unless the phone stops listening first.
+            let s = state.lock().unwrap();
+            drop(mic_changed.wait_timeout_while(s, RETRY, |s| listening(s, generation)));
+        }
+    }
+}
+/// Sends the phone 20 ms microphone blocks while `listening` holds.
+fn record(
+    device: &str,
+    generation: u64,
+    listening: impl Fn() -> bool,
+    tx: &SyncSender<Capture>,
+    wake: &SyncSender<()>,
+) -> Result<(), alsa::Error> {
+    let pcm = open_pcm(device, Direction::Capture, MIC)?;
+    pcm.start()?;
+    info!(
+        rate = MIC.rate,
+        channels = MIC.channels,
+        "PCM microphone opened"
+    );
+    let io = pcm.io_i16()?;
+    let mut samples = [0i16; 320];
+    let mut filled = 0;
+    while listening() {
+        // Blocks until the rest of the block has been captured.
+        match io.readi(&mut samples[filled..]) {
+            Ok(n) => {
+                filled += n;
+                if filled == samples.len() {
+                    let bytes = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+                    let queued = tx.try_send(Capture {
+                        bytes,
+                        captured: Instant::now(),
+                        generation,
+                    });
+                    if queued.is_ok() {
+                        let _ = wake.try_send(());
+                    }
+                    filled = 0;
+                }
+            }
+            Err(e) => {
+                filled = 0;
+                pcm.try_recover(e, true)?;
+            }
+        }
+    }
+    Ok(())
 }
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    #[ignore = "requires the attached PCM2912A; briefly captures and discards microphone samples"]
-    fn pcm2912a_full_duplex() {
-        let config = AudioConfig::default();
-        let stereo = open_pcm(
-            &config.playback_device,
-            Direction::Playback,
-            format(4).unwrap(),
+    fn invalid_pcm_and_old_capture_are_rejected() {
+        let mut audio = AudioPipeline::start(
+            &AudioConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            mpsc::sync_channel(1).0,
         )
         .unwrap();
-        let voice = open_pcm(
-            &config.playback_device,
-            Direction::Playback,
-            format(5).unwrap(),
-        )
-        .unwrap();
-        assert!(stereo.io_i16().unwrap().writei(&[0; 1920]).unwrap() > 0);
-        assert!(voice.io_i16().unwrap().writei(&[0; 640]).unwrap() > 0);
-        let capture = open_pcm(
-            &config.capture_device,
-            Direction::Capture,
-            format(5).unwrap(),
-        )
-        .unwrap();
-        capture.start().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(1);
-        let mut samples = [0_i16; 320];
-        loop {
-            match capture.io_i16().unwrap().readi(&mut samples) {
-                Ok(n) if n > 0 => break,
-                Ok(_) => (),
-                Err(e) if e.errno() == 11 => (),
-                Err(e) => panic!("capture failed: {e}"),
-            }
-            assert!(Instant::now() < deadline, "no microphone samples received");
-            thread::sleep(Duration::from_millis(5));
-        }
-    }
-    #[test]
-    fn validates_audio_and_distinguishes_commands_from_samples() {
-        let pcm = microphone_message(5, &[i16::MIN, -1, 0, i16::MAX]);
-        let p = parse(&pcm.payload).unwrap();
-        assert_eq!((p.code, p.stream), (5, 3));
-        assert_eq!(p.body, Body::Samples(&pcm.payload[12..]));
-        let mut control = pcm.payload[..12].to_vec();
-        control.push(8);
-        assert_eq!(parse(&control).unwrap().body, Body::Control(8));
-        assert!(parse(&control[..11]).is_none());
-        control.extend([0, 0]);
-        assert!(parse(&control).is_none());
-    }
-    #[test]
-    fn microphone_header_and_little_endian_samples_match_protocol() {
-        let m = microphone_message(5, &[0x1234, -2]);
-        assert_eq!(m.kind, 7);
-        assert_eq!(
-            m.payload,
-            [5, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0x34, 0x12, 0xfe, 0xff]
-        );
-        assert_eq!(
-            format(4),
-            Some(AudioFormat {
-                rate: 48000,
-                channels: 2
-            })
-        );
-        assert_eq!(
-            format(3),
-            Some(AudioFormat {
-                rate: 8000,
-                channels: 1
-            })
-        );
-        assert!(format(99).is_none());
-    }
-    #[test]
-    fn stopped_or_old_microphone_packets_cannot_escape() {
-        let config = AudioConfig {
-            enabled: false,
-            ..Default::default()
-        };
-        let mut audio = AudioPipeline::start(&config);
+        assert!(!audio.receive_pcm(Stream::Media, &[1, 2, 3]));
         let (tx, rx) = mpsc::sync_channel(8);
         audio.rx = rx;
-        audio.recording(true, None);
-        tx.send(MicPacket {
-            generation: 1,
-            message: microphone_message(5, &[0; 320]),
+        audio.state.lock().unwrap().mic = true;
+        tx.send(Capture {
+            bytes: vec![0; 640],
             captured: Instant::now(),
+            generation: 0,
         })
         .unwrap();
-        audio.recording(false, None);
+        audio.reset();
         assert!(audio.outgoing().is_empty());
-        audio.recording(true, None);
-        tx.send(MicPacket {
-            generation: 1,
-            message: microphone_message(5, &[0; 320]),
+        audio.state.lock().unwrap().mic = true;
+        tx.send(Capture {
+            bytes: vec![0; 640],
             captured: Instant::now(),
+            generation: 0,
         })
         .unwrap();
         assert!(audio.outgoing().is_empty());
+    }
+    #[test]
+    #[ignore = "requires PCM2912A"]
+    fn pcm2912a_full_duplex() {
+        let c = AudioConfig::default();
+        let p = open_pcm(
+            &c.playback_device,
+            Direction::Playback,
+            Stream::Media.format(),
+        )
+        .unwrap();
+        assert!(p.io_i16().unwrap().writei(&[0; 1920]).unwrap() > 0);
+        let mic = open_pcm(
+            &c.capture_device,
+            Direction::Capture,
+            AudioFormat {
+                rate: 16000,
+                channels: 1,
+            },
+        )
+        .unwrap();
+        mic.start().unwrap();
+        thread::sleep(Duration::from_millis(40));
+        assert!(mic.io_i16().unwrap().readi(&mut [0; 320]).unwrap() > 0);
     }
 }

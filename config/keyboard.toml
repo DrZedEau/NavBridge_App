@@ -8,14 +8,23 @@ select = ["Return", "Space"]
 back = ["Backspace"]
 home = ["Escape", "Home"]
 quit = ["Q"]
-# Global day/night toggle, one switch per press.
-toggle_night_mode = ["Tab"]
+# Day or night mode from any page.
+normal_mode = ["PageUp"]
+night_mode = ["PageDown"]
+# The parking brake, which lifts Android Auto's driving restrictions while on
+# (from any page). Until the first press after the core starts, the car counts
+# as moving.
+parking_brake_on = ["Control", "ControlR"]
+parking_brake_off = ["Alt"]
 
-# Phone actions on the AA/CarPlay screen (one command per press).
+# Phone actions on the Android Auto screen (one command per press).
 next_track = ["N"]
 previous_track = ["B"]
 voice_assistant = ["V"]
 answer_call = ["A"]
+end_call = ["E"]
 phone_home = ["H"]
-pause_music = ["P"]
-resume_music = ["S"]
+open_maps = ["M"]
+open_media = ["S"]
+# Pauses or resumes, depending on whether music is playing.
+play_pause = ["P"]

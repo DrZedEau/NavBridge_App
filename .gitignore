@@ -1,0 +1,7 @@
+# Build output (cargo, scripts/build_kms.sh)
+/target/
+/dist/
+# Local backups and measurements
+/work/
+# Editor swap files
+*.swp

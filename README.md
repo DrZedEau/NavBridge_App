@@ -1,478 +1,348 @@
 # NavBridge
 
-NavBridge is a from-scratch Raspberry Pi 5 infotainment application with a **Rust backend** and a separate **Slint frontend**.
+NavBridge is a wired Android Auto head unit for Raspberry Pi 5 / Compute Module 5,
+with a Rust backend and a separate Slint KMS interface. Connect an Android phone
+directly with a USB data cable, unlock it, and accept Android Auto setup prompts.
 
-Two resolutions are intentionally used for different jobs:
-
-- **NavBridge UI / physical presentation:** `400x240`
-- **CarPlay / Android Auto projection session:** `800x480`, configurable DPI (default `160`)
-
-The Carlinkit adapter and phone are configured for 800x480 with the DPI from `[carplay].dpi` (default 160). Projection video is decoded in software in `navbridge-core`, scaled to 400x240, and presented by the independent Slint process. The dongle is never negotiated at 400x240.
-
-## Current milestone
-
-Implemented:
-
-- Cargo workspace with independent `navbridge-core` and `navbridge-ui` executables
-- fixed 400x240 Slint frontend
-- keyboard-only navigation and separate `config/keyboard.toml`
-- main menu: AA / CarPlay, System, IBUS
-- automatic Carlinkit-style USB discovery and selection
-- reset -> re-enumerate -> claim-interface USB lifecycle
-- Carlinkit framing and 2-second heartbeat
-- protocol initialization at 800x480 with configurable DPI
-- Android Auto work-mode initialization and re-arm (`androidWorkMode=1`)
-- phone/session event handling and automatic AA/CarPlay screen navigation
-- RequestHostUI / Exit returns to NavBridge Menu without tearing down the phone session
-- **software-only FFmpeg H.264 parser/decoder**
-- 800x480 projection stream -> software scale -> 400x240 RGBA presentation
-- frame exchange through `/dev/shm/navbridge-video.rgba` (tmpfs, outside JSON IPC)
-- System page: CPU usage, RAM usage, CPU temperature, dongle status, model and firmware
-- JSON-lines control IPC over a Unix domain socket
-- Slint LinuxKMS no-seat build for a dedicated Pi display / SSH development
-- Raspberry Pi FFmpeg pixel-format compatibility enabled by the Pi build scripts (`rpi-ffmpeg`)
-- USB stereo playback and mono microphone input for CarPlay/Android Auto
-- keyboard press/release commands forwarded to CarPlay/Android Auto
-- Lanczos downscaling with accurate rounding and full horizontal chroma interpolation
-- no touchscreen UI actions
-- no hardware H.264 decoder path
-
-Still to implement:
-
-- Acoustic echo cancellation (use headphones or suitable microphone/speaker placement for voice calls)
-- IBUS protocol
-- optional lower-copy video transport after the software path is proven on the Pi
+Wireless Android Auto works over NavBridge's own 5 GHz hotspot once the phone
+is paired over Bluetooth. This build does not provide iPhone CarPlay or a
+hands-free Bluetooth call-audio path.
+Music, navigation/assistant playback and assistant microphone capture use the
+PCM2912A USB codec. An external GNSS receiver shows on the System page and, when
+connected as the phone connects, gives Android Auto the car's position. The
+last System page shows the car's speed, engine speed, temperatures, ignition
+and odometer from its I-Bus, through the carrier board's ATmega32U4.
 
 ## Architecture
 
-```text
-                         400 x 240
-                 +-----------------------+
-                 |     navbridge-ui      |
-                 |        Slint          |
-                 | Menu/System/IBUS      |
-                 | AA/CarPlay frame      |
-                 +-----------+-----------+
-                             ^
-             JSON IPC        |       /dev/shm RGBA frame
-          state/commands      |
-                             |
-                 +-----------+-----------+
-                 |    navbridge-core     |
-                 |         Rust          |
-                 +-----------+-----------+
-                             |
-                +------------+------------+
-                |                         |
-              libusb                    Linux
-                |                   system inventory
-                v
-          Carlinkit protocol
-       heartbeat + session state
-                |
-         H.264 type 0x06
-                |
-                v
-        FFmpeg H.264 parser
-                |
-        software H.264 decoder
-                |
-       software scale to RGBA
-                |
-                v
-              400x240
-```
+- `navbridge-core`: Android Open Accessory USB discovery, GAL version exchange,
+  TLS 1.2 peer verification, protobuf channel negotiation, keyboard input, night
+  sensor, audio/video focus, H.264 decoding, ALSA audio, GPSD, the I-Bus and
+  system metrics.
+- `navbridge-ui`: amber Slint menu with status lights and a clock, Settings,
+  four System pages, keyboard navigation and the projection view. Escape/Home returns to the menu and gives video focus
+  back to the car, so the phone pauses its video; returning to Android Auto
+  restores it while retaining the phone session and audio.
+- Bounded JSON-lines IPC carries commands and snapshots through a Unix socket.
+  Video uses a generation-aware `/dev/shm/navbridge-video.rgba` frame exchange
+  rather than JSON. See [architecture](docs/ARCHITECTURE.md).
+- Projection is H.264 at 800x480, downscaled with Lanczos to the 400x240 panel.
+  FFmpeg normalizes full/limited color range. DPI and 30/60 fps are configurable.
+- A dedicated USB reader uses 16 KB transfers and a bounded queue. The session
+  worker handles replies without interrupting reads. USB unplug/error clears
+  decoder, playback and capture state; a new connection negotiates fresh TLS
+  and media sessions. The ADB interface is excluded.
+- Stopping the core (SIGTERM or SIGINT) first asks the phone to end its
+  session; a second signal exits at once. A phone left in accessory mode by an
+  earlier run is reset at startup, so its first session starts cleanly.
 
-The control socket is deliberately low bandwidth. Video does **not** travel over JSON IPC.
+## Build and run
 
-## Repository layout
-
-```text
-crates/
-  common/                 shared constants and IPC models
-  core/                   USB/protocol/system/media backend
-    src/services/media.rs software H.264 decode + frame publishing
-  ui/                     Slint frontend + keyboard handling
-    ui/app.slint
-config/
-  core.toml
-  frontend.toml
-  keyboard.toml
-packaging/
-  navbridge-core.service
-  navbridge-ui.service
-scripts/
-  install_pi5.sh
-  build_pi5.sh
-  build_pi5_kms.sh
-  run_pi5.sh
-  run_pi5_kms.sh
-```
-
-## Raspberry Pi OS Lite installation with systemd
-
-From your normal account in this checkout, preferably over SSH:
+Use native 64-bit Raspberry Pi OS Lite (Bookworm or Trixie):
 
 ```bash
-./scripts/install_lite.sh
+cd ~/NavBridge_App
+./scripts/install_build_deps.sh
+./scripts/build_kms.sh
+./scripts/run_kms.sh
 ```
 
-This installs dependencies, builds as the invoking user, and installs separate
-core/UI systemd services under that same account (including when invoked through
-sudo). Configuration lives in `/etc/navbridge` and is preserved on repeat installs.
-The dedicated UI replaces the tty1 login console. Use `--dry-run` to preview or
-`--no-start` to enable the services for the next boot without starting them now.
+Build as your normal user. The build enables `navbridge-core/rpi-ffmpeg` and
+`navbridge-ui/direct-kms`; Raspberry Pi FFmpeg has additional pixel formats that
+require this compatibility feature. The runner requests sudo for KMS/input and
+uses private temporary configuration. Stop another running NavBridge instance
+before starting it. The Pi build has no desktop window backend; for a window
+during development, build the UI with `--features navbridge-ui/desktop` instead.
 
-See [the Lite installation guide](docs/installation-lite.md) for configuration,
-logs, updates, backups, and restoring the console. Templates in `packaging/`
-contain user/group placeholders and must be installed through the script.
+| Script | Purpose |
+| --- | --- |
+| `install_build_deps.sh` | Rust, native build/runtime packages and Android USB udev rules. |
+| `build_kms.sh` | Build binaries and a complete release archive. |
+| `run_kms.sh` | Run the local KMS build; clean up both processes together. `--detach` runs it in the background. |
+| `install_systemd.sh` | Deploy existing binaries, runtime packages, udev rules and two services. Never builds. |
+| `install_runtime_deps.sh` | Runtime packages, GPSD and USB rules only. |
 
-## Raspberry Pi 5 setup
+See [installation guide](docs/installation-lite.md) for releases and systemd.
 
-> The FFmpeg 9 Rust wrapper requires the `format` feature alongside `codec` and `software-scaling`. Install `libavformat-dev` even though projection decoding uses the H.264 parser directly.
+## Configuration
 
-The video milestone adds FFmpeg development headers and `libclang`, so run the installer again even if an older NavBridge build was already working:
+`config/core.toml`:
 
-```bash
-./scripts/install_pi5.sh
-./scripts/install_udev_rules.sh
+```toml
+socket_path = "/run/navbridge/core.sock"
+snapshot_interval_ms = 500
+
+[android_auto]
+dpi = 160
+fps = 60
+left_hand_drive = true
+
+[ibus]
+enabled = true
+device = "/dev/serial/by-id/usb-Arduino_LLC_Arduino_Micro_HIDPC-if00"
+
+[audio]
+enabled = true
+playback_device = 'plug:SLAVE="dmix:CARD=CODEC,DEV=0"'
+capture_device = "plughw:CARD=CODEC,DEV=0"
 ```
 
-Desktop/X11/Wayland development build:
-
-```bash
-./scripts/build_pi5.sh
-./scripts/run_pi5.sh
-```
-
-Dedicated DRM/KMS display:
-
-```bash
-./scripts/build_pi5_kms.sh
-RUST_LOG=debug ./scripts/run_pi5_kms.sh
-```
-
-`run_pi5_kms.sh` uses Slint's `backend-linuxkms-noseat` path and re-execs with `sudo` for direct DRM/input access when necessary.
-
-## Run the processes manually
-
-Terminal 1:
-
-```bash
-./target/release/navbridge-core --config config/core.toml
-```
-
-Terminal 2:
-
-```bash
-./target/release/navbridge-ui \
-  --config config/frontend.toml \
-  --keyboard config/keyboard.toml
-```
-
-For an unprivileged development run, `scripts/run_pi5.sh` creates a temporary socket under `/tmp` automatically.
-
-## Keyboard configuration
-
-`config/keyboard.toml` belongs to the frontend and is independent of backend configuration.
-
-Default controls:
-
-```text
-Up / W            previous item or page
-Down              next item or page
-Left              previous item or page
-Right / D         next item or page
-Return / Space    select in phone UI / retry when disconnected
-Backspace         back inside phone UI (back in NavBridge pages)
-Escape / Home     return to NavBridge menu
-Q                 quit UI
-```
-
-There is no `TouchArea`, Slint `Button`, mouse callback, or touch callback in the UI.
-
-## Display and projection contract
-
-The fixed constants live in `crates/common/src/lib.rs`:
-
-```text
-UI_WIDTH       = 400
-UI_HEIGHT      = 240
-MEDIA_WIDTH    = 800
-MEDIA_HEIGHT   = 480
-MEDIA_DPI      = 160  # default; overridden by carplay.dpi
-```
-
-`navbridge-ui` validates the geometry announced by `navbridge-core` when IPC connects. A frontend-size change therefore cannot silently change the CarPlay/AA protocol geometry.
-
-## USB/session lifecycle
-
-NavBridge follows the adapter lifecycle verified by current CPC200-CCPA protocol research:
-
-1. detect the adapter
-2. issue a USB reset
-3. drop the old libusb handle
-4. wait about 3 seconds
-5. rediscover the re-enumerated adapter
-6. claim interface 0 and choose its bulk endpoints
-7. arm the heartbeat schedule without sending at t=0
-8. send initialization commands with approximately 120 ms pacing
-9. send the first heartbeat around t=2000 ms and every 2 seconds after that
-
-Reads and writes intentionally use different timeouts. Reads remain short so the loop can service heartbeat scheduling; writes allow up to 3 seconds because the gadget can briefly stall while firmware services `/dev/usb_accessory`.
-
-## Android Auto initialization
-
-Android Auto has a separate work mode from the iPhone/CarPlay `Open` phone mode. NavBridge therefore sends Android mode through **both** known firmware paths before/with initialization:
-
-```text
-SendFile /etc/android_work_mode = 1
-BoxSettings: "androidWorkMode": 1
-BoxSettings: "androidAutoSizeW": 800
-BoxSettings: "androidAutoSizeH": 480
-```
-
-The adapter can reset Android work mode to zero when a phone/session ends. NavBridge re-sends the Android settings after `Unplugged` / `Phase 0` and when AA/CarPlay is manually retried.
-
-## USB read boundaries
-
-Read the 16-byte transport header first, then exactly the declared payload length
-(in bounded chunks). Large reads spanning both transfers caused malformed control
-messages and lost H.264 configuration data on the tested 1314:1521 adapter,
-resulting in FFmpeg `non-existing PPS` errors and no video. Partial reads are
-retained by the message parser before requesting the remaining bytes.
-
-## Projection video
-
-The adapter's `VideoData (0x06)` payload consists of a 20-byte video subheader followed by the H.264 stream. USB read boundaries are **not** assumed to be H.264 packet boundaries.
-
-The media worker therefore does:
-
-```text
-0x06 payload
-  -> skip 20-byte video header
-  -> FFmpeg H.264 parser (av_parser_parse2)
-  -> FFmpeg software H.264 decoder
-  -> libswscale software conversion/downscale
-  -> RGBA 400x240
-  -> /dev/shm/navbridge-video.rgba
-  -> Slint Image
-```
-
-The decoder queue is deliberately shallow for projection latency. If it overflows, NavBridge drops dependent data until an IDR frame appears and requests a fresh keyframe from the adapter.
-
-The tmpfs frame format is intentionally simple:
-
-```text
-4 bytes  magic "NBRG"
-4 bytes  width  (400 LE)
-4 bytes  height (240 LE)
-8 bytes  frame sequence
-384000 bytes RGBA pixels
-```
-
-This is an initial shared-memory transport for bring-up. It can later be replaced by persistent `memfd`/`mmap` buffers without changing the USB or Slint architecture.
-
-## Automatic navigation
-
-The frontend reacts to backend session events:
-
-- phone-link evidence / `Plugged (0x02)` -> automatically show AA / CarPlay
-- first `VideoData (0x06)` -> mark projection streaming and keep/show AA / CarPlay
-- `Unplugged (0x04)` or `Phase 0` -> return to Menu
-- `Control (0x08), value 3` / RequestHostUI -> return to Menu **without disconnecting the phone**
-
-Some firmware can expose Bluetooth/media metadata before emitting the normal `Plugged` event. NavBridge treats those live-link signals as a navigation hint while still using `0x06` as the definitive proof that projection video is streaming.
-
-## Useful debug messages
-
-Run:
-
-```bash
-RUST_LOG=debug ./scripts/run_pi5_kms.sh
-```
-
-During a healthy Android Auto session, useful milestones are:
-
-```text
-Carlinkit phone Plugged event
-Phone link active - waiting for projection video
-first projection video packet
-projection video format established
-Carlinkit heartbeat sent
-```
-
-The AA/CarPlay status page also exposes heartbeat, received video packet, decoded frame and drop counters.
-
-## Build troubleshooting
-
-### `fontconfig.pc` not found
-
-```bash
-sudo apt update
-sudo apt install -y libfontconfig-dev
-```
-
-### FFmpeg / bindgen dependency errors
-
-Run the full installer and dependency check:
-
-```bash
-./scripts/install_pi5.sh
-./scripts/check_pi5_deps.sh
-```
-
-The software decoder requires `clang`, `libclang-dev`, `libavcodec-dev`, `libavformat-dev`, `libavutil-dev`, and `libswscale-dev`. The Pi build scripts enable the Rust FFmpeg binding's `rpi-ffmpeg` compatibility feature because Raspberry Pi OS ships additional `SAND*` / `RPI4*` pixel formats. Normal desktop/CI builds leave that target-specific feature off.
-
-## License
-
-GPL-3.0-or-later. See `LICENSE`.
-
-## Projection keyboard controls and image quality
-
-On the AA/CarPlay screen, arrow keys (W/D also move up/right), Enter/Space, and Backspace are
-forwarded as Carlinkit navigation button press/release commands. Escape and Home
-return to NavBridge without disconnecting the phone. Enter retries connection
-only when no phone is connected. Input is polled independently of the status
-snapshot interval so keys do not wait for a 500 ms status update.
-
-The physical panel is 400x240. The 800x480 source is downscaled using Lanczos,
-accurate rounding and full horizontal chroma interpolation to preserve fine
-text and colored edges. This improves local scaling; it does not change the
-phone encoder bitrate or increase the panel's native resolution.
-
-Protocol reference: https://github.com/lvalen91/CPC200-CCPA_resources/blob/main/documentation/02_Protocol_Reference/command_ids.md
-
-The H.264 parser may emit its previous buffered frame without consuming the
-current input. NavBridge retries those same bytes instead of discarding them;
-discarding them caused alternate reference frames to be lost and made the image
-look heavily compressed. A synthetic 24-frame regression fixture covers this.
-
-Returning from System or the NavBridge menu to a connected AA/CarPlay screen
-reopens the local view and requests a fresh frame (command 12), following
-AutoKit's video-surface restore sequence. Android Auto's
-Exit action releases video focus (501), so local navigation alone leaves its
-last frame frozen. Reopening does not resend Android work-mode settings or
-auto-connect commands. The backend also ignores connection retries while a
-phone is connected or streaming, protecting sessions from stale UI snapshots.
-
-## USB audio (PCM2912A)
-
-Projection audio is enabled by default through the USB card `CODEC`. The ALSA
-`plug`/`dmix` path converts incoming PCM sample rates and mixes stereo music with
-mono navigation/call audio. HDMI card numbering does not affect this selection.
-The microphone uses mono PCM at the phone-requested rate (16 kHz by default).
-Capture starts for phone recording, assistant or call requests and stops at the
-corresponding stop request, phone disconnect or backend shutdown. Microphone
-samples are sent to the dongle and are not saved to disk. Audio continues while
-viewing NavBridge's System menu.
-
-Override `playback_device` and `capture_device` in `[audio]` in `config/core.toml`
-for another ALSA card, or set `enabled = false` to disable both paths.
-Playback defaults to `plug:SLAVE="dmix:CARD=CODEC,DEV=0"`; capture defaults to
-`plughw:CARD=CODEC,DEV=0`. Phone audio routing is fixed to the host USB
-codec: PCM2912A stereo output and microphone input. Dongle discovery uses USB
-vendor/product information automatically. Charging is handled by hardware;
-NavBridge sends no charging-mode commands.
-Builds require `libasound2-dev` (included in the installer).
-
-Use `aplay -l`, `arecord -l`, and `amixer -c CODEC` to check the card and its
-Speaker/Mic capture switches. Debug logs report audio formats, stream starts,
-and microphone packet counts. The optional hardware test briefly plays silence
-and captures/discards microphone samples while both directions are open:
-
-```sh
-cargo test --release -p navbridge-core --features rpi-ffmpeg pcm2912a_full_duplex -- --ignored
-```
-
-Audio protocol reference: [node-carplay messages](https://github.com/rhysmorgan134/node-carplay/tree/master/src/modules/messages).
-
-### Phone shortcuts
-
-On the connected AA/CarPlay screen, shortcuts send once per press:
+The default configuration requests 60 fps. Frame-rate wire values are 60=1 and
+30=2, verified on the Pixel/CM5 during live comparison. Older AASDK definitions
+reverse these values. The frontend loads each frame as soon as the core
+publishes it (inotify on `/dev/shm`) and shows it at the panel's next refresh.
+Measured animation rates can be below the requested maximum, especially when
+the phone reduces updates for static screens. For a frontend update-rate log
+every 5 seconds, start with `NAVBRIDGE_FRAME_STATS=1 ./scripts/run_kms.sh`.
+
+Restart after changing projection settings in core.toml. DPI changes logical
+UI density, not the video or physical display resolution; Settings switches it
+between 160 and 140, and that choice replaces core.toml's. Audio defaults use the stable
+ALSA card name `CODEC`: 48 kHz stereo music, 16 kHz mono speech/system streams
+and 16 kHz mono microphone. ALSA `plug` performs conversion and `dmix` mixes
+playback. HDMI card numbering does not affect selection. Acoustic echo
+cancellation is not implemented.
+
+For development, `head_unit_server = "127.0.0.1:5277"` in `[android_auto]` runs
+the session over TCP while no phone is plugged in by USB, the transport that
+wireless Android Auto uses. On the phone, enable Android Auto's developer
+settings (tap the version 10 times), choose **Start head unit server** in its menu
+and turn on wireless debugging. On the Pi, after `sudo apt install adb`, run
+`adb pair` and `adb connect` with the addresses the phone shows, then
+`adb forward tcp:5277 tcp:5277`. The core tries the server every 5 seconds.
+
+Optional paired `certificate` and `private_key` PEM paths in `[android_auto]`
+replace the built-in accessory identity. The phone certificate chain is checked
+against the Google Automotive Link CA. Unknown settings are rejected, so a
+misspelled key stops the core with an error instead of being silently ignored.
+
+Android USB rules cover AOA and common phone vendors. For a vendor absent from
+`packaging/70-navbridge-android.rules`, add an equivalent vendor rule, reload
+udev and replug the phone. A phone-like device that cannot be opened or does not
+support AOA is skipped until it is replugged, so it cannot hide a phone on
+another port. Audio, Arduino and GNSS interfaces are not probed as phone
+accessories.
+
+## Keyboard
+
+Bindings live in `config/keyboard.toml`.
 
 | Key | Action |
 | --- | --- |
-| N | Next track |
-| B | Previous track |
-| V | Activate Siri / Android Auto voice assistant (Gemini when available) |
-| A | Answer incoming call |
-| H | Phone home screen |
-| P | Pause music |
-| S | Resume music |
+| Arrows, W/D | Navigation (W = up, D = right) |
+| Enter/Space | Select |
+| Backspace | Android Auto back; back in NavBridge pages |
+| Escape/Home | NavBridge menu without disconnecting |
+| N / B | Next / previous track |
+| V | Android Auto voice assistant |
+| A / E | Answer / end or reject a call (phone-dependent; Bluetooth call audio is not implemented) |
+| H | Android Auto home |
+| M / S | Open the navigation app / media in Android Auto |
+| P | Pause or resume music (the phone knows which) |
+| Page Up / Page Down | Day / night mode from any page |
+| Ctrl / Alt | Parking brake on / off from any page: Android Auto's driving restrictions off / on |
+| Q | Quit |
 
-A/S no longer act as Left/Down. Arrow keys navigate; Escape/Home opens the
-NavBridge menu. Bindings are configurable in `config/keyboard.toml`.
+In Android Auto, Up/Down switch focus sections; Left/Right step through items
+using rotary input. Enter selects and Backspace goes back.
 
-### CarPlay layout and color range
+There are no touchscreen controls. Night mode starts in day mode and survives
+phone reconnects until the core restarts.
 
-Startup sends full 800x480 `HU_VIEWAREA_INFO` and `HU_SAFEAREA_INFO` before
-Open. The decoder normalizes legacy YUVJ formats with explicit full-range
-metadata and honors frame color-range/color-space metadata when scaling.
+Android Auto gets the parking brake and a driving status: with the brake on, no
+driving restrictions, so the keyboard, long lists and settings work; with it
+off, all of them. Until the first Ctrl or Alt after the core starts, the car
+counts as moving, as the phone otherwise assumes. The state survives phone
+reconnects like night mode. The board should tap the key (press and release)
+when the brake changes, and once more when it powers up, rather than hold it:
+held, Ctrl and Alt together with Backspace would quit the UI. The phone can
+still restrict itself when it notices it is moving. Without a phone, the projection page
+shows the connection status while the core keeps looking for one.
 
-### System page
+## Menu
 
-Use Left/Up and Right/Down to cycle through three pages:
+The menu shows NavBridge and the core's status light at the top, four tiles in
+the middle and, at the bottom, the BT, WIFI and GNSS lights and the time.
+Left/Up and Right/Down move between the tiles, Enter opens one, Back or Escape
+returns:
 
-1. **Compute Module 5** and **Dongle**: CPU/RAM usage, CPU temperature, dongle status, model and firmware.
-2. **Phone** and **Audio - Video**: phone name, projection type, wireless/wired transport, hardware audio sample rate, app and phone-video resolutions.
-3. **GNSS Signal**: receiver/port, connection and fix status, satellites used/in view, latitude/longitude, MSL altitude, speed (km/h), HDOP, and UTC fix time.
+- **Android Auto**: the phone's screen, or while there is none, its connection
+  status and, in wireless mode, how far a phone has got and PAIR A PHONE.
+- **CarPlay**: not in this build yet; in wireless mode, PAIR A PHONE.
+- **Settings**: wireless Android Auto, the projection's DPI, and the codec's
+  volume and microphone gain (see below).
+- **System**: the System pages.
 
-Entering System opens page 1. Backspace or Escape returns to the menu.
-Metrics refresh once per second. Closed playback shows Idle; missing phone
-names or transport flags show Unknown. Audio rate is measured at the PCM2912A
-hardware, and phone-video resolution comes from incoming video packets.
+Lights are green when on and red when off. CORE: the UI is connected to the
+core. BT: Bluetooth is ready for wireless phones. WIFI: the hotspot is up.
+GNSS: the receiver has a fix; orange while a receiver is connected without one.
+The time is the Pi's local time. The tiles' icons are in `crates/ui/ui/icons`.
 
+## Settings
 
-### Pair a new phone
+Left/Right (or Up/Down) choose a row, and Enter opens it: it is outlined and
+its value takes arrows. Left/Right then change the value, which takes effect at
+once, and Enter or Back close the row again.
 
-Keep NavBridge running so it initializes the USB adapter. On the disconnected
-AA/CarPlay screen, use arrows to choose **Pair phone** and press Enter. Enable
-Bluetooth and Wi-Fi on the phone, select the Bluetooth name shown on screen,
-and accept pairing and Android Auto/CarPlay prompts. A replacement dongle needs
-its own pairing even if its advertised name matches the old one; forget an old
-entry with that name if it prevents a fresh pairing.
+| Row | Values | Notes |
+| --- | --- | --- |
+| Wireless | ON / OFF | Wireless Android Auto (see below) |
+| Video DPI | 160 / 140 | The phone gets it when it next connects |
+| Audio volume | 0-100%, 5% steps | The codec's `Speaker` level; held keys repeat |
+| Microphone | 0-100%, 5% steps | The codec's `Mic` capture gain |
 
-Pair phone reapplies Android projection settings and requests CarPlay BLE
-advertising (command 30). Android pairing uses the adapter's Bluetooth device;
-phone approval is still required. Retry connection asks for reconnection to a
-saved phone. Pairing controls are unavailable during an active projection session
-and never erase the adapter's saved phones.
+The line below the rows describes the chosen one: the hotspot's status, the
+DPI's timing, or the codec. The codec's levels have fewer steps than 5%, so some read
+back 1% off, such as 14% for 15%. Choices are kept in
+`/var/lib/navbridge/settings.toml`; the levels are set again whenever the codec
+appears, as a power cut can lose ALSA's own copy.
 
-### Dongle Bluetooth and Wi-Fi names
+## System pages
 
-Set the two independent names in `config/core.toml`:
+1. Compute Module 5: CPU/RAM usage and temperature. USB connection: detected/
+   connected status, device model and the connected phone's name.
+2. Video: UI resolution, projection resolution (Android Auto; CarPlay is not in
+   this build) and the DPI and frame rate requested from the phone. Audio: the
+   USB codec ALSA uses (name and USB id), its hardware sampling rates while
+   playing or recording, and its ALSA mixer volume and microphone gain.
+3. GNSS: GPSD receiver/port, connection/fix status, satellite counts, coordinates,
+   MSL altitude, speed, HDOP and UTC fix time.
+4. IBUS: the car's readings (see below).
 
-```toml
-[carplay]
-bluetooth_name = "NavBridge"
-wifi_name = "NavBridge"
+Left/Up and Right/Down change System pages. GNSS readings expire after five
+seconds. GPSD handles supported USB receivers and hotplug; unsupported adapters
+need a stable `/dev/serial/by-id/` entry in `/etc/default/gpsd`. Do not select the
+Arduino.
+
+If GPSD reports a receiver when the phone connects, Android Auto is offered the
+car's location and gets every fix (usually once a second): position, accuracy,
+altitude, speed, and heading while moving. The core logs `Android Auto uses the
+car's GNSS position` when the phone takes it. Without a receiver at connection,
+the phone uses its own GPS; a receiver plugged in later counts from the next
+connection.
+
+## IBUS (System page 4)
+
+The carrier board's ATmega32U4 hears the car's I-Bus (BMW E46 and E85
+electrics) and passes each frame to the Pi over USB serial, one line each, such
+as `IBUS1 RX 7323494 8004BF110329`: bus, direction, its milliseconds since it
+started, and the frame in hex. The core reads `[ibus] device` in core.toml, the
+board's stable `/dev/serial/by-id/` name, checks each frame's length and
+checksum, and reopens the port whenever the board is unplugged and back. It
+never sends anything towards the car.
+
+From the instrument cluster's broadcasts, System page 4 shows:
+
+| Tile | I-Bus message | Notes |
+| --- | --- | --- |
+| Speed | `18`, road speed | In steps of 2 km/h; the GNSS speed beside it while there is a fix |
+| Engine | `18`, engine speed | In steps of 100 rpm |
+| Coolant, Outside | `19` | °C |
+| Ignition | `11` | Off, Position 1, On, Starting |
+| Odometer | `17` | km, once something on the bus asks the cluster for it |
+
+Speed and engine speed go back to n/a after 10 seconds without an update, or
+when the ignition is off; everything does after 10 seconds without any I-Bus
+traffic, as the car is then asleep. The header shows the link and how many
+frames it carried; damaged frames point to a wiring or interference problem.
+With `RUST_LOG=debug`, the core logs each reading that changes and, once each,
+the kinds of message it does not decode, to find out what else the car sends.
+The systemd service reads the port through the `dialout` group.
+
+## Wireless Android Auto
+
+The phone needs Android 11 or later with 5 GHz Wi-Fi; on some phones
+"Wireless Android Auto" must also be enabled in the Android Auto settings. On
+NavBridge:
+
+- **WIRELESS ON/OFF**, in Settings. On: the built-in Wi-Fi becomes the hotspot
+  `NavBridge-XXXX` (5 GHz, channel 36, WPA2, address 10.42.0.1) and Bluetooth
+  takes the same name. NetworkManager's profile `navbridge-hotspot` is created on
+  first use with a random password, which
+  `sudo nmcli -s -g 802-11-wireless-security.psk connection show navbridge-hotspot`
+  shows. Off, and whenever NavBridge stops: NetworkManager reconnects the saved
+  home network; the hotspot never starts on its own, so a reboot also returns to
+  it.
+- **PAIR A PHONE**, with Wireless ON, on the Android Auto page while no phone
+  is connected, or on the CarPlay page; Enter opens pairing. For 2 minutes, phones can find
+  NavBridge. Pair from the phone's Bluetooth settings; NavBridge then shows the
+  6-digit code. Enter pairs if the phone shows the same code; Back refuses.
+
+A paired phone gets the hotspot's details over Bluetooth, joins it and starts
+Android Auto over Wi-Fi. While wireless mode is on and no phone is connected,
+NavBridge calls paired phones every 20 seconds, so Android Auto starts once the
+phone is in range with Bluetooth and Wi-Fi on. With several paired phones, the
+calls stop at the first whose Android Auto connects. A phone plugged in by USB still
+comes first.
+
+The choice is kept in `/var/lib/navbridge/settings.toml`, so the next start
+brings the hotspot back. To start with wireless mode on whatever was saved,
+pass `--wireless` to `navbridge-core` or `./scripts/run_kms.sh`. The UI can
+still turn it off; that choice is saved for starts without the flag. While
+wireless mode is on, the Pi is off the home network and SSH drops; start
+NavBridge with `--detach` so that it keeps running without the SSH session:
+
+```bash
+./scripts/run_kms.sh --wireless --detach
 ```
 
-NavBridge applies them on each dongle initialization before auto-connect, using
-AutoKit's BluetoothDeviceName (13) and WifiDeviceName (14) commands. Restart the
-app after editing. Use at most 15 ASCII letters/digits, spaces, hyphens or
-underscores. Set either value to an empty string to leave that radio's existing
-name unchanged. Invalid names are rejected before the USB service starts.
-The pairing screen continues to show the Bluetooth name reported by the dongle.
-Names are not resent for phone retries or when returning from the System menu.
+It checks first, showing problems such as a NavBridge already running in the
+terminal, then runs in the background with its output in `/tmp/navbridge.log`.
+`sudo pkill -x navbridge-core` stops it. For a debug log, start it with
+`RUST_LOG=debug` in front.
 
+For the systemd service, `sudo systemctl edit navbridge-core` and add the flag
+to the core's command line:
 
-### USB GNSS
+```ini
+[Service]
+ExecStart=
+ExecStart=/opt/navbridge/bin/navbridge-core --config /opt/navbridge/config/core.toml --wireless
+```
 
-Run `./scripts/setup_gnss.sh` once on an existing installation, then reconnect the USB GNSS receiver. The regular Pi installer also installs GPSD. NavBridge connects to GPSD on localhost port 2947 and retries automatically if it is temporarily unavailable. GPSD handles receiver protocols and USB hotplug; NavBridge does not assume a particular model or tty number and does not probe other serial devices (such as the Arduino).
+The systemd installer adds a polkit rule so that the service, which runs as
+your user, may switch the Wi-Fi; Bluetooth needs no extra permission. Log lines,
+in the order a connection goes through them: `Bluetooth ready for wireless
+Android Auto` (with its RFCOMM channel), `Bluetooth pairing request`,
+`Bluetooth phone paired`, `called the phone over Bluetooth`, `the phone's
+Android Auto connected over Bluetooth`, `the phone has the hotspot's details`,
+`wireless Android Auto phone connected`. Otherwise the warning `wireless Android
+Auto setup failed` gives the reason, such as a phone that could not join the
+hotspot. The call logs how long the phone took to answer (`ms`), and the
+handshake how long it waited for the hotspot (`waited_ms`).
 
-GPSD-supported receivers covered by the distribution's USB hotplug rules are detected automatically. For an unrecognized USB adapter, configure its stable `/dev/serial/by-id/...` path in GPSD's `DEVICES` setting in `/etc/default/gpsd`, following GPSD documentation, and restart GPSD. Never select the Arduino port. Keep `USBAUTO="true"` for supported USB receivers.
+## Diagnostics and validation
 
-System page 3 distinguishes GPSD unavailable, receiver not detected, waiting for data, no fix, 2D/3D fix, and stale data. Position and UTC are shown only with a fix; MSL altitude requires a 3D fix and an `altMSL` report. Readings expire after five seconds without corresponding reports. Empty fields display `n/a`. HDOP is a dimensionless geometry indicator (lower is better), not a distance accuracy estimate. A clear view of the sky may be needed for the first fix. With multiple receivers the app selects one and keeps their reports separate.
+```bash
+RUST_LOG=debug ./scripts/run_kms.sh
+cargo test --workspace --features navbridge-core/rpi-ffmpeg,navbridge-ui/direct-kms
+```
 
-Tab toggles AA/CarPlay day/night mode from any NavBridge screen (one toggle per press). The app starts in day mode and retains the selection across dongle reconnects until the core restarts. There is no `night_mode` setting in `core.toml`; the shortcut is mapped by `toggle_night_mode` in `keyboard.toml`.
+To see the screens without the panel, the UI renders them with sample data into
+`/tmp/navbridge-*.ppm`:
 
-Set `dpi = 160` in the `[carplay]` section of `config/core.toml` to control the logical density advertised to both Android Auto and CarPlay. The default remains 160. Higher density generally gives larger interface elements; video resolution stays 800x480 and the NavBridge UI stays 400x240. Restart NavBridge after changing DPI so the dongle and phone negotiate the new setting. Actual layout depends on the phone/projection software.
+```bash
+cargo test -p navbridge-ui --features navbridge-ui/direct-kms -- --ignored preview
+```
 
+Useful milestones: `Android accessory connected`, `Android Auto TLS authenticated`,
+`projection video format established`, `PCM playback opened`. At debug level the
+core also logs `projection video frames since the core started`, with the frames
+decoded and dropped, every 5 seconds while the phone sends video.
+The test suite includes real TLS exchanges, incremental USB framing and fragment
+bounds, microphone permits, focus restoration and UI navigation/frame generations.
+Real phone/display/audio confirmation remains necessary after protocol changes.
 
-### External GNSS forwarding to Carlinkit
+## Dependencies and attribution
 
-NavBridge automatically forwards a connected GPSD receiver's valid 2D/3D fixes while a phone is connected. It converts complete fixes to checksummed GPGGA and GPRMC NMEA sentences, using the dongle's type `0x29` packet with a little-endian length prefix. Updates are capped at 1 Hz. No location data is sent without a receiver, without a valid fix/time, or after five seconds without a fresh fix. Device removal or GPSD disconnect clears the fix, and forwarding is stopped. A new valid fix resumes forwarding automatically. Startup advertises GGA/RMC capability and initially stops forwarding to avoid reusing cached data. Coordinates are not written to routine logs.
+The direct backend adds OpenSSL (runtime `libssl3` on Bookworm, `libssl3t64` on
+Trixie), Rust protobuf 3.7.2 and its build-time pure-Rust code generator.
+Wireless mode drives the system's BlueZ through the pure-Rust zbus D-Bus
+library, and NetworkManager through `nmcli`; no Qt or Bluetooth libraries are
+needed.
+Existing FFmpeg, ALSA, libusb and Slint dependencies remain necessary.
+No `protoc` executable is needed. `Cargo.lock` pins the build dependencies.
 
-This supplies external location to the dongle; the phone decides whether to use it. Some Carlinkit firmware has an Android Auto timestamp-conversion issue that can cause AA to ignore external fixes. Host-side successful USB delivery does not establish that the phone selected the external location source.
+Protocol references and reused identity material are documented in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). NavBridge is GPL-3.0-or-later;
+see [LICENSE](LICENSE).

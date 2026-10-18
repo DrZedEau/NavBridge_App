@@ -1,9 +1,9 @@
+pub mod android_auto;
 pub mod audio;
-pub mod carplay;
-pub mod media;
-pub mod protocol;
-pub mod system;
-pub mod usb;
-
+pub mod bluetooth;
+pub mod codec;
 pub mod gnss;
-pub mod gnss_forward;
+pub mod ibus;
+pub mod media;
+pub mod system;
+pub mod wifi;

@@ -1,25 +1,147 @@
+// Warm amber on black, matching the NavBridge splash artwork.
+export global AmberPalette {
+    out property <color> background: #000000;
+    out property <color> surface: #100a03;
+    out property <color> selected-surface: #2a1804;
+    out property <color> amber: #ff6600;
+    out property <color> text: #ffc65c;
+    out property <color> muted: #c48a40;
+    out property <color> border: #704000;
+    out property <color> selected-text: #080400;
+    // Status lights.
+    out property <color> led-on: #3ddc4a;
+    out property <color> led-waiting: #ff9f0a;
+    out property <color> led-off: #ff3b30;
+}
+
+// Green: active; orange: present but not ready (a GNSS receiver without a fix);
+// red: not active.
+export enum LedState { off, waiting, on }
+
+// The one choice on the Android Auto and CarPlay pages, in wireless mode.
+component PairButton inherits Rectangle {
+    height: 34px;
+    border-radius: 7px;
+    background: AmberPalette.amber;
+    Text {
+        x: 14px; width: parent.width - 28px; height: parent.height;
+        text: "PAIR A PHONE";
+        color: AmberPalette.selected-text;
+        font-size: 15px;
+        vertical-alignment: center;
+    }
+    Text {
+        x: 14px; width: parent.width - 28px; height: parent.height;
+        text: "ENTER";
+        color: AmberPalette.selected-text;
+        font-size: 11px;
+        font-weight: 700;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+}
+
+// One row in Settings: what it sets, and its current value.
+export struct SettingsRow {
+    label: string,
+    value: string,
+}
+
+component Led inherits Rectangle {
+    in property <LedState> level;
+    width: 10px;
+    height: 10px;
+    border-radius: 5px;
+    background: root.level == LedState.on ? AmberPalette.led-on
+        : root.level == LedState.waiting ? AmberPalette.led-waiting : AmberPalette.led-off;
+}
+
+// A label and its status light.
+component Indicator inherits HorizontalLayout {
+    in property <string> label;
+    in property <LedState> level;
+    spacing: 5px;
+    Text {
+        text: root.label;
+        color: AmberPalette.muted;
+        font-size: 11px;
+        font-weight: 700;
+        vertical-alignment: center;
+    }
+    VerticalLayout {
+        alignment: center;
+        Led { level: root.level; }
+    }
+}
+
+component MenuTile inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> selected;
+    width: 88px;
+    height: 120px;
+    border-radius: 8px;
+    background: root.selected ? AmberPalette.selected-surface : AmberPalette.surface;
+    border-width: root.selected ? 2px : 1px;
+    border-color: root.selected ? AmberPalette.amber : AmberPalette.border;
+    Image {
+        x: (root.width - 56px) / 2;
+        y: 18px;
+        width: 56px;
+        height: 56px;
+        source: root.icon;
+    }
+    Text {
+        x: 1px; y: 82px; width: 86px; height: 30px;
+        text: root.label;
+        color: root.selected ? AmberPalette.amber : AmberPalette.text;
+        font-size: 11px;
+        font-weight: root.selected ? 700 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        wrap: word-wrap;
+    }
+}
+
 export component AppWindow inherits Window {
     width: 400px;
     height: 240px;
     title: "NavBridge";
-    background: #080b10;
+    background: AmberPalette.background;
 
-    // 0 menu, 1 AA/CarPlay, 2 System, 3 IBUS
+    // 0 menu, 1 Android Auto, 2 System, 3 Settings, 4 CarPlay
     in property <int> screen: 0;
+    // Menu tiles: 0 Android Auto, 1 CarPlay, 2 Settings, 3 System.
     in property <int> menu-index: 0;
     in property <bool> core-connected: false;
-    in property <string> core-label: "core offline";
-    in property <string> usb-label: "No dongle";
-    in property <string> carplay-status: "Waiting";
-    in property <image> carplay-frame;
+    in property <LedState> bt-led: LedState.off;
+    in property <LedState> wifi-led: LedState.off;
+    in property <LedState> gnss-led: LedState.off;
+    // Local time, "14:05".
+    in property <string> clock: "";
+    in property <string> projection-status: "Waiting";
+    in property <image> projection-frame;
     in property <bool> video-active: false;
+    in property <bool> wireless-enabled: false;
+    in property <string> wireless-status: "";
+    in property <string> bluetooth-status: "";
+    // Settings: its rows, the chosen one and whether Enter opened it, and a
+    // note about it.
+    in property <[SettingsRow]> settings-rows;
+    in property <int> settings-index: 0;
+    in property <bool> settings-editing: false;
+    in property <string> settings-note: "";
+    // Wireless mode is on: the Android Auto and CarPlay pages offer pairing.
+    in property <bool> pair-option: false;
+    // A phone asks to pair: its name and the code to compare.
+    in property <bool> pairing-request: false;
+    in property <string> pairing-device: "";
+    in property <string> pairing-code: "";
     in property <string> cpu-usage: "n/a";
     in property <string> ram-usage: "n/a";
     in property <string> cpu-temperature: "n/a";
-    in property <string> dongle-status: "n/a";
-    in property <string> dongle-model: "n/a";
-    in property <string> dongle-firmware: "n/a";
-    in property <int> pairing-index: 0;
+    in property <string> usb-device-status: "n/a";
+    in property <string> usb-device-name: "n/a";
     in property <int> system-page: 0;
     in property <string> gnss-receiver: "n/a";
     in property <string> gnss-status: "n/a";
@@ -30,17 +152,28 @@ export component AppWindow inherits Window {
     in property <string> gnss-hdop: "n/a";
     in property <string> gnss-utc: "n/a";
 
-    in property <bool> pairing-available: false;
-    in property <string> pairing-hint;
     in property <string> connected-phone: "n/a";
-    in property <string> connection-type: "n/a";
-    in property <string> connection-transport: "n/a";
-    in property <string> audio-output-rate: "n/a";
-    in property <string> app-resolution: "n/a";
-    in property <string> phone-resolution: "n/a";
-    in property <string> ibus-status: "IBUS development placeholder";
+    in property <string> ui-resolution: "n/a";
+    in property <string> projection-resolution: "n/a";
+    in property <string> projection-dpi-fps: "n/a";
+    in property <string> audio-codec: "n/a";
+    in property <string> audio-sample-rate: "n/a";
+    in property <string> audio-volume: "n/a";
+    // The car, from its I-Bus.
+    in property <string> vehicle-status: "n/a";
+    in property <string> vehicle-speed: "n/a";
+    in property <string> vehicle-gnss-speed: "";
+    in property <string> vehicle-rpm: "n/a";
+    in property <string> vehicle-coolant: "n/a";
+    in property <string> vehicle-outside: "n/a";
+    in property <string> vehicle-ignition: "n/a";
+    in property <string> vehicle-odometer: "n/a";
 
     callback key-event(string, bool, bool);
+    // Invoked from Rust when the core has published a new projection frame.
+    callback frame-ready();
+    // Invoked from Rust when messages from the core are waiting.
+    callback core-message();
 
     // Keyboard is the only UI interaction path.
     forward-focus: keyboard;
@@ -59,120 +192,121 @@ export component AppWindow inherits Window {
 
     if root.screen == 0: Rectangle {
         x: 0px; y: 0px; width: 400px; height: 240px;
-        background: #080b10;
+        background: AmberPalette.background;
 
         Text {
-            x: 16px; y: 10px; width: 180px; height: 28px;
-            text: "NAVBRIDGE";
-            color: #f3f6fb;
+            x: 12px; y: 6px; width: 200px; height: 26px;
+            text: "NavBridge";
+            color: AmberPalette.amber;
             font-size: 20px;
             font-weight: 700;
+            vertical-alignment: center;
         }
-        Text {
-            x: 205px; y: 13px; width: 178px; height: 20px;
-            text: root.core-label;
-            color: root.core-connected ? #65e89f : #ff6b6b;
-            font-size: 11px;
-            horizontal-alignment: right;
+        HorizontalLayout {
+            x: 200px; y: 6px; width: 188px; height: 26px;
+            alignment: end;
+            Indicator {
+                label: "CORE";
+                level: root.core-connected ? LedState.on : LedState.off;
+            }
+        }
+        Rectangle {
+            x: 12px; y: 38px; width: 376px; height: 1px;
+            background: AmberPalette.border;
+        }
+
+        for tile[index] in [
+            { label: "Android Auto", icon: @image-url("icons/android-auto.png") },
+            { label: "CarPlay", icon: @image-url("icons/carplay.png") },
+            { label: "Settings", icon: @image-url("icons/settings.png") },
+            { label: "System", icon: @image-url("icons/system.png") },
+        ]: MenuTile {
+            x: 12px + index * 96px;
+            y: 60px;
+            icon: tile.icon;
+            label: tile.label;
+            selected: index == root.menu-index;
         }
 
         Rectangle {
-            x: 16px; y: 51px; width: 368px; height: 48px;
-            border-radius: 7px;
-            background: root.menu-index == 0 ? #225c9c : #151c27;
-            Text {
-                x: 16px; width: 336px; height: 48px;
-                text: "AA / CARPLAY";
-                color: #ffffff;
-                font-size: 18px;
-                vertical-alignment: center;
-            }
+            x: 12px; y: 202px; width: 376px; height: 1px;
+            background: AmberPalette.border;
         }
-        Rectangle {
-            x: 16px; y: 106px; width: 368px; height: 48px;
-            border-radius: 7px;
-            background: root.menu-index == 1 ? #225c9c : #151c27;
-            Text {
-                x: 16px; width: 336px; height: 48px;
-                text: "SYSTEM";
-                color: #ffffff;
-                font-size: 18px;
-                vertical-alignment: center;
-            }
-        }
-        Rectangle {
-            x: 16px; y: 161px; width: 368px; height: 48px;
-            border-radius: 7px;
-            background: root.menu-index == 2 ? #225c9c : #151c27;
-            Text {
-                x: 16px; width: 336px; height: 48px;
-                text: "IBUS";
-                color: #ffffff;
-                font-size: 18px;
-                vertical-alignment: center;
-            }
+        HorizontalLayout {
+            x: 12px; y: 208px; width: 260px; height: 26px;
+            alignment: start;
+            spacing: 14px;
+            Indicator { label: "BT"; level: root.bt-led; }
+            Indicator { label: "WIFI"; level: root.wifi-led; }
+            Indicator { label: "GNSS"; level: root.gnss-led; }
         }
         Text {
-            x: 16px; y: 216px; width: 368px; height: 16px;
-            text: root.usb-label;
-            color: #7f8fa6;
-            font-size: 10px;
+            x: 288px; y: 208px; width: 100px; height: 26px;
+            text: root.clock;
+            color: AmberPalette.text;
+            font-size: 15px;
+            font-weight: 700;
+            horizontal-alignment: right;
+            vertical-alignment: center;
         }
     }
 
     if root.screen == 1: Rectangle {
-        // Session is negotiated at 800x480 @ 160 DPI. The backend performs
+        // Wired Android Auto is negotiated at 800x480 with configurable DPI. The backend performs
         // software H.264 decode and publishes this exact 400x240 presentation.
         x: 0px; y: 0px; width: 400px; height: 240px;
-        background: #020305;
+        background: AmberPalette.background;
 
         if root.video-active: Image {
             x: 0px; y: 0px; width: 400px; height: 240px;
-            source: root.carplay-frame;
+            source: root.projection-frame;
         }
 
         if !root.video-active: Rectangle {
             x: 0px; y: 0px; width: 400px; height: 240px;
-            background: #020305;
+            background: AmberPalette.background;
             Text {
-                x: 12px; y: 12px; width: 376px; height: 28px;
-                text: "AA / CARPLAY";
-                color: #ffffff;
-                font-size: 20px;
-                font-weight: 700;
+                x: 12px; y: 5px; width: 376px; height: 23px;
+                text: "Android Auto";
+                color: AmberPalette.text; font-size: 17px; font-weight: 700;
             }
             Text {
-                x: 12px; y: 53px; width: 376px; height: 70px;
-                text: root.carplay-status;
-                color: #b9c6d8;
+                x: 12px; y: 40px; width: 376px; height: 54px;
+                text: root.projection-status;
+                color: AmberPalette.muted;
                 font-size: 12px;
                 wrap: word-wrap;
+                overflow: elide;
             }
-            if root.pairing-available: Rectangle {
-                x: 12px; y: 128px; width: 376px; height: 78px;
-                background: #020305;
-                for label[index] in ["Pair phone", "Retry connection"]: Rectangle {
-                    x: index * 192px; y: 0px; width: 184px; height: 38px;
-                    border-radius: 5px;
-                    background: root.pairing-index == index ? #174c39 : #111823;
-                    border-width: 1px;
-                    border-color: root.pairing-index == index ? #67dba0 : #253244;
-                    Text {
-                        width: parent.width; height: parent.height;
-                        text: label; color: #ffffff; font-size: 14px;
-                        horizontal-alignment: center; vertical-alignment: center;
-                    }
-                }
-                Text {
-                    y: 44px; width: 376px; height: 30px;
-                    text: root.pairing-hint; color: #b9c6d8; font-size: 12px;
-                    wrap: word-wrap;
-                }
+            // While wireless mode is on, how far a phone has got.
+            if root.wireless-enabled: Text {
+                x: 12px; y: 96px; width: 376px; height: 28px;
+                text: root.wireless-status;
+                color: AmberPalette.text;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+            if root.wireless-enabled: Text {
+                x: 12px; y: 124px; width: 376px; height: 28px;
+                text: root.bluetooth-status;
+                color: AmberPalette.text;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+            if root.pair-option: PairButton {
+                x: 12px; y: 164px; width: 376px;
+            }
+            if !root.pair-option: Text {
+                x: 12px; y: 172px; width: 376px; height: 18px;
+                text: "To pair a phone, turn Wireless on in Settings.";
+                color: AmberPalette.muted;
+                font-size: 11px;
             }
             Text {
-                x: 12px; y: 211px; width: 376px; height: 18px;
-                text: root.pairing-available ? "ARROWS choose   ENTER confirm   ESC menu" : "ESC menu";
-                color: #6f7c8e;
+                x: 12px; y: 217px; width: 376px; height: 18px;
+                text: root.pair-option ? "ENTER pair a phone                                BACK / ESC: Menu"
+                    : "Wireless Android Auto: Settings          BACK / ESC: Menu";
+                color: AmberPalette.muted;
                 font-size: 10px;
             }
         }
@@ -180,11 +314,11 @@ export component AppWindow inherits Window {
 
     if root.screen == 2: Rectangle {
         x: 0px; y: 0px; width: 400px; height: 240px;
-        background: #080b10;
+        background: AmberPalette.background;
         Text {
-            x: 12px; y: 5px; width: 376px; height: 23px;
-            text: "System  " + (root.system-page + 1) + "/3";
-            color: #ffffff; font-size: 17px; font-weight: 700;
+            x: 12px; y: 5px; width: 120px; height: 23px;
+            text: "System  " + (root.system-page + 1) + "/4";
+            color: AmberPalette.text; font-size: 17px; font-weight: 700;
         }
         for group[index] in [
             { title: "Compute Module 5", rows: [
@@ -192,44 +326,46 @@ export component AppWindow inherits Window {
                 { label: "RAM Usage", value: root.ram-usage },
                 { label: "CPU temperature", value: root.cpu-temperature },
             ] },
-            { title: "Dongle", rows: [
-                { label: "Dongle Status", value: root.dongle-status },
-                { label: "Dongle model", value: root.dongle-model },
-                { label: "Dongle firmware", value: root.dongle-firmware },
-            ] },
-            { title: "Phone", rows: [
+            { title: "USB connection", rows: [
+                { label: "USB Status", value: root.usb-device-status },
+                { label: "USB device", value: root.usb-device-name },
                 { label: "Connected phone", value: root.connected-phone },
-                { label: "Connection type", value: root.connection-type },
-                { label: "Wireless / wired", value: root.connection-transport },
             ] },
-            { title: "Audio - Video", rows: [
-                { label: "Audio Output Sampling Rate", value: root.audio-output-rate },
-                { label: "Video App Resolution", value: root.app-resolution },
-                { label: "Video AA/CarPlay Resolution", value: root.phone-resolution },
+            { title: "Video", rows: [
+                { label: "UI resolution", value: root.ui-resolution },
+                { label: "Projection resolution", value: root.projection-resolution },
+                { label: "DPI / FPS", value: root.projection-dpi-fps },
+            ] },
+            { title: "Audio", rows: [
+                { label: "USB codec", value: root.audio-codec },
+                { label: "Sampling rate", value: root.audio-sample-rate },
+                { label: "Volume (ALSA mixer)", value: root.audio-volume },
             ] },
         ]: Rectangle {
-            visible: root.system-page < 2 && (index < 2 ? 0 : 1) == root.system-page;
+            // Two sections per page: page 1 has the first two, page 2 the others.
+            visible: (index < 2 ? 0 : 1) == root.system-page;
             x: 8px;
             y: 32px + (index == 0 || index == 2 ? 0px : 92px);
             width: 384px; height: 86px;
             border-radius: 4px;
-            background: #101722;
+            background: AmberPalette.surface;
+            border-width: 1px; border-color: AmberPalette.border;
             Text {
                 x: 8px; y: 4px; width: 368px; height: 18px;
-                text: group.title; color: #67dba0; font-size: 14px; font-weight: 700;
+                text: group.title; color: AmberPalette.amber; font-size: 14px; font-weight: 700;
             }
             for row[row-index] in group.rows: Rectangle {
                 x: 8px; y: 25px + row-index * 19px; width: 368px; height: 19px;
                 background: transparent;
                 Text {
-                    x: 0px; y: 0px; width: 180px; height: 19px;
-                    text: row.label; color: #9eacc0; font-size: 11px;
+                    x: 0px; y: 0px; width: 130px; height: 19px;
+                    text: row.label; color: AmberPalette.muted; font-size: 11px;
                     horizontal-alignment: left; vertical-alignment: center;
                     wrap: no-wrap; overflow: elide;
                 }
                 Text {
-                    x: 192px; y: 0px; width: 176px; height: 19px;
-                    text: row.value; color: #ffffff; font-size: 12px;
+                    x: 136px; y: 0px; width: 232px; height: 19px;
+                    text: row.value; color: AmberPalette.text; font-size: 12px;
                     horizontal-alignment: right; vertical-alignment: center;
                     wrap: no-wrap; overflow: elide;
                 }
@@ -237,10 +373,11 @@ export component AppWindow inherits Window {
         }
         if root.system-page == 2: Rectangle {
             x: 8px; y: 32px; width: 384px; height: 178px;
-            border-radius: 4px; background: #101722;
+            border-radius: 4px; background: AmberPalette.surface;
+            border-width: 1px; border-color: AmberPalette.border;
             Text {
                 x: 8px; y: 3px; width: 368px; height: 20px;
-                text: "GNSS Signal"; color: #67dba0; font-size: 14px; font-weight: 700;
+                text: "GNSS Signal"; color: AmberPalette.amber; font-size: 14px; font-weight: 700;
             }
             for row[index] in [
                 { label: "Receiver", value: root.gnss-receiver },
@@ -255,14 +392,57 @@ export component AppWindow inherits Window {
                 x: 8px; y: 25px + index * 18px; width: 368px; height: 18px;
                 Text {
                     x: 0px; y: 0px; width: 140px; height: 18px;
-                    text: row.label; color: #9eacc0; font-size: 11px;
+                    text: row.label; color: AmberPalette.muted; font-size: 11px;
                     horizontal-alignment: left; vertical-alignment: center;
                     wrap: no-wrap; overflow: elide;
                 }
                 Text {
                     x: 152px; y: 0px; width: 216px; height: 18px;
-                    text: row.value; color: #ffffff; font-size: 11px;
+                    text: row.value; color: AmberPalette.text; font-size: 11px;
                     horizontal-alignment: right; vertical-alignment: center;
+                    wrap: no-wrap; overflow: elide;
+                }
+            }
+        }
+        // Page 4: the car, from its I-Bus.
+        if root.system-page == 3: Rectangle {
+            x: 0px; y: 0px; width: 400px; height: 240px;
+            Text {
+                x: 132px; y: 5px; width: 256px; height: 23px;
+                text: "IBUS · " + root.vehicle-status;
+                color: AmberPalette.muted; font-size: 11px;
+                horizontal-alignment: right; vertical-alignment: center;
+                wrap: no-wrap; overflow: elide;
+            }
+            // Two columns of three readings.
+            for tile[index] in [
+                { label: "SPEED", value: root.vehicle-speed, note: root.vehicle-gnss-speed },
+                { label: "ENGINE", value: root.vehicle-rpm, note: "" },
+                { label: "COOLANT", value: root.vehicle-coolant, note: "" },
+                { label: "OUTSIDE", value: root.vehicle-outside, note: "" },
+                { label: "IGNITION", value: root.vehicle-ignition, note: "" },
+                { label: "ODOMETER", value: root.vehicle-odometer, note: "" },
+            ]: Rectangle {
+                x: index == 0 || index == 2 || index == 4 ? 8px : 204px;
+                y: 32px + (index < 2 ? 0px : index < 4 ? 60px : 120px);
+                width: 188px; height: 56px;
+                border-radius: 4px;
+                background: AmberPalette.surface;
+                border-width: 1px; border-color: AmberPalette.border;
+                Text {
+                    x: 8px; y: 4px; width: 172px; height: 16px;
+                    text: tile.label; color: AmberPalette.amber; font-size: 11px; font-weight: 700;
+                }
+                Text {
+                    x: 8px; y: 20px; width: 172px; height: 32px;
+                    text: tile.value; color: AmberPalette.text; font-size: 22px; font-weight: 700;
+                    vertical-alignment: center;
+                    wrap: no-wrap; overflow: elide;
+                }
+                Text {
+                    x: 96px; y: 4px; width: 84px; height: 16px;
+                    text: tile.note; color: AmberPalette.muted; font-size: 10px;
+                    horizontal-alignment: right;
                     wrap: no-wrap; overflow: elide;
                 }
             }
@@ -270,37 +450,144 @@ export component AppWindow inherits Window {
         Text {
             x: 12px; y: 217px; width: 376px; height: 18px;
             text: "ARROWS: Pages                         BACK / ESC: Menu";
-            color: #6f7c8e; font-size: 10px;
+            color: AmberPalette.muted; font-size: 10px;
         }
     }
 
     if root.screen == 3: Rectangle {
         x: 0px; y: 0px; width: 400px; height: 240px;
-        background: #080b10;
+        background: AmberPalette.background;
         Text {
-            x: 12px; y: 12px; width: 376px; height: 28px;
-            text: "IBUS";
-            color: #ffffff;
-            font-size: 20px;
-            font-weight: 700;
+            x: 12px; y: 5px; width: 376px; height: 23px;
+            text: "Settings";
+            color: AmberPalette.text; font-size: 17px; font-weight: 700;
         }
-        Rectangle {
-            x: 12px; y: 60px; width: 376px; height: 116px;
+        // The chosen row is filled; once Enter opens it, it is outlined and
+        // its value takes arrows, as Left/Right then change it.
+        for row[index] in root.settings-rows: Rectangle {
+            property <bool> chosen: index == root.settings-index;
+            property <bool> open: self.chosen && root.settings-editing;
+            x: 12px; y: 34px + index * 38px; width: 376px; height: 32px;
             border-radius: 6px;
-            background: #111823;
+            background: self.open ? AmberPalette.selected-surface
+                : self.chosen ? AmberPalette.amber : AmberPalette.surface;
+            border-width: self.open ? 2px : 1px;
+            border-color: self.chosen ? AmberPalette.amber : AmberPalette.border;
             Text {
-                x: 12px; y: 12px; width: 352px; height: 92px;
-                text: root.ibus-status;
-                color: #b9c6d8;
-                font-size: 13px;
-                wrap: word-wrap;
+                x: 12px; width: 220px; height: parent.height;
+                text: row.label;
+                color: parent.open ? AmberPalette.amber
+                    : parent.chosen ? AmberPalette.selected-text : AmberPalette.text;
+                font-size: 14px;
+                vertical-alignment: center;
+            }
+            Text {
+                x: 232px; width: 132px; height: parent.height;
+                text: parent.open ? "‹  " + row.value + "  ›" : row.value;
+                color: parent.open ? AmberPalette.amber
+                    : parent.chosen ? AmberPalette.selected-text : AmberPalette.text;
+                font-size: 14px;
+                font-weight: 700;
+                horizontal-alignment: right;
+                vertical-alignment: center;
             }
         }
         Text {
-            x: 12px; y: 211px; width: 376px; height: 18px;
-            text: "BACK menu";
-            color: #6f7c8e;
+            x: 12px; y: 186px; width: 376px; height: 28px;
+            text: root.settings-note;
+            color: AmberPalette.text;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+        Text {
+            x: 12px; y: 217px; width: 376px; height: 18px;
+            text: root.settings-editing ? "LEFT / RIGHT change                       ENTER / BACK: Done"
+                : "LEFT / RIGHT choose          ENTER change          BACK / ESC: Menu";
+            color: AmberPalette.muted;
             font-size: 10px;
+        }
+    }
+
+    if root.screen == 4: Rectangle {
+        x: 0px; y: 0px; width: 400px; height: 240px;
+        background: AmberPalette.background;
+        Text {
+            x: 12px; y: 5px; width: 376px; height: 23px;
+            text: "CarPlay";
+            color: AmberPalette.text; font-size: 17px; font-weight: 700;
+        }
+        Image {
+            x: 172px; y: 58px; width: 56px; height: 56px;
+            source: @image-url("icons/carplay.png");
+        }
+        Text {
+            x: 12px; y: 118px; width: 376px; height: 22px;
+            text: "CarPlay is not in this build yet.";
+            color: AmberPalette.text;
+            font-size: 14px;
+            horizontal-alignment: center;
+        }
+        if root.pair-option: PairButton {
+            x: 12px; y: 150px; width: 376px;
+        }
+        if root.pair-option: Text {
+            x: 12px; y: 190px; width: 376px; height: 18px;
+            text: root.bluetooth-status;
+            color: AmberPalette.text;
+            font-size: 11px;
+            wrap: no-wrap; overflow: elide;
+        }
+        if !root.pair-option: Text {
+            x: 12px; y: 158px; width: 376px; height: 18px;
+            text: "To pair a phone, turn Wireless on in Settings.";
+            color: AmberPalette.muted;
+            font-size: 11px;
+            horizontal-alignment: center;
+        }
+        Text {
+            x: 12px; y: 217px; width: 376px; height: 18px;
+            text: root.pair-option ? "ENTER pair a phone                                BACK / ESC: Menu"
+                : "BACK / ESC: Menu";
+            color: AmberPalette.muted; font-size: 10px;
+        }
+    }
+
+    if root.pairing-request: Rectangle {
+        x: 0px; y: 0px; width: 400px; height: 240px;
+        background: AmberPalette.background;
+        Rectangle {
+            x: 12px; y: 12px; width: 376px; height: 216px;
+            border-radius: 8px;
+            background: AmberPalette.surface;
+            border-width: 2px; border-color: AmberPalette.amber;
+            Text {
+                x: 16px; y: 12px; width: 344px; height: 24px;
+                text: "BLUETOOTH PAIRING";
+                color: AmberPalette.amber; font-size: 18px; font-weight: 700;
+            }
+            Text {
+                x: 16px; y: 42px; width: 344px; height: 36px;
+                text: root.pairing-device + " asks to pair. Pair only if the phone shows this code:";
+                color: AmberPalette.text; font-size: 12px;
+                wrap: word-wrap;
+            }
+            Text {
+                x: 16px; y: 82px; width: 344px; height: 76px;
+                text: root.pairing-code;
+                color: AmberPalette.amber; font-size: 48px; font-weight: 700;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+            Text {
+                x: 16px; y: 182px; width: 172px; height: 18px;
+                text: "ENTER pair";
+                color: AmberPalette.muted; font-size: 11px;
+            }
+            Text {
+                x: 188px; y: 182px; width: 172px; height: 18px;
+                text: "BACK refuse";
+                color: AmberPalette.muted; font-size: 11px;
+                horizontal-alignment: right;
+            }
         }
     }
 }

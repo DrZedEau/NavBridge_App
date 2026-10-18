@@ -1,5 +1,5 @@
 [Unit]
-Description=NavBridge dongle, audio and GNSS backend
+Description=NavBridge Android Auto, audio, GNSS and I-Bus backend
 Wants=gpsd.socket
 After=local-fs.target sound.target gpsd.socket
 StartLimitIntervalSec=0
@@ -8,11 +8,15 @@ StartLimitIntervalSec=0
 Type=simple
 User=@USER@
 Group=@GROUP@
-SupplementaryGroups=plugdev audio
+SupplementaryGroups=plugdev audio dialout
 WorkingDirectory=/opt/navbridge
 RuntimeDirectory=navbridge
 RuntimeDirectoryMode=0770
-ExecStart=/opt/navbridge/bin/navbridge-core --config /etc/navbridge/core.toml
+# Keeps settings that survive a restart, such as wireless mode.
+StateDirectory=navbridge
+# Clear the disposable frame left by a sudo KMS development run.
+ExecStartPre=+/usr/bin/rm -f -- /dev/shm/navbridge-video.rgba
+ExecStart=/opt/navbridge/bin/navbridge-core --config /opt/navbridge/config/core.toml
 Restart=on-failure
 RestartSec=2
 Environment=RUST_LOG=info

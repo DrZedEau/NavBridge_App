@@ -38,6 +38,10 @@ impl OutputQueue {
         Ok(())
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
+
     pub fn flush(&mut self, writer: &mut impl Write) -> io::Result<()> {
         let mut budget = WRITE_BUDGET;
         // Bound syscalls as well as bytes, including repeated interruptions.

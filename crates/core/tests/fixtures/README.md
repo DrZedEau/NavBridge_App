@@ -1,4 +1,4 @@
-# H.264 parser regression fixture
+# H.264 access-unit fixture
 
 `parser-continuation.h264` is a synthetic 24-frame test stream, generated with:
 
@@ -8,8 +8,9 @@ ffmpeg -f lavfi -i testsrc2=size=160x96:rate=30 -frames:v 24 \
   -x264-params aud=1:keyint=30:bframes=0 -f h264 parser-continuation.h264
 ```
 
-Each access unit is supplied separately, like a dongle payload. FFmpeg can emit
-its previous buffered frame with zero input consumption. The decoder must then
-retry the current bytes, not drop them. Before the fix only 12 frames decoded;
-after it 23 decode, with the final frame retained by the parser until EOF.
+The tests split it at access-unit delimiters and push one access unit at a
+time, like Android Auto video messages; the first unit's SPS/PPS are pushed on
+their own, like the codec configuration message. Every access unit must publish
+its frame as soon as it is pushed, so all 24 decode. The earlier FFmpeg-parser
+pipeline held each frame until the next unit arrived and decoded only 23.
 No user screen content is included in this fixture.

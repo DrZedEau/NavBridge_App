@@ -1,12 +1,11 @@
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::slice;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ffmpeg::software::scaling::{context::Context as ScalingContext, flag::Flags as ScalingFlags};
 use ffmpeg::util::color::{Range, Space};
@@ -18,6 +17,9 @@ use tracing::{debug, info, warn};
 const RGBA_BYTES_PER_PIXEL: usize = 4;
 const FRAME_BYTES: usize = UI_WIDTH as usize * UI_HEIGHT as usize * RGBA_BYTES_PER_PIXEL;
 const VIDEO_QUEUE_DEPTH: usize = 12;
+const MAX_CODEC_CONFIG_BYTES: usize = 64 * 1024;
+/// How often the frame counters are logged, at debug level, while video plays.
+const COUNTER_LOG_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PushResult {
@@ -30,20 +32,35 @@ enum VideoCommand {
     Data { generation: u64, segment: Vec<u8> },
 }
 
+/// Frames decoded and dropped since the core started. Clones share the counts,
+/// so the decoder thread logs drops counted on the session thread too.
+#[derive(Clone, Default)]
+struct VideoCounters {
+    decoded: Arc<AtomicU64>,
+    dropped: Arc<AtomicU64>,
+}
+
+impl VideoCounters {
+    fn decoded(&self) -> u64 {
+        self.decoded.load(Ordering::Relaxed)
+    }
+
+    fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
+}
+
 /// Software-only H.264 projection pipeline.
 ///
-/// CarPlay/Android Auto is negotiated at 800x480. The CPC200 sends an Annex-B
-/// H.264 byte stream after its 20-byte video sub-header. The USB chunks are not
-/// assumed to be codec packet boundaries: this worker first runs the byte stream
-/// through FFmpeg's H.264 parser, decodes with the normal software H.264 decoder,
-/// scales to the physical 400x240 NavBridge UI, then atomically publishes RGBA
-/// frames through tmpfs for the separate Slint process.
+/// Android Auto is negotiated at 800x480. Each reassembled video message is one
+/// complete Annex-B access unit (or the SPS/PPS codec configuration), so it goes
+/// to the normal software H.264 decoder as one packet and its frame is published
+/// at once. Frames are scaled to the physical 400x240 NavBridge UI, then
+/// atomically published as RGBA through tmpfs for the separate Slint process.
 pub struct VideoPipeline {
     tx: Option<SyncSender<VideoCommand>>,
     worker: Option<JoinHandle<()>>,
-    received: Arc<AtomicU64>,
-    decoded: Arc<AtomicU64>,
-    dropped: Arc<AtomicU64>,
+    counters: VideoCounters,
     wait_for_idr: Arc<AtomicBool>,
     frame_path: PathBuf,
     generation: Arc<Mutex<u64>>,
@@ -52,6 +69,7 @@ pub struct VideoPipeline {
 impl VideoPipeline {
     pub fn start(frame_path: impl AsRef<Path>) -> Result<Self, String> {
         let frame_path = frame_path.as_ref().to_path_buf();
+        let counters = VideoCounters::default();
         let _ = fs::remove_file(&frame_path);
 
         // Fail early if the system FFmpeg libraries are unavailable or broken.
@@ -62,32 +80,31 @@ impl VideoPipeline {
 
         let (tx, rx) = mpsc::sync_channel::<VideoCommand>(VIDEO_QUEUE_DEPTH);
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
-        let received = Arc::new(AtomicU64::new(0));
-        let decoded = Arc::new(AtomicU64::new(0));
-        let dropped = Arc::new(AtomicU64::new(0));
         let wait_for_idr = Arc::new(AtomicBool::new(false));
 
         let generation = Arc::new(Mutex::new(0));
         let worker_generation = Arc::clone(&generation);
-        let worker_decoded = Arc::clone(&decoded);
-        let worker_dropped = Arc::clone(&dropped);
+        let worker_counters = counters.clone();
         let worker_frame_path = frame_path.clone();
         let worker = thread::Builder::new()
             .name("navbridge-h264-sw".into())
             .spawn(move || {
-                let mut engine =
-                    match DecoderEngine::new(worker_frame_path, Arc::clone(&worker_decoded)) {
-                        Ok(engine) => {
-                            let _ = ready_tx.send(Ok(()));
-                            engine
-                        }
-                        Err(err) => {
-                            let _ = ready_tx.send(Err(err));
-                            return;
-                        }
-                    };
+                let mut engine = match DecoderEngine::new(
+                    worker_frame_path,
+                    Arc::clone(&worker_counters.decoded),
+                ) {
+                    Ok(engine) => {
+                        let _ = ready_tx.send(Ok(()));
+                        engine
+                    }
+                    Err(err) => {
+                        let _ = ready_tx.send(Err(err));
+                        return;
+                    }
+                };
 
                 engine.generation = worker_generation;
+                let mut logged = Instant::now();
                 while let Ok(VideoCommand::Data {
                     generation,
                     segment,
@@ -104,12 +121,21 @@ impl VideoPipeline {
                         engine.active_generation = generation;
                     }
                     if let Err(err) = engine.push(&segment) {
-                        worker_dropped.fetch_add(1, Ordering::Relaxed);
+                        worker_counters.dropped.fetch_add(1, Ordering::Relaxed);
                         warn!(%err, "software H.264 decode error; resetting decoder");
                         if let Err(reset_err) = engine.reset() {
                             warn!(%reset_err, "failed to reset software H.264 decoder");
                             break;
                         }
+                    }
+                    // Only while video arrives, so a paused phone adds no lines.
+                    if logged.elapsed() >= COUNTER_LOG_INTERVAL {
+                        logged = Instant::now();
+                        debug!(
+                            decoded = worker_counters.decoded(),
+                            dropped = worker_counters.dropped(),
+                            "projection video frames since the core started"
+                        );
                     }
                 }
             })
@@ -136,37 +162,37 @@ impl VideoPipeline {
         Ok(Self {
             tx: Some(tx),
             worker: Some(worker),
-            received,
-            decoded,
-            dropped,
+            counters,
             wait_for_idr,
             frame_path,
             generation,
         })
     }
 
-    /// Queue another raw Annex-B segment from USB. If decoding falls behind,
+    /// Queue one Android Auto video message. If decoding falls behind,
     /// abandon dependent frames until an IDR arrives and ask the caller for a
     /// fresh keyframe once. Keeping this queue shallow is intentional for live
     /// projection latency.
     pub fn push_h264(&self, h264: &[u8]) -> PushResult {
-        self.received.fetch_add(1, Ordering::Relaxed);
         if h264.is_empty() {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+            self.counters.dropped.fetch_add(1, Ordering::Relaxed);
             return PushResult::Dropped;
         }
 
         let is_idr = contains_idr(h264);
         if self.wait_for_idr.load(Ordering::Relaxed) && !is_idr {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+            self.counters.dropped.fetch_add(1, Ordering::Relaxed);
             return PushResult::Dropped;
         }
         if is_idr {
-            self.wait_for_idr.store(false, Ordering::Relaxed);
+            debug!("H.264 keyframe from the phone");
+            if self.wait_for_idr.swap(false, Ordering::Relaxed) {
+                info!("keyframe received; video decoding resumes");
+            }
         }
 
         let Some(tx) = self.tx.as_ref() else {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+            self.counters.dropped.fetch_add(1, Ordering::Relaxed);
             return PushResult::Dropped;
         };
 
@@ -177,7 +203,7 @@ impl VideoPipeline {
         }) {
             Ok(()) => PushResult::Accepted,
             Err(TrySendError::Full(_)) => {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
+                self.counters.dropped.fetch_add(1, Ordering::Relaxed);
                 let was_waiting = self.wait_for_idr.swap(true, Ordering::Relaxed);
                 if was_waiting {
                     PushResult::Dropped
@@ -186,14 +212,13 @@ impl VideoPipeline {
                 }
             }
             Err(TrySendError::Disconnected(_)) => {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
+                self.counters.dropped.fetch_add(1, Ordering::Relaxed);
                 PushResult::Dropped
             }
         }
     }
 
-    /// Flush parser/decoder state between phone projection sessions without
-    /// disturbing the USB/heartbeat connection to the adapter.
+    /// Flush decoder state between phone projection sessions.
     pub fn reset(&self) {
         self.wait_for_idr.store(false, Ordering::Relaxed);
         // Also serialize with publication: after reset returns, an old worker
@@ -201,18 +226,6 @@ impl VideoPipeline {
         let mut generation = self.generation.lock().unwrap();
         *generation = generation.wrapping_add(1);
         let _ = fs::remove_file(&self.frame_path);
-    }
-
-    pub fn received_count(&self) -> u64 {
-        self.received.load(Ordering::Relaxed)
-    }
-
-    pub fn decoded_count(&self) -> u64 {
-        self.decoded.load(Ordering::Relaxed)
-    }
-
-    pub fn dropped_count(&self) -> u64 {
-        self.dropped.load(Ordering::Relaxed)
     }
 }
 
@@ -228,7 +241,8 @@ impl Drop for VideoPipeline {
 
 struct DecoderEngine {
     decoder: ffmpeg::decoder::Video,
-    parser: Parser,
+    // SPS/PPS waiting for the next picture; FFmpeg rejects a packet without one.
+    codec_config: Vec<u8>,
     scaler: Option<Scaler>,
     decoded_count: Arc<AtomicU64>,
     frame_path: PathBuf,
@@ -239,10 +253,9 @@ struct DecoderEngine {
 
 impl DecoderEngine {
     fn new(frame_path: PathBuf, decoded_count: Arc<AtomicU64>) -> Result<Self, String> {
-        let (decoder, parser) = make_decoder()?;
         Ok(Self {
-            decoder,
-            parser,
+            decoder: make_decoder()?,
+            codec_config: Vec::new(),
             scaler: None,
             decoded_count,
             frame_path,
@@ -253,66 +266,35 @@ impl DecoderEngine {
     }
 
     fn reset(&mut self) -> Result<(), String> {
-        let (decoder, parser) = make_decoder()?;
-        self.decoder = decoder;
-        self.parser = parser;
+        self.decoder = make_decoder()?;
+        self.codec_config.clear();
         self.scaler = None;
         let _ = fs::remove_file(&self.frame_path);
-        debug!("software H.264 parser/decoder reset");
+        debug!("software H.264 decoder reset");
         Ok(())
     }
 
-    fn push(&mut self, segment: &[u8]) -> Result<(), String> {
-        // av_parser_parse2 requires AV_INPUT_BUFFER_PADDING_SIZE zero bytes after
-        // the supplied bitstream. Keep the logical length separate from padding.
-        let logical_len = segment.len();
-        let padding = ffmpeg::ffi::AV_INPUT_BUFFER_PADDING_SIZE as usize;
-        let mut padded = Vec::with_capacity(logical_len + padding);
-        padded.extend_from_slice(segment);
-        padded.resize(logical_len + padding, 0);
-
-        let mut offset = 0usize;
-        while offset < logical_len {
-            let mut parsed_data: *mut u8 = std::ptr::null_mut();
-            let mut parsed_size: i32 = 0;
-            let remaining = logical_len - offset;
-
-            let consumed = unsafe {
-                ffmpeg::ffi::av_parser_parse2(
-                    self.parser.0,
-                    self.decoder.as_mut_ptr(),
-                    &mut parsed_data,
-                    &mut parsed_size,
-                    padded[offset..].as_ptr(),
-                    remaining.min(i32::MAX as usize) as i32,
-                    ffmpeg::ffi::AV_NOPTS_VALUE,
-                    ffmpeg::ffi::AV_NOPTS_VALUE,
-                    0,
-                )
-            };
-
-            if consumed < 0 {
-                return Err(format!("H.264 parser failed with {consumed}"));
+    fn push(&mut self, access_unit: &[u8]) -> Result<(), String> {
+        // Android Auto sends one complete access unit per message, so decode it
+        // now. An FFmpeg parser would hold each frame until the next one began.
+        if !contains_picture(access_unit) {
+            if self.codec_config.len() + access_unit.len() > MAX_CODEC_CONFIG_BYTES {
+                self.codec_config.clear();
             }
-            if consumed == 0 && parsed_size <= 0 {
-                return Err("H.264 parser made no progress".into());
-            }
-            offset = offset.saturating_add(consumed as usize);
-
-            if parsed_size > 0 && !parsed_data.is_null() {
-                let parsed = unsafe { slice::from_raw_parts(parsed_data, parsed_size as usize) };
-                let packet = ffmpeg::Packet::copy(parsed);
-                self.decoder
-                    .send_packet(&packet)
-                    .map_err(|e| format!("send H.264 packet: {e}"))?;
-                self.drain_frames()?;
-            }
-
-            // FFmpeg may return a buffered frame with consumed == 0 when it
-            // sees the next frame's start code. Retry the SAME input bytes:
-            // dropping this segment loses reference frames and corrupts video.
+            self.codec_config.extend_from_slice(access_unit);
+            return Ok(());
         }
-        Ok(())
+        let packet = if self.codec_config.is_empty() {
+            ffmpeg::Packet::copy(access_unit)
+        } else {
+            let mut data = std::mem::take(&mut self.codec_config);
+            data.extend_from_slice(access_unit);
+            ffmpeg::Packet::copy(&data)
+        };
+        self.decoder
+            .send_packet(&packet)
+            .map_err(|e| format!("send H.264 packet: {e}"))?;
+        self.drain_frames()
     }
 
     fn drain_frames(&mut self) -> Result<(), String> {
@@ -350,6 +332,7 @@ impl DecoderEngine {
                     source_width = decoded.width(),
                     source_height = decoded.height(),
                     source_format = ?decoded.format(),
+                    source_fps = ?self.decoder.frame_rate(),
                     source_range = ?decoded.color_range(),
                     source_colorspace = ?decoded.color_space(),
                     "projection video format established"
@@ -427,32 +410,13 @@ struct Scaler {
     context: ScalingContext,
 }
 
-struct Parser(*mut ffmpeg::ffi::AVCodecParserContext);
-
-impl Drop for Parser {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { ffmpeg::ffi::av_parser_close(self.0) };
-            self.0 = std::ptr::null_mut();
-        }
-    }
-}
-
-fn make_decoder() -> Result<(ffmpeg::decoder::Video, Parser), String> {
+fn make_decoder() -> Result<ffmpeg::decoder::Video, String> {
     let codec = ffmpeg::decoder::find(ffmpeg::codec::Id::H264)
         .ok_or_else(|| "FFmpeg H.264 decoder not found".to_string())?;
-    let decoder = ffmpeg::codec::context::Context::new_with_codec(codec)
+    ffmpeg::codec::context::Context::new_with_codec(codec)
         .decoder()
         .video()
-        .map_err(|e| format!("open FFmpeg H.264 software decoder: {e}"))?;
-
-    let codec_id: ffmpeg::ffi::AVCodecID = ffmpeg::codec::Id::H264.into();
-    let parser = unsafe { ffmpeg::ffi::av_parser_init(codec_id as i32) };
-    if parser.is_null() {
-        return Err("initialize FFmpeg H.264 parser: returned null".into());
-    }
-
-    Ok((decoder, Parser(parser)))
+        .map_err(|e| format!("open FFmpeg H.264 software decoder: {e}"))
 }
 
 #[cfg(test)]
@@ -518,29 +482,52 @@ fn publish_frame(
     Ok(())
 }
 
+/// Annex-B NAL unit types in stream order; covers 3- and 4-byte start codes.
+fn nal_unit_types(data: &[u8]) -> impl Iterator<Item = u8> + '_ {
+    data.windows(4)
+        .filter(|w| w[..3] == [0, 0, 1])
+        .map(|w| w[3] & 0x1f)
+}
+
 /// Detect an Annex-B IDR NAL unit (type 5) without parsing the whole stream.
 fn contains_idr(data: &[u8]) -> bool {
-    let mut i = 0;
-    while i + 4 < data.len() {
-        let (prefix, nal_index) = if data[i..].starts_with(&[0, 0, 1]) {
-            (3, i + 3)
-        } else if data[i..].starts_with(&[0, 0, 0, 1]) {
-            (4, i + 4)
-        } else {
-            i += 1;
-            continue;
-        };
-        if nal_index < data.len() && data[nal_index] & 0x1f == 5 {
-            return true;
-        }
-        i += prefix;
-    }
-    false
+    nal_unit_types(data).any(|nal| nal == 5)
+}
+
+/// Coded slices are NAL types 1-5; the SPS/PPS codec configuration has none.
+fn contains_picture(data: &[u8]) -> bool {
+    nal_unit_types(data).any(|nal| (1..=5).contains(&nal))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fixture split into access units, one per Android Auto video message.
+    fn access_units() -> Vec<&'static [u8]> {
+        let stream: &'static [u8] = include_bytes!("../../tests/fixtures/parser-continuation.h264");
+        let mut starts: Vec<usize> = stream
+            .windows(5)
+            .enumerate()
+            .filter_map(|(i, w)| (w[..4] == [0, 0, 0, 1] && w[4] & 0x1f == 9).then_some(i))
+            .collect();
+        assert_eq!(starts.len(), 24);
+        starts.push(stream.len());
+        starts
+            .windows(2)
+            .map(|pair| &stream[pair[0]..pair[1]])
+            .collect()
+    }
+
+    /// Split the first unit like Android Auto: SPS/PPS message, then the picture.
+    fn codec_config_and_first_picture() -> (&'static [u8], &'static [u8]) {
+        let first = access_units()[0];
+        let slice = first
+            .windows(4)
+            .position(|w| w[..3] == [0, 0, 1] && (1..=5).contains(&(w[3] & 0x1f)))
+            .unwrap();
+        first.split_at(slice)
+    }
 
     #[test]
     fn full_and_limited_range_fill_the_output_with_correct_black_and_white() {
@@ -598,30 +585,80 @@ mod tests {
     }
 
     #[test]
-    fn parser_keeps_current_access_unit_when_returning_buffered_frame() {
-        // 24 x264 frames, no B-frames, with access-unit delimiters. Each chunk
-        // models one dongle video payload, not an arbitrary decoder packet.
-        let stream = include_bytes!("../../tests/fixtures/parser-continuation.h264");
-        let mut starts: Vec<usize> = stream
-            .windows(5)
-            .enumerate()
-            .filter_map(|(i, w)| (w[..4] == [0, 0, 0, 1] && w[4] & 0x1f == 9).then_some(i))
-            .collect();
-        assert_eq!(starts.len(), 24);
-        starts.push(stream.len());
+    fn every_access_unit_is_published_without_waiting_for_the_next() {
+        let (config, first_picture) = codec_config_and_first_picture();
         let count = Arc::new(AtomicU64::new(0));
-        let path =
-            std::env::temp_dir().join(format!("navbridge-parser-test-{}.rgba", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "navbridge-access-unit-test-{}.rgba",
+            std::process::id()
+        ));
         let mut engine = DecoderEngine::new(path.clone(), Arc::clone(&count)).unwrap();
-        for pair in starts.windows(2) {
-            engine.push(&stream[pair[0]..pair[1]]).unwrap();
+        engine.push(config).unwrap();
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+        assert!(!path.exists());
+        let pictures = std::iter::once(first_picture).chain(access_units().into_iter().skip(1));
+        for (index, unit) in pictures.enumerate() {
+            engine.push(unit).unwrap();
+            assert_eq!(
+                count.load(Ordering::Relaxed),
+                index as u64 + 1,
+                "access unit {index} was held back"
+            );
         }
-        let decoded = count.load(Ordering::Relaxed);
         let frame = fs::read(&path).unwrap();
         let _ = fs::remove_file(&path);
         assert_eq!(frame.len(), VIDEO_FRAME_HEADER_SIZE + FRAME_BYTES);
-        // FFmpeg retains only the final AU until another delimiter or EOF.
-        assert_eq!(decoded, 23, "input access units were silently discarded");
+    }
+
+    #[test]
+    fn a_full_queue_asks_once_for_a_keyframe_then_waits_for_one() {
+        let (tx, queue) = mpsc::sync_channel(1);
+        let counters = VideoCounters::default();
+        let pipeline = VideoPipeline {
+            tx: Some(tx),
+            worker: None,
+            counters: counters.clone(),
+            wait_for_idr: Arc::new(AtomicBool::new(false)),
+            frame_path: std::env::temp_dir().join(format!(
+                "navbridge-keyframe-test-{}.rgba",
+                std::process::id()
+            )),
+            generation: Arc::new(Mutex::new(0)),
+        };
+        let (keyframe, frame): (&[u8], &[u8]) = (&[0, 0, 0, 1, 0x65], &[0, 0, 0, 1, 0x41]);
+        assert_eq!(pipeline.push_h264(frame), PushResult::Accepted);
+        // The decoder is behind: the next frame is lost, so ask once.
+        assert_eq!(pipeline.push_h264(frame), PushResult::NeedKeyframe);
+        assert_eq!(pipeline.push_h264(frame), PushResult::Dropped);
+        // Once the decoder catches up, only a keyframe can restart the picture.
+        queue.recv().unwrap();
+        assert_eq!(pipeline.push_h264(frame), PushResult::Dropped);
+        assert_eq!(pipeline.push_h264(keyframe), PushResult::Accepted);
+        assert_eq!(counters.dropped(), 3);
+    }
+
+    #[test]
+    fn the_logged_counters_see_every_frame() {
+        let path = std::env::temp_dir().join(format!(
+            "navbridge-counters-test-{}.rgba",
+            std::process::id()
+        ));
+        let pipeline = VideoPipeline::start(&path).unwrap();
+        let counters = pipeline.counters.clone();
+        // One unit at a time, so the shallow queue never overflows.
+        for (index, unit) in access_units().into_iter().enumerate() {
+            assert_eq!(pipeline.push_h264(unit), PushResult::Accepted);
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while counters.decoded() <= index as u64 {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "unit {index} not counted"
+                );
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+        assert_eq!(pipeline.push_h264(&[]), PushResult::Dropped);
+        assert_eq!((counters.decoded(), counters.dropped()), (24, 1));
     }
 
     #[test]
@@ -634,9 +671,7 @@ mod tests {
         let pipeline = VideoPipeline {
             tx: Some(tx),
             worker: None,
-            received: count.clone(),
-            decoded: count.clone(),
-            dropped: count.clone(),
+            counters: VideoCounters::default(),
             wait_for_idr: Arc::new(AtomicBool::new(false)),
             frame_path: path.clone(),
             generation: generation.clone(),
@@ -655,19 +690,15 @@ mod tests {
         let mut engine = DecoderEngine::new(path.clone(), count).unwrap();
         engine.generation = generation;
         // Old work already inside FFmpeg must also be unable to publish.
-        engine
-            .push(include_bytes!(
-                "../../tests/fixtures/parser-continuation.h264"
-            ))
-            .unwrap();
+        for unit in access_units() {
+            engine.push(unit).unwrap();
+        }
         assert!(!path.exists());
         engine.reset().unwrap();
         engine.active_generation = 1;
-        engine
-            .push(include_bytes!(
-                "../../tests/fixtures/parser-continuation.h264"
-            ))
-            .unwrap();
+        for unit in access_units() {
+            engine.push(unit).unwrap();
+        }
         assert!(path.exists());
         fs::remove_file(path).unwrap();
     }
@@ -696,5 +727,17 @@ mod tests {
         assert!(contains_idr(&[0, 0, 0, 1, 0x65, 1, 2, 3]));
         assert!(contains_idr(&[9, 9, 0, 0, 1, 0x25, 1]));
         assert!(!contains_idr(&[0, 0, 0, 1, 0x41, 1, 2]));
+    }
+
+    #[test]
+    fn codec_configuration_is_not_a_picture() {
+        assert!(!contains_picture(&[
+            0, 0, 0, 1, 0x67, 1, 2, 0, 0, 0, 1, 0x68, 3
+        ]));
+        assert!(!contains_picture(&[
+            0, 0, 0, 1, 0x09, 0xf0, 0, 0, 1, 0x06, 5
+        ]));
+        assert!(contains_picture(&[0, 0, 0, 1, 0x67, 1, 0, 0, 1, 0x65, 2]));
+        assert!(contains_picture(&[0, 0, 1, 0x41, 1]));
     }
 }
