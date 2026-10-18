@@ -7,11 +7,11 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.5.1"
-edition = "2021"
+version = "0.1.0"
+edition = "2026"
 rust-version = "1.92"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/DrZedEau/NavBridge-Rust"
+repository = "https://github.com/DrZedEau/NavBridge_App"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
