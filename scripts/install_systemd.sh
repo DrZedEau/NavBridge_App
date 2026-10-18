@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 START=1
 DRY_RUN=0
+FORCE=0
 BIN_DIR="$ROOT/bin"
 [[ -d $BIN_DIR ]] || BIN_DIR="$ROOT/target/release"
 ARGS=("$@")
@@ -12,10 +13,12 @@ while (( $# )); do
   case "$1" in
     --no-start) START=0; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --force) FORCE=1; shift ;;
     --binary-dir) [[ $# -ge 2 ]] || { echo 'Missing binary directory' >&2; exit 2; }; BIN_DIR=$(realpath -m -- "$2"); shift 2 ;;
     --help|-h)
-      echo "Usage: $0 [--binary-dir DIR] [--no-start] [--dry-run]"
+      echo "Usage: $0 [--binary-dir DIR] [--no-start] [--dry-run] [--force]"
       echo "Install prebuilt binaries and runtime dependencies, never build the application."
+      echo "--force: install on a machine whose desktop (display manager) uses tty1."
       exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
@@ -25,7 +28,7 @@ INSTALL_USER=$(id -un)
 if [[ $EUID == 0 ]]; then
   INSTALL_USER=${SUDO_USER:-}
   if [[ -z $INSTALL_USER || $INSTALL_USER == root ]]; then
-    echo "Run as your normal Pi user, directly or through sudo; a root login has no invoking user." >&2
+    echo "Run as your normal user, directly or through sudo; a root login has no invoking user." >&2
     exit 1
   fi
 fi
@@ -34,6 +37,9 @@ INSTALL_GROUP=$(id -gn "$INSTALL_USER")
 [[ $INSTALL_GROUP =~ ^[a-zA-Z_][a-zA-Z0-9_.-]*\$?$ ]] || exit 1
 INSTALL_HOME=$(getent passwd "$INSTALL_USER" | cut -d: -f6)
 [[ -d $INSTALL_HOME ]] || { echo "Invoking user has no home directory" >&2; exit 1; }
+# A desktop's display manager owns the display that the UI service takes.
+DESKTOP=0
+if systemctl is-enabled --quiet display-manager.service 2>/dev/null; then DESKTOP=1; fi
 
 STAGE=$(mktemp -d)
 trap 'rm -rf -- "$STAGE"' EXIT
@@ -50,6 +56,9 @@ if (( DRY_RUN )); then
   echo "Will preserve existing config and enable both services."
   echo "Will let $INSTALL_USER switch the Wi-Fi hotspot through NetworkManager (polkit rule)."
   echo "Will disable getty@tty1 so NavBridge owns the dedicated display. Start now: $START"
+  if (( DESKTOP )); then
+    echo "This machine runs a desktop: the install stops unless --force is given."
+  fi
   cat "$STAGE/navbridge-core.service" "$STAGE/navbridge-ui.service"
   exit 0
 fi
@@ -58,8 +67,19 @@ if [[ $EUID != 0 ]]; then
   rm -rf -- "$STAGE"
   exec sudo -- "$0" "${ARGS[@]}"
 fi
-[[ $(uname -m) == aarch64 && $(dpkg --print-architecture) == arm64 ]] || { echo "64-bit Raspberry Pi OS (aarch64/arm64) is required." >&2; exit 1; }
+# The ELF machine of this computer's binaries: 64-bit ARM (the Pi) or x86-64.
+case $(uname -m) in
+  aarch64) MACHINE='183 0'; MACHINE_NAME='64-bit ARM' ;;
+  x86_64) MACHINE='62 0'; MACHINE_NAME='x86-64' ;;
+  *) echo "Unsupported processor: $(uname -m) (supported: aarch64, x86_64)." >&2; exit 1 ;;
+esac
+command -v apt-get >/dev/null || { echo "A Debian or Ubuntu system is required." >&2; exit 1; }
 [[ -d /run/systemd/system ]] || { echo "A booted systemd system is required." >&2; exit 1; }
+if (( DESKTOP && ! FORCE )); then
+  echo "A desktop (display manager) uses this machine's display, which the UI service would take." >&2
+  echo "For development, run ./scripts/run_desktop.sh instead; on a dedicated kiosk, rerun with --force." >&2
+  exit 1
+fi
 
 if [[ $(tty 2>/dev/null || true) == /dev/tty1 ]]; then
   START=0
@@ -71,12 +91,15 @@ for app in navbridge-core navbridge-ui; do
   # Reject scripts and binaries for the wrong CPU before invoking ldd.
   header=$(od -An -tx1 -N6 "$BIN_DIR/$app" | tr -d ' \n')
   machine=$(od -An -tu1 -j18 -N2 "$BIN_DIR/$app" | xargs)
-  [[ $header == 7f454c460201 && $machine == '183 0' ]] || { echo "$app is not a 64-bit little-endian ARM ELF binary." >&2; exit 1; }
+  [[ $header == 7f454c460201 && $machine == "$MACHINE" ]] || { echo "$app is not a $MACHINE_NAME ELF binary for this computer." >&2; exit 1; }
 done
 if [[ -f $ROOT/release.info ]]; then
   expected=$(sed -n 's/^os_codename=//p' "$ROOT/release.info")
   actual=$(. /etc/os-release; printf '%s' "${VERSION_CODENAME:-}")
   [[ $expected == "$actual" ]] || { echo "This release targets $expected; this OS is $actual. Download the matching release." >&2; exit 1; }
+  expected=$(sed -n 's/^architecture=//p' "$ROOT/release.info")
+  actual=$(dpkg --print-architecture)
+  [[ -z $expected || $expected == "$actual" ]] || { echo "This release is for $expected; this computer is $actual." >&2; exit 1; }
 fi
 "$ROOT/scripts/install_runtime_deps.sh"
 for app in navbridge-core navbridge-ui; do

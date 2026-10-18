@@ -2547,7 +2547,7 @@ checksum = "308d96db8debc727c3fd9744aac51751243420e46edf401010908da7f8d5e57c"
 
 [[package]]
 name = "navbridge-common"
-version = "0.5.1"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2555,7 +2555,7 @@ dependencies = [
 
 [[package]]
 name = "navbridge-core"
-version = "0.5.1"
+version = "0.1.0"
 dependencies = [
  "alsa",
  "async-channel",
@@ -2576,7 +2576,7 @@ dependencies = [
 
 [[package]]
 name = "navbridge-ui"
-version = "0.5.1"
+version = "0.1.0"
 dependencies = [
  "libc",
  "navbridge-common",

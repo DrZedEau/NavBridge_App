@@ -8,7 +8,7 @@ resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
-edition = "2026"
+edition = "2021"
 rust-version = "1.92"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/DrZedEau/NavBridge_App"

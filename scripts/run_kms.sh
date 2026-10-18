@@ -15,6 +15,10 @@ for app in navbridge-core navbridge-ui; do
   [[ -x $ROOT/target/release/$app ]] || { echo 'Run ./scripts/build_kms.sh first.' >&2; exit 1; }
   if pgrep -x "$app" >/dev/null; then echo "Stop the existing $app before a manual run." >&2; exit 1; fi
 done
+# Inside a desktop session, its compositor owns the display.
+case ${XDG_SESSION_TYPE:-} in
+  wayland|x11) echo 'The desktop owns the display: use ./scripts/run_desktop.sh for a window, or this script from a text console.' >&2; exit 1 ;;
+esac
 export SLINT_BACKEND=${SLINT_BACKEND:-linuxkms-software}
 export SLINT_FULLSCREEN=1
 if (( EUID != 0 )); then

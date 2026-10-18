@@ -1,0 +1,4 @@
+# The carrier board's ATmega32U4, which passes on the car's I-Bus. ModemManager
+# (installed on desktop Ubuntu) would otherwise probe it with AT commands when
+# it appears. NavBridge reads its serial port through the dialout group.
+ATTRS{idVendor}=="2341", ATTRS{idProduct}=="8037", ENV{ID_MM_DEVICE_IGNORE}="1"

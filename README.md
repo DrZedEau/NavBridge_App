@@ -47,20 +47,46 @@ cd ~/NavBridge_App
 ./scripts/run_kms.sh
 ```
 
-Build as your normal user. The build enables `navbridge-core/rpi-ffmpeg` and
-`navbridge-ui/direct-kms`; Raspberry Pi FFmpeg has additional pixel formats that
-require this compatibility feature. The runner requests sudo for KMS/input and
+Build as your normal user. On Raspberry Pi OS the build enables
+`navbridge-core/rpi-ffmpeg` and `navbridge-ui/direct-kms`; Raspberry Pi FFmpeg
+has additional pixel formats that require this compatibility feature, which
+`build_kms.sh` finds in its headers. The runner requests sudo for KMS/input and
 uses private temporary configuration. Stop another running NavBridge instance
-before starting it. The Pi build has no desktop window backend; for a window
-during development, build the UI with `--features navbridge-ui/desktop` instead.
+before starting it.
+
+### Development on a Debian or Ubuntu PC
+
+The same scripts work on a Debian or Ubuntu desktop, such as Kubuntu 26.10 on
+x86-64, with the UI in a window:
+
+```bash
+./scripts/install_build_deps.sh
+./scripts/build_kms.sh
+./scripts/run_desktop.sh
+```
+
+`install_build_deps.sh` asks apt for this release's runtime library names, adds
+your account to `plugdev` (phones) and `dialout` (the I-Bus board) if needed,
+which takes effect at your next login, and installs udev rules: Android phones,
+and the I-Bus board, which ModemManager then leaves alone. With stock FFmpeg,
+`build_kms.sh` builds the UI with both the window (`navbridge-ui/desktop`) and
+the KMS backend. `run_desktop.sh` runs both as your account and sends sound
+through the desktop's default device; `--codec` uses core.toml's USB codec
+instead. A phone plugged into the PC starts Android Auto as on the Pi. Settings
+cannot be kept there, as `/var/lib/navbridge` belongs to root: changes last
+until the core stops, with a warning in its log. Wireless mode switches `wlan0`,
+which most PCs do not have. `run_kms.sh` refuses to start inside the desktop,
+which owns the display, and `install_systemd.sh` refuses to take tty1 from a
+display manager unless given `--force`, for a dedicated kiosk PC.
 
 | Script | Purpose |
 | --- | --- |
-| `install_build_deps.sh` | Rust, native build/runtime packages and Android USB udev rules. |
+| `install_build_deps.sh` | Rust, native build/runtime packages and udev rules. |
 | `build_kms.sh` | Build binaries and a complete release archive. |
-| `run_kms.sh` | Run the local KMS build; clean up both processes together. `--detach` runs it in the background. |
+| `run_kms.sh` | Run the local build on the display (KMS); clean up both processes together. `--detach` runs it in the background. |
+| `run_desktop.sh` | Run the local build in a window on a desktop PC. |
 | `install_systemd.sh` | Deploy existing binaries, runtime packages, udev rules and two services. Never builds. |
-| `install_runtime_deps.sh` | Runtime packages, GPSD and USB rules only. |
+| `install_runtime_deps.sh` | Runtime packages, GPSD and udev rules only. |
 
 See [installation guide](docs/installation-lite.md) for releases and systemd.
 

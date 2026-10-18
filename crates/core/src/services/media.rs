@@ -569,6 +569,8 @@ mod tests {
             let mut output = ffmpeg::frame::Video::new(Pixel::RGBA, UI_WIDTH, UI_HEIGHT);
             scaler.run(&input, &mut output).unwrap();
             let pixels = tightly_pack_rgba(&output).unwrap();
+            // A wrong range is off by 16 or more. FFmpeg 8 rounds full-range
+            // white to [254, 252, 254], so 3 is allowed.
             for (x, y, expected) in [
                 (20, 20, 0_i16),
                 (380, 20, 255),
@@ -577,7 +579,11 @@ mod tests {
             ] {
                 let offset = (y * UI_WIDTH as usize + x) * 4;
                 for channel in &pixels[offset..offset + 3] {
-                    assert!((*channel as i16 - expected).abs() <= 2);
+                    assert!(
+                        (*channel as i16 - expected).abs() <= 3,
+                        "{pixel:?} at ({x}, {y}): {:?}, expected {expected}",
+                        &pixels[offset..offset + 3]
+                    );
                 }
                 assert_eq!(pixels[offset + 3], 255);
             }
