@@ -88,6 +88,22 @@ component Led inherits Rectangle {
         : root.level == LedState.waiting ? AmberPalette.led-waiting : AmberPalette.led-off;
 }
 
+// Which of `count` pages is shown: a row of lights, the current one lit.
+component PageLeds inherits HorizontalLayout {
+    in property <int> count;
+    in property <int> current;
+    spacing: 10px;
+    for page in root.count: VerticalLayout {
+        alignment: center;
+        Rectangle {
+            width: 10px;
+            height: 10px;
+            border-radius: 5px;
+            background: page == root.current ? AmberPalette.amber : AmberPalette.border;
+        }
+    }
+}
+
 // A label and its status light.
 component Indicator inherits HorizontalLayout {
     in property <string> label;
@@ -329,8 +345,14 @@ export component AppWindow inherits Window {
         background: AmberPalette.background;
         Text {
             x: 12px; y: 5px; width: 120px; height: 23px;
-            text: "System  " + (root.system-page + 1) + "/4";
+            text: "System";
             color: AmberPalette.text; font-size: 17px; font-weight: 700;
+        }
+        PageLeds {
+            x: 0px; y: 5px; width: 400px; height: 23px;
+            alignment: center;
+            count: 4;
+            current: root.system-page;
         }
         for group[index] in [
             { title: "Compute Module 5", rows: [
@@ -419,11 +441,12 @@ export component AppWindow inherits Window {
         // Page 4: the car, from its I-Bus.
         if root.system-page == 3: Rectangle {
             x: 0px; y: 0px; width: 400px; height: 240px;
+            // Below the readings, the link to the car.
             Text {
-                x: 132px; y: 5px; width: 256px; height: 23px;
+                x: 12px; y: 212px; width: 376px; height: 20px;
                 text: "IBUS · " + root.vehicle-status;
                 color: AmberPalette.muted; font-size: 11px;
-                horizontal-alignment: right; vertical-alignment: center;
+                horizontal-alignment: center; vertical-alignment: center;
                 wrap: no-wrap; overflow: elide;
             }
             // Two columns of three readings.

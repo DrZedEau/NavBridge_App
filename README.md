@@ -240,7 +240,8 @@ appears, as a power cut can lose ALSA's own copy.
    MSL altitude, speed, HDOP and UTC fix time.
 4. IBUS: the car's readings (see below).
 
-Left/Up and Right/Down change System pages. GNSS readings expire after five
+Left/Up and Right/Down change System pages; four lights at the top centre show
+which is open. GNSS readings expire after five
 seconds. GPSD handles supported USB receivers and hotplug; unsupported adapters
 need a stable `/dev/serial/by-id/` entry in `/etc/default/gpsd`. Do not select the
 Arduino.
@@ -274,8 +275,8 @@ From the instrument cluster's broadcasts, System page 4 shows:
 
 Speed and engine speed go back to n/a after 10 seconds without an update, or
 when the ignition is off; everything does after 10 seconds without any I-Bus
-traffic, as the car is then asleep. The header shows the link and how many
-frames it carried; damaged frames point to a wiring or interference problem.
+traffic, as the car is then asleep. The line below the readings shows the link
+and how many frames it carried; damaged frames point to a wiring or interference problem.
 With `RUST_LOG=debug`, the core logs each reading that changes and, once each,
 the kinds of message it does not decode, to find out what else the car sends.
 The systemd service reads the port through the `dialout` group.
