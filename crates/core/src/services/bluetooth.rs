@@ -192,6 +192,7 @@ enum Request {
         session: bool,
     },
     Pair,
+    ClosePairing,
     Confirmed(OwnedObjectPath),
 }
 
@@ -252,8 +253,17 @@ impl BluetoothService {
         }
     }
 
+    /// Opens pairing for PAIRING_TIME. The snapshot shows it open at once;
+    /// the Bluetooth thread closes it again if it cannot open.
     pub fn start_pairing(&self) {
+        self.shared.lock().unwrap().pairing_until = Some(Instant::now() + PAIRING_TIME);
         self.send(Request::Pair);
+    }
+
+    /// Closes pairing before its time is up, also shown at once.
+    pub fn stop_pairing(&self) {
+        self.shared.lock().unwrap().pairing_until = None;
+        self.send(Request::ClosePairing);
     }
 
     /// The user's answer to the pairing code on screen.
@@ -353,6 +363,7 @@ impl Worker {
                     }
                 }
                 Ok(Request::Pair) => self.open_pairing(),
+                Ok(Request::ClosePairing) => self.hide(),
                 Ok(Request::Confirmed(device)) => {
                     self.confirmed = Some((device, Instant::now() + PAIRED_TIME));
                 }
@@ -494,8 +505,11 @@ impl Worker {
         Ok(connection)
     }
 
+    /// Makes NavBridge visible and pairable; start_pairing has already set
+    /// when that ends.
     fn open_pairing(&mut self) {
         let Some(connection) = self.connection.clone().filter(|_| self.registered) else {
+            self.shared.lock().unwrap().pairing_until = None;
             return;
         };
         let open = || -> zbus::Result<()> {
@@ -507,17 +521,24 @@ impl Worker {
             adapter.set_discoverable(true)
         };
         match open() {
-            Ok(()) => {
-                info!(name = %self.name, "Bluetooth pairing open");
-                self.shared.lock().unwrap().pairing_until = Some(Instant::now() + PAIRING_TIME);
+            Ok(()) => info!(name = %self.name, "Bluetooth pairing open"),
+            Err(e) => {
+                warn!(%e, "could not open Bluetooth pairing");
+                self.shared.lock().unwrap().pairing_until = None;
             }
-            Err(e) => warn!(%e, "could not open Bluetooth pairing"),
         }
     }
 
     fn close_pairing(&mut self) {
         let was_open = self.shared.lock().unwrap().pairing_until.take().is_some();
-        if let (true, Some(connection)) = (was_open, &self.connection) {
+        if was_open {
+            self.hide();
+        }
+    }
+
+    /// Phones can no longer find NavBridge or pair with it.
+    fn hide(&self) {
+        if let Some(connection) = &self.connection {
             if let Ok(adapter) = adapter(connection) {
                 let _ = adapter.set_discoverable(false);
                 let _ = adapter.set_pairable(false);

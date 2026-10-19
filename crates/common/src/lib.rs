@@ -85,6 +85,9 @@ pub struct ProjectionSnapshot {
     /// The DPI the phone is asked for when it connects, as chosen in Settings.
     #[serde(default)]
     pub dpi: u32,
+    /// The frame rate the phone is asked for when it connects: 30 or 60.
+    #[serde(default)]
+    pub fps: u32,
 }
 
 impl Default for ProjectionSnapshot {
@@ -96,6 +99,7 @@ impl Default for ProjectionSnapshot {
             streaming: false,
             phone_name: String::new(),
             dpi: 0,
+            fps: 0,
         }
     }
 }
@@ -242,9 +246,11 @@ pub enum ClientCommand {
     PhoneAction { action: PhoneAction },
     SetWireless { enabled: bool },
     SetDpi { dpi: u32 },
+    SetFps { fps: u32 },
     SetVolume { percent: u8 },
     SetMicrophone { percent: u8 },
     StartPairing,
+    StopPairing,
     ConfirmPairing { accept: bool },
 }
 

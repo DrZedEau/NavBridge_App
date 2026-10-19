@@ -18,8 +18,46 @@ export global AmberPalette {
 // red: not active.
 export enum LedState { off, waiting, on }
 
-// The one choice on the Phone page, in wireless mode.
-component PairButton inherits Rectangle {
+// One row in Settings: what it sets, and its current value.
+export struct SettingsRow {
+    // The section this row starts, shown above it; empty within a section.
+    section: string,
+    label: string,
+    value: string,
+    // A switch in place of the value, on or off.
+    toggle: bool,
+    on: bool,
+}
+
+// An on/off switch without text: on, its track is filled and its knob is
+// right. `inverse` draws it on the chosen row's amber fill.
+component Switch inherits Rectangle {
+    in property <bool> on;
+    in property <bool> inverse;
+    width: 34px;
+    height: 18px;
+    border-radius: 9px;
+    border-width: 1px;
+    border-color: root.inverse ? AmberPalette.selected-text
+        : root.on ? AmberPalette.amber : AmberPalette.muted;
+    background: !root.on ? transparent
+        : root.inverse ? AmberPalette.selected-text : AmberPalette.amber;
+    Rectangle {
+        x: root.on ? root.width - self.width - 3px : 3px;
+        y: 3px;
+        width: 12px;
+        height: 12px;
+        border-radius: 6px;
+        background: root.inverse ? (root.on ? AmberPalette.amber : AmberPalette.selected-text)
+            : root.on ? AmberPalette.selected-text : AmberPalette.muted;
+        animate x { duration: 120ms; }
+    }
+}
+
+// The one choice on the Phone page, in wireless mode: its switch is on while
+// phones can find NavBridge and pair.
+component PairSwitch inherits Rectangle {
+    in property <bool> on;
     height: 34px;
     border-radius: 7px;
     background: AmberPalette.amber;
@@ -30,21 +68,12 @@ component PairButton inherits Rectangle {
         font-size: 15px;
         vertical-alignment: center;
     }
-    Text {
-        x: 14px; width: parent.width - 28px; height: parent.height;
-        text: "ENTER";
-        color: AmberPalette.selected-text;
-        font-size: 11px;
-        font-weight: 700;
-        horizontal-alignment: right;
-        vertical-alignment: center;
+    Switch {
+        x: parent.width - self.width - 14px;
+        y: (parent.height - self.height) / 2;
+        on: root.on;
+        inverse: true;
     }
-}
-
-// One row in Settings: what it sets, and its current value.
-export struct SettingsRow {
-    label: string,
-    value: string,
 }
 
 component Led inherits Rectangle {
@@ -123,14 +152,14 @@ export component AppWindow inherits Window {
     in property <bool> wireless-enabled: false;
     in property <string> wireless-status: "";
     in property <string> bluetooth-status: "";
-    // Settings: its rows, the chosen one and whether Enter opened it, and a
-    // note about it.
+    // Settings: its rows, and the chosen one and whether Enter opened it.
     in property <[SettingsRow]> settings-rows;
     in property <int> settings-index: 0;
     in property <bool> settings-editing: false;
-    in property <string> settings-note: "";
-    // Wireless mode is on: the Phone page offers pairing.
+    // Wireless mode is on: the Phone page offers pairing, and whether phones
+    // can pair now.
     in property <bool> pair-option: false;
+    in property <bool> pairing: false;
     // A phone asks to pair: its name and the code to compare.
     in property <bool> pairing-request: false;
     in property <string> pairing-device: "";
@@ -299,21 +328,15 @@ export component AppWindow inherits Window {
                 font-size: 11px;
                 wrap: word-wrap;
             }
-            if root.pair-option: PairButton {
+            if root.pair-option: PairSwitch {
                 x: 12px; y: 164px; width: 376px;
+                on: root.pairing;
             }
             if !root.pair-option: Text {
                 x: 12px; y: 172px; width: 376px; height: 18px;
-                text: "To pair a phone, turn Wireless on in Settings.";
+                text: "To pair a phone, turn the Hotspot on in Settings.";
                 color: AmberPalette.muted;
                 font-size: 11px;
-            }
-            Text {
-                x: 12px; y: 217px; width: 376px; height: 18px;
-                text: root.pair-option ? "ENTER pair a phone                                BACK / ESC: Menu"
-                    : "Wireless Android Auto: Settings          BACK / ESC: Menu";
-                color: AmberPalette.muted;
-                font-size: 10px;
             }
         }
     }
@@ -453,11 +476,6 @@ export component AppWindow inherits Window {
                 }
             }
         }
-        Text {
-            x: 12px; y: 217px; width: 376px; height: 18px;
-            text: "ARROWS: Pages                         BACK / ESC: Menu";
-            color: AmberPalette.muted; font-size: 10px;
-        }
     }
 
     if root.screen == 3: Rectangle {
@@ -468,49 +486,72 @@ export component AppWindow inherits Window {
             text: "Settings";
             color: AmberPalette.text; font-size: 17px; font-weight: 700;
         }
-        // The chosen row is filled; once Enter opens it, it is outlined and
-        // its value takes arrows, as Left/Right then change it.
-        for row[index] in root.settings-rows: Rectangle {
-            property <bool> chosen: index == root.settings-index;
-            property <bool> open: self.chosen && root.settings-editing;
-            x: 12px; y: 34px + index * 38px; width: 376px; height: 32px;
-            border-radius: 6px;
-            background: self.open ? AmberPalette.selected-surface
-                : self.chosen ? AmberPalette.amber : AmberPalette.surface;
-            border-width: self.open ? 2px : 1px;
-            border-color: self.chosen ? AmberPalette.amber : AmberPalette.border;
-            Text {
-                x: 12px; width: 220px; height: parent.height;
-                text: row.label;
-                color: parent.open ? AmberPalette.amber
-                    : parent.chosen ? AmberPalette.selected-text : AmberPalette.text;
-                font-size: 14px;
-                vertical-alignment: center;
+        // Sections, each heading its rows. The chosen row is filled; once Enter
+        // opens it, it is outlined and its value takes arrows, as Left/Right
+        // then change it.
+        VerticalLayout {
+            x: 12px; y: 32px; width: 376px; height: 200px;
+            alignment: start;
+            spacing: 3px;
+            for row[index] in root.settings-rows: VerticalLayout {
+                // Space between sections.
+                padding-top: row.section != "" && index > 0 ? 6px : 0px;
+                spacing: 1px;
+                if row.section != "": Text {
+                    height: 15px;
+                    text: row.section;
+                    color: AmberPalette.amber;
+                    font-size: 10px;
+                    font-weight: 700;
+                    vertical-alignment: bottom;
+                }
+                line := Rectangle {
+                    property <bool> chosen: index == root.settings-index;
+                    property <bool> open: self.chosen && root.settings-editing;
+                    property <color> ink: self.open ? AmberPalette.amber
+                        : self.chosen ? AmberPalette.selected-text : AmberPalette.text;
+                    height: 24px;
+                    border-radius: 5px;
+                    background: self.open ? AmberPalette.selected-surface
+                        : self.chosen ? AmberPalette.amber : AmberPalette.surface;
+                    border-width: self.open ? 2px : 1px;
+                    border-color: self.chosen ? AmberPalette.amber : AmberPalette.border;
+                    Text {
+                        x: 10px; width: 200px; height: parent.height;
+                        text: row.label;
+                        color: line.ink;
+                        font-size: 14px;
+                        vertical-alignment: center;
+                    }
+                    HorizontalLayout {
+                        x: 210px; width: parent.width - 220px; height: parent.height;
+                        alignment: end;
+                        spacing: 6px;
+                        if line.open: Text {
+                            text: "‹";
+                            color: line.ink; font-size: 14px; font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                        if row.toggle: VerticalLayout {
+                            alignment: center;
+                            Switch {
+                                on: row.on;
+                                inverse: line.chosen && !line.open;
+                            }
+                        }
+                        if !row.toggle: Text {
+                            text: row.value;
+                            color: line.ink; font-size: 14px; font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                        if line.open: Text {
+                            text: "›";
+                            color: line.ink; font-size: 14px; font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
             }
-            Text {
-                x: 232px; width: 132px; height: parent.height;
-                text: parent.open ? "‹  " + row.value + "  ›" : row.value;
-                color: parent.open ? AmberPalette.amber
-                    : parent.chosen ? AmberPalette.selected-text : AmberPalette.text;
-                font-size: 14px;
-                font-weight: 700;
-                horizontal-alignment: right;
-                vertical-alignment: center;
-            }
-        }
-        Text {
-            x: 12px; y: 186px; width: 376px; height: 28px;
-            text: root.settings-note;
-            color: AmberPalette.text;
-            font-size: 11px;
-            wrap: word-wrap;
-        }
-        Text {
-            x: 12px; y: 217px; width: 376px; height: 18px;
-            text: root.settings-editing ? "LEFT / RIGHT change                       ENTER / BACK: Done"
-                : "LEFT / RIGHT choose          ENTER change          BACK / ESC: Menu";
-            color: AmberPalette.muted;
-            font-size: 10px;
         }
     }
 

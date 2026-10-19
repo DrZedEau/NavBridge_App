@@ -33,22 +33,21 @@ impl SystemService {
         let thread = thread::spawn(move || {
             let mut previous_cpu = None;
             let mut codec_present = false;
+            let saved = settings.load();
+            // The output volume and microphone gain last chosen, in percent.
+            let mut chosen = (saved.volume, saved.microphone);
             loop {
-                let mut next = collect(&mut previous_cpu, &audio);
+                let mut next = collect(&mut previous_cpu, &audio, chosen);
                 let present =
                     next.audio.volume_percent.is_some() || next.audio.microphone_percent.is_some();
                 if present && !codec_present {
-                    let saved = settings.load();
-                    let levels = [
-                        (Gain::Speaker, saved.volume),
-                        (Gain::Microphone, saved.microphone),
-                    ];
+                    let levels = [(Gain::Speaker, chosen.0), (Gain::Microphone, chosen.1)];
                     for (gain, percent) in levels {
                         if let Some(percent) = percent {
                             apply(&audio, gain, percent);
                         }
                     }
-                    next.audio = codec::status(&audio);
+                    next.audio = codec::status(&audio, chosen);
                 }
                 codec_present = present;
                 if let Ok(mut guard) = snapshot_thread.write() {
@@ -57,10 +56,11 @@ impl SystemService {
                 match requests.recv_timeout(REFRESH) {
                     Ok((gain, percent)) => {
                         apply(&audio, gain, percent);
-                        settings.update(|saved| match gain {
-                            Gain::Speaker => saved.volume = Some(percent),
-                            Gain::Microphone => saved.microphone = Some(percent),
-                        });
+                        match gain {
+                            Gain::Speaker => chosen.0 = Some(percent),
+                            Gain::Microphone => chosen.1 = Some(percent),
+                        }
+                        settings.update(|saved| (saved.volume, saved.microphone) = chosen);
                     }
                     Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => return,
@@ -105,7 +105,11 @@ fn apply(audio: &AudioConfig, gain: Gain, percent: u8) {
     }
 }
 
-fn collect(previous_cpu: &mut Option<(u64, u64)>, audio: &AudioConfig) -> SystemSnapshot {
+fn collect(
+    previous_cpu: &mut Option<(u64, u64)>,
+    audio: &AudioConfig,
+    chosen: (Option<u8>, Option<u8>),
+) -> SystemSnapshot {
     let current = fs::read_to_string("/proc/stat")
         .ok()
         .and_then(|raw| cpu_times(&raw));
@@ -120,7 +124,7 @@ fn collect(previous_cpu: &mut Option<(u64, u64)>, audio: &AudioConfig) -> System
         cpu_usage,
         memory: read_memory(),
         cpu_temp: read_cpu_temp(),
-        audio: codec::status(audio),
+        audio: codec::status(audio, chosen),
     }
 }
 

@@ -194,9 +194,9 @@ returns:
 
 - **Phone**: the connected phone's screen, Android Auto in this build (CarPlay
   is not in it yet), or while there is none, its connection status and, in
-  wireless mode, how far a phone has got and PAIR A PHONE.
-- **Settings**: wireless Android Auto, the projection's DPI, and the codec's
-  volume and microphone gain (see below).
+  wireless mode, how far a phone has got and the PAIR A PHONE switch.
+- **Settings**: the hotspot for wireless Android Auto, the projection's DPI and
+  frame rate, and the codec's speaker volume and microphone gain (see below).
 - **System**: the System pages.
 
 Lights are green when on and red when off. CORE: the UI is connected to the
@@ -206,20 +206,23 @@ The time is the Pi's local time. The tiles' icons are in `crates/ui/ui/icons`.
 
 ## Settings
 
-Left/Right (or Up/Down) choose a row, and Enter opens it: it is outlined and
-its value takes arrows. Left/Right then change the value, which takes effect at
-once, and Enter or Back close the row again.
+One page, in three sections. Left/Right (or Up/Down) choose a row. Enter flips
+the Hotspot switch at once; on the other rows, it opens the row: it is outlined
+and its value takes arrows. Left/Right then change the value, which takes effect
+at once, and Enter or Back close the row again.
 
-| Row | Values | Notes |
-| --- | --- | --- |
-| Wireless | ON / OFF | Wireless Android Auto (see below) |
-| Video DPI | 160 / 140 | The phone gets it when it next connects |
-| Audio volume | 0-100%, 5% steps | The codec's `Speaker` level; held keys repeat |
-| Microphone | 0-100%, 5% steps | The codec's `Mic` capture gain |
+| Section | Row | Values | Notes |
+| --- | --- | --- | --- |
+| Wireless | Hotspot | Switch, on / off | Wireless Android Auto (see below) |
+| Video | DPI | 160 / 140 | The phone gets it when it next connects |
+| | FPS | 60 / 30 | The phone gets it when it next connects |
+| Audio | Speakers volume | 0-100%, 1% steps | The codec's `Speaker` level; held keys repeat |
+| | Microphone volume | 0-100%, 1% steps | The codec's `Mic` capture gain; held keys repeat |
 
-The line below the rows describes the chosen one: the hotspot's status, the
-DPI's timing, or the codec. The codec's levels have fewer steps than 5%, so some read
-back 1% off, such as 14% for 15%. Choices are kept in
+The video choices apply when a phone next connects. The codec has fewer steps than 1%
+(`Speaker` 0-76, `Mic` 0-42), so a press does not always change what is heard,
+and the System page, which shows the mixer's own reading, can be 1% off, such as
+14% for 15%. Choices are kept in
 `/var/lib/navbridge/settings.toml`; the levels are set again whenever the codec
 appears, as a power cut can lose ALSA's own copy.
 
@@ -281,7 +284,7 @@ The phone needs Android 11 or later with 5 GHz Wi-Fi; on some phones
 "Wireless Android Auto" must also be enabled in the Android Auto settings. On
 NavBridge:
 
-- **WIRELESS ON/OFF**, in Settings. On: the built-in Wi-Fi becomes the hotspot
+- **Hotspot**, the switch in Settings' Wireless section. On: the built-in Wi-Fi becomes the hotspot
   `NavBridge-XXXX` (5 GHz, channel 36, WPA2, address 10.42.0.1) and Bluetooth
   takes the same name. NetworkManager's profile `navbridge-hotspot` is created on
   first use with a random password, which
@@ -289,10 +292,12 @@ NavBridge:
   shows. Off, and whenever NavBridge stops: NetworkManager reconnects the saved
   home network; the hotspot never starts on its own, so a reboot also returns to
   it.
-- **PAIR A PHONE**, with Wireless ON, on the Phone page while no phone is
-  connected; Enter opens pairing. For 2 minutes, phones can find
+- **PAIR A PHONE**, with the hotspot on, on the Phone page while no phone is
+  connected: Enter switches pairing on or off. For 2 minutes, phones can find
   NavBridge. Pair from the phone's Bluetooth settings; NavBridge then shows the
   6-digit code. Enter pairs if the phone shows the same code; Back refuses.
+  The switch goes off by itself once the 2 minutes are up or a phone has
+  paired.
 
 A paired phone gets the hotspot's details over Bluetooth, joins it and starts
 Android Auto over Wi-Fi. While wireless mode is on and no phone is connected,

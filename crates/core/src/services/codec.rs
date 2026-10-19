@@ -26,8 +26,25 @@ struct Control {
 
 #[derive(Debug, Clone, Copy)]
 struct Level {
-    percent: u32,
+    value: i64,
+    range: (i64, i64),
     on: bool,
+}
+
+impl Level {
+    /// Its position within the control's range, as amixer shows it.
+    fn percent(self) -> u32 {
+        percent(self.value, self.range)
+    }
+
+    /// The percentage Settings shows: the one it chose while the control is
+    /// still where that put it, as several percentages share each step.
+    fn shown(self, chosen: Option<u8>) -> u8 {
+        match chosen {
+            Some(chosen) if raw(chosen, self.range) == self.value => chosen.min(100),
+            _ => self.percent() as u8,
+        }
+    }
 }
 
 /// The two levels Settings changes.
@@ -37,7 +54,9 @@ pub enum Gain {
     Microphone,
 }
 
-pub fn status(config: &AudioConfig) -> AudioSnapshot {
+/// `chosen` holds the output volume and microphone gain Settings last set,
+/// in percent.
+pub fn status(config: &AudioConfig, chosen: (Option<u8>, Option<u8>)) -> AudioSnapshot {
     let cards = cards(&fs::read_to_string("/proc/asound/cards").unwrap_or_default());
     let output_pcm = find(&cards, &config.playback_device);
     let input_pcm = find(&cards, &config.capture_device);
@@ -60,13 +79,14 @@ pub fn status(config: &AudioConfig) -> AudioSnapshot {
     let mixer =
         |found: Option<(&Card, u32)>| found.map_or_else(Vec::new, |(card, _)| controls(card.index));
     let (output, input) = (mixer(output_pcm), mixer(input_pcm));
-    let percent = |found: Option<(&Control, Level)>| found.map(|(_, level)| level.percent as u8);
+    let shown =
+        |found: Option<(&Control, Level)>, chosen| found.map(|(_, level)| level.shown(chosen));
     AudioSnapshot {
         codec: describe(codec, usb_id.as_deref()),
         sample_rate: rates(rate(output_pcm, 'p'), rate(input_pcm, 'c')),
         volume: levels(&output, &input),
-        volume_percent: percent(speaker(&output)),
-        microphone_percent: percent(microphone(&input)),
+        volume_percent: shown(speaker(&output), chosen.0),
+        microphone_percent: shown(microphone(&input), chosen.1),
     }
 }
 
@@ -225,7 +245,8 @@ fn controls(card: u32) -> Vec<Control> {
                 .then(|| control.get_playback_volume(channel).ok())
                 .flatten()
                 .map(|value| Level {
-                    percent: percent(value, control.get_playback_volume_range()),
+                    value,
+                    range: control.get_playback_volume_range(),
                     on: !control.has_playback_switch()
                         || control.get_playback_switch(channel).is_ok_and(|on| on != 0),
                 }),
@@ -234,7 +255,8 @@ fn controls(card: u32) -> Vec<Control> {
                 .then(|| control.get_capture_volume(channel).ok())
                 .flatten()
                 .map(|value| Level {
-                    percent: percent(value, control.get_capture_volume_range()),
+                    value,
+                    range: control.get_capture_volume_range(),
                     on: !control.has_capture_switch()
                         || control.get_capture_switch(channel).is_ok_and(|on| on != 0),
                 }),
@@ -261,7 +283,7 @@ fn levels(output: &[Control], input: &[Control]) -> String {
         .chain(microphone(input))
         .map(|(control, level)| {
             if level.on {
-                format!("{} {}%", control.name, level.percent)
+                format!("{} {}%", control.name, level.percent())
             } else {
                 format!("{} muted", control.name)
             }
@@ -339,7 +361,13 @@ mod tests {
 
     #[test]
     fn mixer_shows_the_output_volume_and_microphone_gain() {
-        let level = |percent, on| Some(Level { percent, on });
+        let level = |percent, on| {
+            Some(Level {
+                value: percent,
+                range: (0, 100),
+                on,
+            })
+        };
         let mut controls = [
             // Listed first, the microphone's monitor volume is still skipped.
             Control {
@@ -366,32 +394,43 @@ mod tests {
             Some("Speaker")
         );
         assert_eq!(
-            microphone(&controls).map(|(c, l)| (c.name.as_str(), l.percent)),
+            microphone(&controls).map(|(c, l)| (c.name.as_str(), l.percent())),
             Some(("Mic", 48))
         );
     }
 
     #[test]
-    fn settings_steps_land_within_a_percent() {
-        // The codec's ranges: speaker 0-76, microphone 0-42. Not every 5%
-        // step exists on them: 15% of 76 reads back as 14%.
-        for range in [(0, 76), (0, 42), (-10, 30)] {
-            for step in (0..=100).step_by(5) {
-                let back = percent(raw(step as u8, range), range);
-                assert!(
-                    back.abs_diff(step) <= 1,
-                    "{step}% of {range:?} reads {back}%"
-                );
-            }
-        }
+    fn settings_levels_read_back_as_chosen() {
+        // The codec's ranges: speaker 0-76, microphone 0-42. Not every
+        // percentage exists on them: 15% of 76 reads back as 14%.
         assert_eq!(percent(raw(15, (0, 76)), (0, 76)), 14);
         assert_eq!(raw(150, (0, 76)), 76);
+        // Settings still shows each 1% step it set, as long as the control
+        // stays at that step.
+        for range in [(0, 76), (0, 42), (-10, 30)] {
+            for chosen in 0..=100 {
+                let level = Level {
+                    value: raw(chosen, range),
+                    range,
+                    on: true,
+                };
+                assert_eq!(level.shown(Some(chosen)), chosen, "{range:?}");
+                assert!(level.percent().abs_diff(u32::from(chosen)) <= 2);
+            }
+        }
+        // Moved elsewhere, as by alsamixer, it shows the mixer's own.
+        let moved = Level {
+            value: 20,
+            range: (0, 42),
+            on: true,
+        };
+        assert_eq!((moved.shown(Some(15)), moved.shown(None)), (48, 48));
     }
 
     #[test]
     #[ignore = "requires the USB codec"]
     fn live_codec_status() {
-        let status = status(&AudioConfig::default());
+        let status = status(&AudioConfig::default(), (None, None));
         println!("{status:?}");
         assert_ne!(status.codec, "Not detected");
         assert!(!status.volume.is_empty());

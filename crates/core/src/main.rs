@@ -106,12 +106,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     next_snapshot = Instant::now();
                 }
+                ClientCommand::SetFps { fps } => {
+                    if matches!(fps, 30 | 60) {
+                        info!(fps, "projection frame rate for the next phone");
+                        projection.set_fps(fps);
+                    }
+                    next_snapshot = Instant::now();
+                }
                 ClientCommand::SetVolume { percent } => system.set_gain(Gain::Speaker, percent),
                 ClientCommand::SetMicrophone { percent } => {
                     system.set_gain(Gain::Microphone, percent)
                 }
                 ClientCommand::StartPairing => {
                     bluetooth.start_pairing();
+                    next_snapshot = Instant::now();
+                }
+                ClientCommand::StopPairing => {
+                    bluetooth.stop_pairing();
                     next_snapshot = Instant::now();
                 }
                 ClientCommand::ConfirmPairing { accept } => {

@@ -37,20 +37,24 @@ enum Screen {
 const MENU_ITEMS: usize = 3;
 /// System pages: module and USB, video and audio, GNSS, and the car's I-Bus.
 const SYSTEM_PAGES: usize = 4;
-/// The projection DPIs Settings offers.
+/// The projection DPIs and frame rates Settings offers.
 const DPI_CHOICES: [u32; 2] = [160, 140];
+const FPS_CHOICES: [u32; 2] = [60, 30];
 
 /// Settings' rows, top to bottom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Setting {
-    Wireless,
+    /// Wireless Android Auto: the hotspot, and Bluetooth for phones.
+    Hotspot,
     Dpi,
+    Fps,
     Volume,
     Microphone,
 }
-const SETTINGS: [Setting; 4] = [
-    Setting::Wireless,
+const SETTINGS: [Setting; 5] = [
+    Setting::Hotspot,
     Setting::Dpi,
+    Setting::Fps,
     Setting::Volume,
     Setting::Microphone,
 ];
@@ -457,7 +461,8 @@ fn handle_action(
             _ => (),
         },
         // Left/Right choose a row and Enter opens it; then Left/Right change
-        // its value and Enter or Back close it again.
+        // its value and Enter or Back close it again. Enter flips the hotspot's
+        // switch at once.
         Screen::Settings => {
             let rows = SETTINGS.len();
             let index = settings_index(state);
@@ -468,7 +473,13 @@ fn handle_action(
                 (false, KeyAction::Right | KeyAction::Down) => {
                     state.settings_index = (index + 1) % rows
                 }
-                (false, KeyAction::Select) if state.core_connected => state.settings_editing = true,
+                (false, KeyAction::Select) if state.core_connected => {
+                    if selected_setting(state) == Setting::Hotspot {
+                        change_setting(state, true, commands)
+                    } else {
+                        state.settings_editing = true
+                    }
+                }
                 (false, KeyAction::Back) => state.screen = Screen::Menu,
                 (true, KeyAction::Right | KeyAction::Up) => change_setting(state, true, commands),
                 (true, KeyAction::Left | KeyAction::Down) => change_setting(state, false, commands),
@@ -539,12 +550,12 @@ fn render_state(ui: &AppWindow, state: &UiState) {
         (UI_WIDTH, UI_HEIGHT)
     };
     ui.set_ui_resolution(format!("{width}x{height}").into());
-    // The DPI chosen in Settings, which the core reports, over its hello's.
+    // The DPI and frame rate chosen in Settings, which the core reports, over
+    // its hello's.
+    let chosen = |chosen: u32, hello: u32| if chosen == 0 { hello } else { chosen };
     let video = state.video.map(|video| VideoSettings {
-        dpi: match state.snapshot.projection.dpi {
-            0 => video.dpi,
-            dpi => dpi,
-        },
+        dpi: chosen(state.snapshot.projection.dpi, video.dpi),
+        fps: chosen(state.snapshot.projection.fps, video.fps),
         ..video
     });
     let (resolution, dpi_fps) = projection_video(video);
@@ -561,8 +572,11 @@ fn render_state(ui: &AppWindow, state: &UiState) {
         .map(|row| {
             let (label, value) = setting_text(state, row);
             SettingsRow {
+                section: section(row).into(),
                 label: label.into(),
                 value: value.into(),
+                toggle: row == Setting::Hotspot,
+                on: state.snapshot.wireless.enabled,
             }
         })
         .collect();
@@ -570,7 +584,7 @@ fn render_state(ui: &AppWindow, state: &UiState) {
     ui.set_settings_index(settings_index(state) as i32);
     ui.set_settings_editing(state.settings_editing);
     ui.set_pair_option(pair_option(state));
-    ui.set_settings_note(settings_note(state).into());
+    ui.set_pairing(state.snapshot.bluetooth.pairing);
     ui.set_bluetooth_status(state.snapshot.bluetooth.status.clone().into());
     let pairing = state.snapshot.bluetooth.confirm.as_ref();
     ui.set_pairing_request(pairing.is_some());
@@ -641,8 +655,8 @@ fn pair_option(state: &UiState) -> bool {
     state.core_connected && state.snapshot.wireless.enabled
 }
 
-/// The Phone page while there is no phone: Enter pairs one in wireless mode,
-/// and Back returns to the menu.
+/// The Phone page while there is no phone: in wireless mode, Enter switches
+/// pairing on or off, and Back returns to the menu.
 fn waiting_page(
     state: &mut UiState,
     action: KeyAction,
@@ -650,7 +664,15 @@ fn waiting_page(
 ) {
     match action {
         KeyAction::Select if pair_option(state) => {
-            let _ = commands.send(ClientCommand::StartPairing);
+            // Shown at once; the core's snapshot switches it off again when
+            // the time for pairing is up.
+            let pairing = &mut state.snapshot.bluetooth.pairing;
+            let _ = commands.send(if *pairing {
+                ClientCommand::StopPairing
+            } else {
+                ClientCommand::StartPairing
+            });
+            *pairing = !*pairing;
         }
         KeyAction::Back => state.screen = Screen::Menu,
         _ => (),
@@ -665,8 +687,8 @@ fn selected_setting(state: &UiState) -> Setting {
     SETTINGS[settings_index(state)]
 }
 
-/// Changes the open row's value, up or down: wireless mode and the DPI switch,
-/// the levels move by 5%.
+/// Changes the open row's value, up or down: the hotspot, the DPI and the
+/// frame rate switch, the levels move by 1%.
 fn change_setting(
     state: &mut UiState,
     up: bool,
@@ -680,7 +702,7 @@ fn change_setting(
     let audio = &mut snapshot.system.audio;
     // Each change shows at once; the core's next snapshot confirms it.
     match setting {
-        Setting::Wireless => {
+        Setting::Hotspot => {
             let enabled = !snapshot.wireless.enabled;
             let _ = commands.send(ClientCommand::SetWireless { enabled });
             snapshot.wireless.enabled = enabled;
@@ -693,14 +715,23 @@ fn change_setting(
             let _ = commands.send(ClientCommand::SetDpi { dpi });
             snapshot.projection.dpi = dpi;
         }
+        Setting::Fps => {
+            let fps = match snapshot.projection.fps {
+                fps if fps == FPS_CHOICES[0] => FPS_CHOICES[1],
+                _ => FPS_CHOICES[0],
+            };
+            let _ = commands.send(ClientCommand::SetFps { fps });
+            snapshot.projection.fps = fps;
+        }
+        // At either end, a held key sends nothing more.
         Setting::Volume => {
-            if let Some(percent) = audio.volume_percent.map(|percent| step(percent, up)) {
+            if let Some(percent) = moved(audio.volume_percent, up) {
                 let _ = commands.send(ClientCommand::SetVolume { percent });
                 audio.volume_percent = Some(percent);
             }
         }
         Setting::Microphone => {
-            if let Some(percent) = audio.microphone_percent.map(|percent| step(percent, up)) {
+            if let Some(percent) = moved(audio.microphone_percent, up) {
                 let _ = commands.send(ClientCommand::SetMicrophone { percent });
                 audio.microphone_percent = Some(percent);
             }
@@ -708,15 +739,19 @@ fn change_setting(
     }
 }
 
-/// The next 5% step from a level, which the codec may report between steps.
+/// A level's next 1% step, unless it has none that way or the codec is missing.
+fn moved(level: Option<u8>, up: bool) -> Option<u8> {
+    let level = level?;
+    Some(step(level, up)).filter(|&next| next != level)
+}
+
+/// The next 1% step from a level.
 fn step(percent: u8, up: bool) -> u8 {
-    let nearest = (u16::from(percent) + 2) / 5 * 5;
-    let next = if up {
-        nearest + 5
+    if up {
+        percent.saturating_add(1).min(100)
     } else {
-        nearest.saturating_sub(5)
-    };
-    next.min(100) as u8
+        percent.saturating_sub(1)
+    }
 }
 
 /// Held keys repeat while paging through System and changing a level.
@@ -738,53 +773,36 @@ fn repeats(state: &UiState, action: KeyAction) -> bool {
     }
 }
 
-fn setting_text(state: &UiState, row: Setting) -> (&'static str, String) {
-    let snapshot = &state.snapshot;
-    let percent = |level: Option<u8>| level.map_or_else(|| "n/a".into(), |p| format!("{p}%"));
+/// The section a row starts, if it starts one.
+fn section(row: Setting) -> &'static str {
     match row {
-        Setting::Wireless => (
-            "WIRELESS",
-            if snapshot.wireless.enabled {
-                "ON"
-            } else {
-                "OFF"
-            }
-            .into(),
-        ),
-        Setting::Dpi => (
-            "VIDEO DPI",
-            match snapshot.projection.dpi {
-                0 => "n/a".into(),
-                dpi => dpi.to_string(),
-            },
-        ),
-        Setting::Volume => (
-            "AUDIO VOLUME",
-            percent(snapshot.system.audio.volume_percent),
-        ),
-        Setting::Microphone => (
-            "MICROPHONE",
-            percent(snapshot.system.audio.microphone_percent),
-        ),
+        Setting::Hotspot => "WIRELESS",
+        Setting::Dpi => "VIDEO",
+        Setting::Volume => "AUDIO",
+        Setting::Fps | Setting::Microphone => "",
     }
 }
 
-/// About the selected row.
-fn settings_note(state: &UiState) -> String {
-    if !state.core_connected {
-        return "The core is offline.".into();
-    }
-    let audio = &state.snapshot.system.audio;
-    match selected_setting(state) {
-        Setting::Wireless => available(&state.snapshot.wireless.status),
-        Setting::Dpi => "160 or 140; the phone gets it when it next connects.".into(),
-        Setting::Volume if audio.volume_percent.is_some() => {
-            "The USB codec's output (PCM2912A speaker level).".into()
-        }
-        Setting::Microphone if audio.microphone_percent.is_some() => {
-            "The USB codec's microphone gain.".into()
-        }
-        Setting::Volume | Setting::Microphone => "The USB codec is not connected.".into(),
+/// A row's label and value; the hotspot's switch shows its value instead.
+fn setting_text(state: &UiState, row: Setting) -> (&'static str, String) {
+    let snapshot = &state.snapshot;
+    let percent = |level: Option<u8>| level.map_or_else(|| "n/a".into(), |p| format!("{p}%"));
+    let number = |value: u32| match value {
+        0 => "n/a".into(),
+        value => value.to_string(),
+    };
+    match row {
+        Setting::Hotspot => ("Hotspot", String::new()),
+        Setting::Dpi => ("DPI", number(snapshot.projection.dpi)),
+        Setting::Fps => ("FPS", number(snapshot.projection.fps)),
+        Setting::Volume => (
+            "Speakers volume",
+            percent(snapshot.system.audio.volume_percent),
+        ),
+        Setting::Microphone => (
+            "Microphone volume",
+            percent(snapshot.system.audio.microphone_percent),
+        ),
     }
 }
 
@@ -1304,7 +1322,7 @@ mod navigation_tests {
     }
 
     #[test]
-    fn settings_rows_are_chosen_with_left_right_and_opened_with_enter() {
+    fn settings_rows_are_chosen_with_left_right_and_enter_opens_or_switches_them() {
         let (tx, rx) = mpsc::channel();
         let mut state = UiState {
             screen: Screen::Settings,
@@ -1321,30 +1339,39 @@ mod navigation_tests {
         press(&mut state, KeyAction::Left, false);
         assert_eq!(selected_setting(&state), Setting::Microphone);
         press(&mut state, KeyAction::Right, false);
-        assert_eq!(selected_setting(&state), Setting::Wireless);
+        assert_eq!(selected_setting(&state), Setting::Hotspot);
         assert!(rx.try_recv().is_err(), "choosing a row changed it");
-        // Enter opens Wireless; Left/Right switch it, once per press.
+        // Enter flips the hotspot's switch without opening its row, once
+        // per press.
         press(&mut state, KeyAction::Select, false);
-        assert!(state.settings_editing);
-        press(&mut state, KeyAction::Right, false);
-        press(&mut state, KeyAction::Right, true);
+        press(&mut state, KeyAction::Select, true);
+        assert!(!state.settings_editing);
         assert!(matches!(
             rx.try_recv(),
             Ok(ClientCommand::SetWireless { enabled: true })
         ));
         assert!(rx.try_recv().is_err(), "a held key switched it twice");
+        // Left/Right still move on to the next row.
+        press(&mut state, KeyAction::Right, false);
+        assert_eq!(selected_setting(&state), Setting::Dpi);
+        assert!(rx.try_recv().is_err());
+        press(&mut state, KeyAction::Left, false);
         // A phone on USB does not stop it; a missing core does.
         state.snapshot.usb.selected = Some(navbridge_common::UsbDeviceInfo::default());
-        press(&mut state, KeyAction::Left, false);
+        press(&mut state, KeyAction::Select, false);
         assert!(matches!(
             rx.try_recv(),
             Ok(ClientCommand::SetWireless { enabled: false })
         ));
         state.core_connected = false;
-        press(&mut state, KeyAction::Left, false);
+        press(&mut state, KeyAction::Select, false);
         assert!(rx.try_recv().is_err());
         state.core_connected = true;
-        // Enter closes the row, then Back returns to the menu.
+        // Enter opens the other rows and closes them again, then Back
+        // returns to the menu.
+        press(&mut state, KeyAction::Right, false);
+        press(&mut state, KeyAction::Select, false);
+        assert!(state.settings_editing);
         press(&mut state, KeyAction::Select, false);
         assert!(!state.settings_editing);
         press(&mut state, KeyAction::Back, false);
@@ -1354,10 +1381,11 @@ mod navigation_tests {
         state.core_connected = false;
         press(&mut state, KeyAction::Select, false);
         assert!(!state.settings_editing);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
-    fn open_rows_change_the_dpi_and_the_codec_levels() {
+    fn open_rows_change_the_video_and_the_codec_levels() {
         let (tx, rx) = mpsc::channel();
         let mut state = UiState {
             screen: Screen::Settings,
@@ -1365,7 +1393,7 @@ mod navigation_tests {
             ..UiState::default()
         };
         state.snapshot.projection.dpi = 160;
-        // 15% of the codec's 0-76 range reads back as 14%.
+        state.snapshot.projection.fps = 60;
         state.snapshot.system.audio.volume_percent = Some(14);
         state.snapshot.system.audio.microphone_percent = Some(48);
         let press = |state: &mut UiState, action, repeat| {
@@ -1387,13 +1415,27 @@ mod navigation_tests {
         // Back closes it too.
         press(&mut state, KeyAction::Back, false);
         assert_eq!(state.screen, Screen::Settings);
-        // Levels move in 5% steps from the nearest step; a held key repeats.
+        // The frame rate switches between 60 and 30.
+        press(&mut state, KeyAction::Right, false);
+        press(&mut state, KeyAction::Select, false);
+        press(&mut state, KeyAction::Left, false);
+        press(&mut state, KeyAction::Right, false);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientCommand::SetFps { fps: 30 })
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientCommand::SetFps { fps: 60 })
+        ));
+        press(&mut state, KeyAction::Select, false);
+        // Levels move in 1% steps; a held key repeats.
         press(&mut state, KeyAction::Right, false);
         press(&mut state, KeyAction::Select, false);
         press(&mut state, KeyAction::Right, false);
         press(&mut state, KeyAction::Right, true);
         press(&mut state, KeyAction::Left, false);
-        for expected in [20, 25, 20] {
+        for expected in [15, 16, 15] {
             assert!(matches!(
                 rx.try_recv(),
                 Ok(ClientCommand::SetVolume { percent }) if percent == expected
@@ -1405,18 +1447,24 @@ mod navigation_tests {
         press(&mut state, KeyAction::Down, false);
         assert!(matches!(
             rx.try_recv(),
-            Ok(ClientCommand::SetMicrophone { percent: 45 })
+            Ok(ClientCommand::SetMicrophone { percent: 47 })
         ));
         assert_eq!(
             (step(100, true), step(0, false), step(13, false)),
-            (100, 0, 10)
+            (100, 0, 12)
         );
-        // Nothing is sent without the codec.
+        // Nothing is sent past either end, or without the codec.
+        state.snapshot.system.audio.microphone_percent = Some(0);
+        press(&mut state, KeyAction::Down, false);
+        press(&mut state, KeyAction::Down, true);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(moved(Some(100), true), None);
         state.snapshot.system.audio.microphone_percent = None;
         press(&mut state, KeyAction::Down, false);
         assert!(rx.try_recv().is_err());
         assert_eq!(setting_text(&state, Setting::Microphone).1, "n/a");
         assert_eq!(setting_text(&state, Setting::Dpi).1, "160");
+        assert_eq!(setting_text(&state, Setting::Fps).1, "60");
     }
 
     #[test]
@@ -1430,9 +1478,17 @@ mod navigation_tests {
         // Wireless mode off: nothing to pair with.
         handle_key_event(&mut state, KeyAction::Select, true, false, &tx);
         assert!(rx.try_recv().is_err());
+        // Enter switches pairing on, then off again before its time is up.
         state.snapshot.wireless.enabled = true;
         handle_key_event(&mut state, KeyAction::Select, true, false, &tx);
         assert!(matches!(rx.try_recv(), Ok(ClientCommand::StartPairing)));
+        assert!(state.snapshot.bluetooth.pairing);
+        handle_key_event(&mut state, KeyAction::Select, true, false, &tx);
+        assert!(matches!(rx.try_recv(), Ok(ClientCommand::StopPairing)));
+        assert!(!state.snapshot.bluetooth.pairing);
+        // A held key switches it only once.
+        handle_key_event(&mut state, KeyAction::Select, true, true, &tx);
+        assert!(rx.try_recv().is_err());
         assert_eq!(state.screen, Screen::Phone);
 
         // The phone's code is answered from any screen.
@@ -1665,12 +1721,15 @@ mod preview {
         };
         let snapshot = &mut state.snapshot;
         snapshot.bluetooth.ready = true;
-        snapshot.bluetooth.status = "Waiting for Pixel 10".into();
+        snapshot.bluetooth.pairing = true;
+        snapshot.bluetooth.status =
+            "Pairing open (1:35): on your phone, pair with NavBridge-984B".into();
         snapshot.wireless.enabled = true;
         snapshot.wireless.hotspot = true;
         snapshot.wireless.status = "Hotspot NavBridge-984B is on (5 GHz, channel 36)".into();
         snapshot.gnss.receiver = "u-blox (ttyACM1)".into();
         snapshot.projection.dpi = 160;
+        snapshot.projection.fps = 60;
         snapshot.system.audio.volume_percent = Some(75);
         snapshot.system.audio.microphone_percent = Some(48);
         snapshot.vehicle = VehicleSnapshot {
@@ -1689,13 +1748,20 @@ mod preview {
             ("phone", Screen::Phone, 0),
             ("settings", Screen::Settings, 0),
             ("settings-open", Screen::Settings, 0),
+            ("settings-fps", Screen::Settings, 0),
             ("system-ibus", Screen::System, 3),
         ] {
             state.screen = screen;
             state.system_page = page;
-            // The audio volume, opened to change it.
+            // The speakers' volume, opened to change it.
             state.settings_editing = name == "settings-open";
-            state.settings_index = if state.settings_editing { 2 } else { 0 };
+            state.settings_index = match name {
+                "settings-open" => 3,
+                "settings-fps" => 2,
+                _ => 0,
+            };
+            // And the hotspot's switch off, on an unchosen row.
+            state.snapshot.wireless.enabled = name != "settings-fps";
             render_state(&ui, &state);
             ui.set_clock("14:05".into());
             ui.window().request_redraw();
