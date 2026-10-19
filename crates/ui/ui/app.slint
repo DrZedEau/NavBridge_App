@@ -54,25 +54,28 @@ component Switch inherits Rectangle {
     }
 }
 
-// The one choice on the Phone page, in wireless mode: its switch is on while
-// phones can find NavBridge and pair.
+// The one choice on the Phone page: its switch is on while phones can find
+// NavBridge and pair. Pairing needs the hotspot; without it, it is dimmed.
 component PairSwitch inherits Rectangle {
+    in property <bool> enabled;
     in property <bool> on;
     height: 34px;
     border-radius: 7px;
-    background: AmberPalette.amber;
+    background: root.enabled ? AmberPalette.amber : AmberPalette.surface;
+    border-width: root.enabled ? 0px : 1px;
+    border-color: AmberPalette.border;
     Text {
         x: 14px; width: parent.width - 28px; height: parent.height;
-        text: "PAIR A PHONE";
-        color: AmberPalette.selected-text;
+        text: "Enable pairing";
+        color: root.enabled ? AmberPalette.selected-text : AmberPalette.muted;
         font-size: 15px;
         vertical-alignment: center;
     }
     Switch {
         x: parent.width - self.width - 14px;
         y: (parent.height - self.height) / 2;
-        on: root.on;
-        inverse: true;
+        on: root.enabled && root.on;
+        inverse: root.enabled;
     }
 }
 
@@ -146,12 +149,10 @@ export component AppWindow inherits Window {
     in property <LedState> gnss-led: LedState.off;
     // Local time, "14:05".
     in property <string> clock: "";
-    in property <string> projection-status: "Waiting";
     in property <image> projection-frame;
     in property <bool> video-active: false;
-    in property <bool> wireless-enabled: false;
-    in property <string> wireless-status: "";
-    in property <string> bluetooth-status: "";
+    // The Phone page's message until a phone connects.
+    in property <string> phone-message: "";
     // Settings: its rows, and the chosen one and whether Enter opened it.
     in property <[SettingsRow]> settings-rows;
     in property <int> settings-index: 0;
@@ -305,38 +306,20 @@ export component AppWindow inherits Window {
                 horizontal-alignment: right; vertical-alignment: center;
                 wrap: no-wrap; overflow: elide;
             }
-            Text {
-                x: 12px; y: 40px; width: 376px; height: 54px;
-                text: root.projection-status;
-                color: AmberPalette.muted;
-                font-size: 12px;
-                wrap: word-wrap;
-                overflow: elide;
-            }
-            // While wireless mode is on, how far a phone has got.
-            if root.wireless-enabled: Text {
-                x: 12px; y: 96px; width: 376px; height: 28px;
-                text: root.wireless-status;
-                color: AmberPalette.text;
-                font-size: 11px;
-                wrap: word-wrap;
-            }
-            if root.wireless-enabled: Text {
-                x: 12px; y: 124px; width: 376px; height: 28px;
-                text: root.bluetooth-status;
-                color: AmberPalette.text;
-                font-size: 11px;
-                wrap: word-wrap;
-            }
-            if root.pair-option: PairSwitch {
-                x: 12px; y: 164px; width: 376px;
+            PairSwitch {
+                x: 12px; y: 36px; width: 376px;
+                enabled: root.pair-option;
                 on: root.pairing;
             }
-            if !root.pair-option: Text {
-                x: 12px; y: 172px; width: 376px; height: 18px;
-                text: "To pair a phone, turn the Hotspot on in Settings.";
-                color: AmberPalette.muted;
-                font-size: 11px;
+            // How far a phone has got, in the middle of the screen.
+            Text {
+                x: 12px; y: 84px; width: 376px; height: 72px;
+                text: root.phone-message;
+                color: AmberPalette.text;
+                font-size: 16px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
             }
         }
     }

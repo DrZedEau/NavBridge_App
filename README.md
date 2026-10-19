@@ -193,8 +193,10 @@ Left/Up and Right/Down move between the tiles, Enter opens one, Back or Escape
 returns:
 
 - **Phone**: the connected phone's screen, Android Auto in this build (CarPlay
-  is not in it yet), or while there is none, its connection status and, in
-  wireless mode, how far a phone has got and the PAIR A PHONE switch.
+  is not in it yet). While there is none: the Enable pairing switch at the top,
+  dimmed while the hotspot is off, and in the middle "Waiting for phone" with
+  the hotspot off, "Waiting for paired phone" with it on, or while pairing is
+  open, the name to pair with and the time left.
 - **Settings**: the hotspot for wireless Android Auto, the projection's DPI and
   frame rate, and the codec's speaker volume and microphone gain (see below).
 - **System**: the System pages.
@@ -292,8 +294,8 @@ NavBridge:
   shows. Off, and whenever NavBridge stops: NetworkManager reconnects the saved
   home network; the hotspot never starts on its own, so a reboot also returns to
   it.
-- **PAIR A PHONE**, with the hotspot on, on the Phone page while no phone is
-  connected: Enter switches pairing on or off. For 2 minutes, phones can find
+- **Enable pairing**, the switch at the top of the Phone page while no phone
+  is connected and the hotspot is on: Enter switches pairing on or off. For 2 minutes, phones can find
   NavBridge. Pair from the phone's Bluetooth settings; NavBridge then shows the
   6-digit code. Enter pairs if the phone shows the same code; Back refuses.
   The switch goes off by itself once the 2 minutes are up or a phone has
@@ -301,7 +303,8 @@ NavBridge:
 
 A paired phone gets the hotspot's details over Bluetooth, joins it and starts
 Android Auto over Wi-Fi. While wireless mode is on and no phone is connected,
-NavBridge calls paired phones every 20 seconds, so Android Auto starts once the
+NavBridge calls paired phones every 20 seconds, except while pairing is open,
+so Android Auto starts once the
 phone is in range with Bluetooth and Wi-Fi on. With several paired phones, the
 calls stop at the first whose Android Auto connects. A phone plugged in by USB still
 comes first.

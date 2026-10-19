@@ -145,6 +145,12 @@ pub struct BluetoothSnapshot {
     pub ready: bool,
     /// Phones can find NavBridge and pair with it.
     pub pairing: bool,
+    /// While pairing is open, the seconds left.
+    #[serde(default)]
+    pub pairing_seconds: u32,
+    /// NavBridge's Bluetooth name, as phones show it.
+    #[serde(default)]
+    pub name: String,
     /// A phone asks to pair: the user compares the code and confirms.
     pub confirm: Option<PairingRequest>,
 }

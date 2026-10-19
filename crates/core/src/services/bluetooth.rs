@@ -199,6 +199,7 @@ enum Request {
 pub struct BluetoothService {
     requests: Option<Sender<Request>>,
     shared: Arc<Mutex<Shared>>,
+    name: String,
     /// The last update sent, so that unchanged ones are not.
     last: Cell<Option<(bool, bool, bool)>>,
     worker: Option<JoinHandle<()>>,
@@ -209,10 +210,11 @@ impl BluetoothService {
     pub fn start(hotspot: wifi::HotspotWatch) -> Self {
         let shared = Arc::new(Mutex::new(Shared::default()));
         let (requests, received) = mpsc::channel();
+        let name = wifi::unit_name();
         let worker = Worker {
             shared: shared.clone(),
             connection: None,
-            name: wifi::unit_name(),
+            name: name.clone(),
             wireless: false,
             hotspot: false,
             watch: hotspot,
@@ -235,6 +237,7 @@ impl BluetoothService {
         Self {
             requests: Some(requests),
             shared,
+            name,
             last: Cell::new(None),
             worker: Some(worker),
         }
@@ -284,6 +287,10 @@ impl BluetoothService {
             status: shared.status.clone(),
             ready: shared.ready,
             pairing: shared.pairing(),
+            pairing_seconds: shared.pairing_until.map_or(0, |until| {
+                until.saturating_duration_since(Instant::now()).as_secs() as u32
+            }),
+            name: self.name.clone(),
             confirm: shared.confirm.as_ref().map(|confirm| PairingRequest {
                 device: confirm.name.clone(),
                 code: confirm.code.clone(),
@@ -363,7 +370,10 @@ impl Worker {
                     }
                 }
                 Ok(Request::Pair) => self.open_pairing(),
-                Ok(Request::ClosePairing) => self.hide(),
+                Ok(Request::ClosePairing) => {
+                    self.hide();
+                    self.next_call = Instant::now();
+                }
                 Ok(Request::Confirmed(device)) => {
                     self.confirmed = Some((device, Instant::now() + PAIRED_TIME));
                 }
@@ -397,6 +407,7 @@ impl Worker {
         }
         if pairing_over {
             self.close_pairing();
+            self.next_call = now;
         }
         if let Some((device, until)) = self.confirmed.clone() {
             if self.trust(&device) {
@@ -408,12 +419,18 @@ impl Worker {
                 self.confirmed = None;
             }
         }
-        let joining = self.shared.lock().unwrap().is_joining();
+        // While pairing is open, paired phones are not called: the user is
+        // pairing another one.
+        let (joining, pairing) = {
+            let shared = self.shared.lock().unwrap();
+            (shared.is_joining(), shared.pairing_until.is_some())
+        };
         let early = self.early_until.is_some_and(|until| now < until);
         if self.registered
             && (self.hotspot || early)
             && !self.session
             && !joining
+            && !pairing
             && now >= self.next_call
         {
             self.next_call = now + CALL_INTERVAL;
@@ -848,7 +865,7 @@ fn describe(
         return format!("{phone} is joining the hotspot");
     }
     match phones {
-        [] => "No phone paired: choose PAIR A PHONE".into(),
+        [] => "No phone paired: enable pairing".into(),
         phones => format!("Waiting for {}", phones.join(", ")),
     }
 }
@@ -1140,7 +1157,7 @@ mod tests {
         );
         assert_eq!(
             describe(true, None, None, None, &[], name),
-            "No phone paired: choose PAIR A PHONE"
+            "No phone paired: enable pairing"
         );
     }
 

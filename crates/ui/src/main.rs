@@ -513,7 +513,7 @@ fn render_state(ui: &AppWindow, state: &UiState) {
     ui.set_gnss_led(gnss);
 
     let projection = &state.snapshot.projection;
-    ui.set_projection_status(projection.status.clone().into());
+    ui.set_phone_message(phone_message(state).into());
 
     let gnss = &state.snapshot.gnss;
     let core =
@@ -565,8 +565,6 @@ fn render_state(ui: &AppWindow, state: &UiState) {
     ui.set_audio_codec(core(&audio.codec));
     ui.set_audio_sample_rate(core(&audio.sample_rate));
     ui.set_audio_volume(core(&audio.volume));
-    ui.set_wireless_enabled(state.snapshot.wireless.enabled);
-    ui.set_wireless_status(core(&state.snapshot.wireless.status));
     let rows: Vec<SettingsRow> = SETTINGS
         .into_iter()
         .map(|row| {
@@ -585,7 +583,6 @@ fn render_state(ui: &AppWindow, state: &UiState) {
     ui.set_settings_editing(state.settings_editing);
     ui.set_pair_option(pair_option(state));
     ui.set_pairing(state.snapshot.bluetooth.pairing);
-    ui.set_bluetooth_status(state.snapshot.bluetooth.status.clone().into());
     let pairing = state.snapshot.bluetooth.confirm.as_ref();
     ui.set_pairing_request(pairing.is_some());
     if let Some(request) = pairing {
@@ -653,6 +650,32 @@ fn available(value: &str) -> String {
 /// With wireless mode on, the Phone page offers pairing a phone.
 fn pair_option(state: &UiState) -> bool {
     state.core_connected && state.snapshot.wireless.enabled
+}
+
+/// The Phone page's message until a phone connects. With the hotspot on,
+/// paired phones are called, except while pairing is open: then, how to pair.
+fn phone_message(state: &UiState) -> String {
+    let bluetooth = &state.snapshot.bluetooth;
+    if !pair_option(state) {
+        return "Waiting for phone".into();
+    }
+    if !bluetooth.pairing {
+        return "Waiting for paired phone".into();
+    }
+    let name = if bluetooth.name.is_empty() {
+        "NavBridge"
+    } else {
+        &bluetooth.name
+    };
+    // Until the core's snapshot confirms it, the time left is not known yet.
+    match bluetooth.pairing_seconds {
+        0 => format!("On your phone, pair with {name}"),
+        left => format!(
+            "On your phone, pair with {name}\n{}:{:02} left",
+            left / 60,
+            left % 60
+        ),
+    }
 }
 
 /// The Phone page while there is no phone: in wireless mode, Enter switches
@@ -1490,6 +1513,21 @@ mod navigation_tests {
         handle_key_event(&mut state, KeyAction::Select, true, true, &tx);
         assert!(rx.try_recv().is_err());
         assert_eq!(state.screen, Screen::Phone);
+        // What the page says meanwhile.
+        assert_eq!(phone_message(&state), "Waiting for paired phone");
+        state.snapshot.bluetooth.pairing = true;
+        state.snapshot.bluetooth.name = "NavBridge-984B".into();
+        assert_eq!(
+            phone_message(&state),
+            "On your phone, pair with NavBridge-984B"
+        );
+        state.snapshot.bluetooth.pairing_seconds = 95;
+        assert_eq!(
+            phone_message(&state),
+            "On your phone, pair with NavBridge-984B\n1:35 left"
+        );
+        state.snapshot.wireless.enabled = false;
+        assert_eq!(phone_message(&state), "Waiting for phone");
 
         // The phone's code is answered from any screen.
         let mut state = UiState {
@@ -1722,8 +1760,8 @@ mod preview {
         let snapshot = &mut state.snapshot;
         snapshot.bluetooth.ready = true;
         snapshot.bluetooth.pairing = true;
-        snapshot.bluetooth.status =
-            "Pairing open (1:35): on your phone, pair with NavBridge-984B".into();
+        snapshot.bluetooth.pairing_seconds = 95;
+        snapshot.bluetooth.name = "NavBridge-984B".into();
         snapshot.wireless.enabled = true;
         snapshot.wireless.hotspot = true;
         snapshot.wireless.status = "Hotspot NavBridge-984B is on (5 GHz, channel 36)".into();
@@ -1744,10 +1782,14 @@ mod preview {
             odometer_km: Some(187_654),
         };
         for (name, screen, page) in [
+            // Each Phone page follows another screen, so that its switch is
+            // drawn as it ends up, not as its animation starts.
             ("menu", Screen::Menu, 0),
             ("phone", Screen::Phone, 0),
             ("settings", Screen::Settings, 0),
+            ("phone-waiting", Screen::Phone, 0),
             ("settings-open", Screen::Settings, 0),
+            ("phone-off", Screen::Phone, 0),
             ("settings-fps", Screen::Settings, 0),
             ("system-ibus", Screen::System, 3),
         ] {
@@ -1760,8 +1802,10 @@ mod preview {
                 "settings-fps" => 2,
                 _ => 0,
             };
-            // And the hotspot's switch off, on an unchosen row.
-            state.snapshot.wireless.enabled = name != "settings-fps";
+            // And the hotspot's switch off, on an unchosen row; on the Phone
+            // page, pairing open, then not, then the hotspot off.
+            state.snapshot.wireless.enabled = !matches!(name, "settings-fps" | "phone-off");
+            state.snapshot.bluetooth.pairing = name == "phone";
             render_state(&ui, &state);
             ui.set_clock("14:05".into());
             ui.window().request_redraw();
