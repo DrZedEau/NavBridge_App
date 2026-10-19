@@ -88,6 +88,9 @@ pub struct ProjectionSnapshot {
     /// The frame rate the phone is asked for when it connects: 30 or 60.
     #[serde(default)]
     pub fps: u32,
+    /// The H.264 decoder in use, such as "FFmpeg 7.1.5 h264 (software)".
+    #[serde(default)]
+    pub decoder: String,
 }
 
 impl Default for ProjectionSnapshot {
@@ -100,6 +103,7 @@ impl Default for ProjectionSnapshot {
             phone_name: String::new(),
             dpi: 0,
             fps: 0,
+            decoder: String::new(),
         }
     }
 }
@@ -169,6 +173,9 @@ pub struct PairingRequest {
 pub struct VehicleSnapshot {
     /// What the I-Bus link does, or why it does not.
     pub status: String,
+    /// The interface is open, whether or not the car is talking.
+    #[serde(default)]
+    pub interface: bool,
     /// Frames heard since the core started, and lines that were not valid
     /// frames, which point to a wiring or interference problem.
     pub frames: u64,

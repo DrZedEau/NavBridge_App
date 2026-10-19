@@ -428,6 +428,7 @@ fn runner(
         thread::sleep(Duration::from_secs(1));
     }
     let video = VideoPipeline::start(VIDEO_FRAME_PATH)?;
+    state.write().unwrap().projection.decoder = video.decoder().into();
     let audio = AudioPipeline::start(&audio, inbox.wake.clone())
         .map_err(|e| format!("start audio workers: {e}"))?;
     let mut rejected = usb::Rejected::default();

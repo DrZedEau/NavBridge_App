@@ -224,6 +224,7 @@ impl State {
 
     fn snapshot(&self, now: Instant) -> VehicleSnapshot {
         let mut vehicle = VehicleSnapshot {
+            interface: self.problem.is_none(),
             frames: self.frames,
             bad_lines: self.bad_lines,
             ..Default::default()
@@ -306,12 +307,14 @@ mod tests {
         let v = state.snapshot(at(24));
         assert_eq!(v.status, "No I-Bus traffic");
         assert_eq!((v.ignition, v.coolant_c, v.frames), (None, None, 8));
+        assert!(v.interface, "the interface is still open");
         // Losing the interface forgets the car at once, but not the counts.
         state.bad_lines += 1;
         state.closed("Interface not connected".into());
         let v = state.snapshot(at(13));
         assert_eq!(v.status, "Interface not connected");
         assert_eq!((v.coolant_c, v.frames, v.bad_lines), (None, 8, 1));
+        assert!(!v.interface);
     }
 
     /// A pseudo-terminal, standing in for the board: its controlling side,

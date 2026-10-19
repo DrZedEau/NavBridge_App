@@ -59,13 +59,12 @@ const SETTINGS: [Setting; 5] = [
     Setting::Microphone,
 ];
 
-/// The projection video the core asks the phone for, from its hello.
+/// The projection video's size, which the core asks the phone for, from its
+/// hello.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct VideoSettings {
     width: u32,
     height: u32,
-    dpi: u32,
-    fps: u32,
 }
 
 struct UiState {
@@ -218,7 +217,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         media_width,
                         media_height,
                         media_dpi,
-                        media_fps,
                         ..
                     }) => {
                         // Reject an incompatible backend early: the frontend can
@@ -233,8 +231,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             state.video = Some(VideoSettings {
                                 width: media_width,
                                 height: media_height,
-                                dpi: media_dpi,
-                                fps: media_fps,
                             });
                         }
                     }
@@ -512,7 +508,6 @@ fn render_state(ui: &AppWindow, state: &UiState) {
     ui.set_wifi_led(wifi);
     ui.set_gnss_led(gnss);
 
-    let projection = &state.snapshot.projection;
     ui.set_phone_message(phone_message(state).into());
 
     let gnss = &state.snapshot.gnss;
@@ -529,18 +524,10 @@ fn render_state(ui: &AppWindow, state: &UiState) {
     ui.set_cpu_usage(available(&state.snapshot.system.cpu_usage).into());
     ui.set_ram_usage(available(&state.snapshot.system.memory).into());
     ui.set_cpu_temperature(available(&state.snapshot.system.cpu_temp).into());
-    let (status, model) = usb_connection_details(&state.snapshot, state.core_connected);
-    ui.set_usb_device_status(status.into());
-    ui.set_usb_device_name(model.into());
-    let connected = state.core_connected && (projection.phone_connected || projection.streaming);
-    ui.set_connected_phone(
-        if connected {
-            known(&projection.phone_name)
-        } else {
-            "Not connected".into()
-        }
-        .into(),
-    );
+    let (phone, gnss, ibus) = usb_devices(&state.snapshot, state.core_connected);
+    ui.set_usb_phone(phone.into());
+    ui.set_usb_gnss(gnss.into());
+    ui.set_usb_ibus(ibus.into());
     // On the panel, the window takes the display mode; until it is shown, the
     // size this UI is designed for.
     let size = ui.window().size();
@@ -550,17 +537,8 @@ fn render_state(ui: &AppWindow, state: &UiState) {
         (UI_WIDTH, UI_HEIGHT)
     };
     ui.set_ui_resolution(format!("{width}x{height}").into());
-    // The DPI and frame rate chosen in Settings, which the core reports, over
-    // its hello's.
-    let chosen = |chosen: u32, hello: u32| if chosen == 0 { hello } else { chosen };
-    let video = state.video.map(|video| VideoSettings {
-        dpi: chosen(state.snapshot.projection.dpi, video.dpi),
-        fps: chosen(state.snapshot.projection.fps, video.fps),
-        ..video
-    });
-    let (resolution, dpi_fps) = projection_video(video);
-    ui.set_projection_resolution(resolution.into());
-    ui.set_projection_dpi_fps(dpi_fps.into());
+    ui.set_projection_resolution(projection_resolution(state.video).into());
+    ui.set_projection_decoder(core(&state.snapshot.projection.decoder));
     let audio = &state.snapshot.system.audio;
     ui.set_audio_codec(core(&audio.codec));
     ui.set_audio_sample_rate(core(&audio.sample_rate));
@@ -927,36 +905,54 @@ fn odometer(km: Option<u32>) -> String {
     format!("{grouped} km")
 }
 
-/// The projection resolution and DPI / FPS rows. CarPlay is not part of this
-/// build, so only Android Auto has a resolution.
-fn projection_video(video: Option<VideoSettings>) -> (String, String) {
+/// The projection resolution row. CarPlay is not part of this build, so only
+/// Android Auto has a resolution.
+fn projection_resolution(video: Option<VideoSettings>) -> String {
     match video {
-        Some(v) => (
-            format!("AA {}x{} · CarPlay n/a", v.width, v.height),
-            format!("{} / {}", v.dpi, v.fps),
-        ),
-        None => ("Unavailable".into(), "Unavailable".into()),
+        Some(v) => format!("AA {}x{} · CarPlay n/a", v.width, v.height),
+        None => "Unavailable".into(),
     }
 }
 
-fn usb_connection_details(snapshot: &AppSnapshot, core_connected: bool) -> (String, String) {
+/// System's USB Devices rows: the phone, the GNSS receiver and the I-Bus
+/// interface. A phone on Wi-Fi shows too, as it is the connected one.
+fn usb_devices(snapshot: &AppSnapshot, core_connected: bool) -> (String, String, String) {
     if !core_connected {
-        return ("Unavailable".into(), "n/a".into());
+        return (
+            "Unavailable".into(),
+            "Unavailable".into(),
+            "Unavailable".into(),
+        );
     }
-    let Some(device) = snapshot.usb.selected.as_ref() else {
-        return ("Not detected".into(), "n/a".into());
+    let projection = &snapshot.projection;
+    let connected = projection.phone_connected || projection.streaming;
+    let phone = match &snapshot.usb.selected {
+        Some(device) => {
+            let model = if device.product.trim().is_empty() {
+                format!("USB {:04x}:{:04x}", device.vendor_id, device.product_id)
+            } else {
+                device.product.clone()
+            };
+            let state = if connected { "Connected" } else { "Detected" };
+            format!("{model} · {state}")
+        }
+        None if connected => format!("{} · Wireless", known(&projection.phone_name)),
+        None => "Not detected".into(),
     };
-    let status = if snapshot.projection.phone_connected {
-        "Connected"
+    let gnss = match snapshot.gnss.receiver.trim() {
+        "" => "Not detected".into(),
+        receiver => receiver.into(),
+    };
+    let vehicle = &snapshot.vehicle;
+    let ibus = if vehicle.interface {
+        "Detected".into()
+    } else if vehicle.status == "Interface not connected" {
+        "Not detected".into()
     } else {
-        "Detected"
+        // Why it cannot be read, such as a missing permission.
+        available(&vehicle.status)
     };
-    let model = if device.product.trim().is_empty() {
-        format!("USB {:04x}:{:04x}", device.vendor_id, device.product_id)
-    } else {
-        device.product.clone()
-    };
-    (status.into(), model)
+    (phone, gnss, ibus)
 }
 
 fn read_frame_header(reader: &mut impl Read) -> io::Result<u64> {
@@ -1612,8 +1608,6 @@ mod disconnect_tests {
         state.video = Some(VideoSettings {
             width: 800,
             height: 480,
-            dpi: 160,
-            fps: 60,
         });
         assert!(state.show_projection());
         state.disconnect_projection();
@@ -1632,20 +1626,56 @@ mod disconnect_tests {
         let video = VideoSettings {
             width: 800,
             height: 480,
-            dpi: 160,
-            fps: 60,
         };
         assert_eq!(
-            projection_video(Some(video)),
-            ("AA 800x480 · CarPlay n/a".into(), "160 / 60".into())
+            projection_resolution(Some(video)),
+            "AA 800x480 · CarPlay n/a"
         );
-        assert_eq!(
-            projection_video(None),
-            ("Unavailable".into(), "Unavailable".into())
-        );
+        assert_eq!(projection_resolution(None), "Unavailable");
         assert_eq!(core_value(true, "Speaker 100%"), "Speaker 100%");
         assert_eq!(core_value(true, " "), "n/a");
         assert_eq!(core_value(false, "Speaker 100%"), "Unavailable");
+    }
+
+    #[test]
+    fn usb_devices_list_the_phone_the_gnss_receiver_and_the_ibus_interface() {
+        let mut snapshot = AppSnapshot::default();
+        snapshot.vehicle.status = "Interface not connected".into();
+        let not_detected = || {
+            (
+                "Not detected".to_string(),
+                "Not detected".to_string(),
+                "Not detected".to_string(),
+            )
+        };
+        assert_eq!(usb_devices(&snapshot, true), not_detected());
+        assert_eq!(usb_devices(&snapshot, false).0, "Unavailable");
+        // A phone on USB, before and once Android Auto runs on it.
+        snapshot.usb.selected = Some(navbridge_common::UsbDeviceInfo {
+            product: "Pixel 10".into(),
+            ..Default::default()
+        });
+        assert_eq!(usb_devices(&snapshot, true).0, "Pixel 10 · Detected");
+        snapshot.projection.phone_connected = true;
+        assert_eq!(usb_devices(&snapshot, true).0, "Pixel 10 · Connected");
+        // A phone on Wi-Fi is the connected one too.
+        snapshot.usb.selected = None;
+        snapshot.projection.phone_name = "Pixel 10".into();
+        assert_eq!(usb_devices(&snapshot, true).0, "Pixel 10 · Wireless");
+        snapshot.gnss.receiver = "u-blox (ttyACM1)".into();
+        snapshot.vehicle.interface = true;
+        snapshot.vehicle.status = "No I-Bus traffic".into();
+        let (_, gnss, ibus) = usb_devices(&snapshot, true);
+        assert_eq!(
+            (gnss.as_str(), ibus.as_str()),
+            ("u-blox (ttyACM1)", "Detected")
+        );
+        snapshot.vehicle.interface = false;
+        snapshot.vehicle.status = "No permission to read the interface".into();
+        assert_eq!(
+            usb_devices(&snapshot, true).2,
+            "No permission to read the interface"
+        );
     }
 }
 
@@ -1690,6 +1720,7 @@ mod vehicle_tests {
     fn the_ibus_page_shows_readings_and_what_is_missing() {
         let vehicle = VehicleSnapshot {
             status: "Receiving".into(),
+            interface: true,
             frames: 1234,
             bad_lines: 2,
             ignition: Some(Ignition::On),
@@ -1766,12 +1797,36 @@ mod preview {
         snapshot.wireless.hotspot = true;
         snapshot.wireless.status = "Hotspot NavBridge-984B is on (5 GHz, channel 36)".into();
         snapshot.gnss.receiver = "u-blox (ttyACM1)".into();
+        snapshot.gnss.status = "3D fix".into();
+        snapshot.gnss.satellites = "9 / 14".into();
+        snapshot.gnss.position = "48.85837, 2.29448".into();
+        snapshot.gnss.altitude = "35.0 m".into();
+        snapshot.gnss.speed = "36.0 km/h".into();
+        snapshot.gnss.hdop = "0.9".into();
+        snapshot.gnss.utc = "12:05:31".into();
+        snapshot.usb.selected = Some(navbridge_common::UsbDeviceInfo {
+            product: "Pixel 10".into(),
+            ..Default::default()
+        });
         snapshot.projection.dpi = 160;
         snapshot.projection.fps = 60;
+        snapshot.projection.decoder = "FFmpeg 7.1.5 h264 (software)".into();
+        snapshot.system.cpu_usage = "12.5%".into();
+        snapshot.system.memory = "1.2 / 7.9 GB".into();
+        snapshot.system.cpu_temp = "52.3 °C".into();
+        snapshot.system.audio.codec = "USB audio CODEC (08bb:2902)".into();
+        snapshot.system.audio.sample_rate = "Playback 48 kHz · Mic 16 kHz".into();
+        snapshot.system.audio.volume = "Speaker 75% · Mic 48%".into();
         snapshot.system.audio.volume_percent = Some(75);
         snapshot.system.audio.microphone_percent = Some(48);
+        state.video = Some(VideoSettings {
+            width: 800,
+            height: 480,
+        });
+        let snapshot = &mut state.snapshot;
         snapshot.vehicle = VehicleSnapshot {
             status: "Receiving".into(),
+            interface: true,
             frames: 1234,
             bad_lines: 0,
             ignition: Some(Ignition::On),
@@ -1791,6 +1846,9 @@ mod preview {
             ("settings-open", Screen::Settings, 0),
             ("phone-off", Screen::Phone, 0),
             ("settings-fps", Screen::Settings, 0),
+            ("system-module", Screen::System, 0),
+            ("system-video", Screen::System, 1),
+            ("system-gnss", Screen::System, 2),
             ("system-ibus", Screen::System, 3),
         ] {
             state.screen = screen;

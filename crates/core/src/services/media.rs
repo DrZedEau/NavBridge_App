@@ -1,3 +1,4 @@
+use std::ffi::CStr;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -64,6 +65,8 @@ pub struct VideoPipeline {
     wait_for_idr: Arc<AtomicBool>,
     frame_path: PathBuf,
     generation: Arc<Mutex<u64>>,
+    /// The H.264 decoder FFmpeg picked, as the System page shows it.
+    decoder: String,
 }
 
 impl VideoPipeline {
@@ -74,9 +77,19 @@ impl VideoPipeline {
 
         // Fail early if the system FFmpeg libraries are unavailable or broken.
         ffmpeg::init().map_err(|e| format!("initialize FFmpeg: {e}"))?;
-        if ffmpeg::decoder::find(ffmpeg::codec::Id::H264).is_none() {
+        let Some(codec) = ffmpeg::decoder::find(ffmpeg::codec::Id::H264) else {
             return Err("FFmpeg software H.264 decoder is unavailable".into());
-        }
+        };
+        // SAFETY: av_version_info returns a static string, and a registered
+        // codec stays valid for the life of the process.
+        let (version, capabilities) = unsafe {
+            (
+                CStr::from_ptr(ffmpeg::ffi::av_version_info()).to_string_lossy(),
+                (*codec.as_ptr()).capabilities as u32,
+            )
+        };
+        let hardware = capabilities & ffmpeg::ffi::AV_CODEC_CAP_HARDWARE != 0;
+        let decoder = decoder_text(&version, codec.name(), hardware);
 
         let (tx, rx) = mpsc::sync_channel::<VideoCommand>(VIDEO_QUEUE_DEPTH);
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
@@ -154,7 +167,7 @@ impl VideoPipeline {
 
         info!(
             output = %frame_path.display(),
-            decoder = "FFmpeg H.264 software",
+            %decoder,
             display = %format!("{}x{} RGBA", UI_WIDTH, UI_HEIGHT),
             "software projection decoder started"
         );
@@ -166,7 +179,13 @@ impl VideoPipeline {
             wait_for_idr,
             frame_path,
             generation,
+            decoder,
         })
+    }
+
+    /// The H.264 decoder in use, such as "FFmpeg 7.1.5 h264 (software)".
+    pub fn decoder(&self) -> &str {
+        &self.decoder
     }
 
     /// Queue one Android Auto video message. If decoding falls behind,
@@ -410,6 +429,14 @@ struct Scaler {
     context: ScalingContext,
 }
 
+/// FFmpeg's version without its package suffix ("7.1.5-0+deb13u1+rpt2" is
+/// 7.1.5), the decoder's name, and whether it runs on hardware.
+fn decoder_text(version: &str, name: &str, hardware: bool) -> String {
+    let version = version.split('-').next().unwrap_or_default();
+    let kind = if hardware { "hardware" } else { "software" };
+    format!("FFmpeg {version} {name} ({kind})")
+}
+
 fn make_decoder() -> Result<ffmpeg::decoder::Video, String> {
     let codec = ffmpeg::decoder::find(ffmpeg::codec::Id::H264)
         .ok_or_else(|| "FFmpeg H.264 decoder not found".to_string())?;
@@ -502,6 +529,18 @@ fn contains_picture(data: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_decoder_reads_as_ffmpeg_version_name_and_kind() {
+        assert_eq!(
+            decoder_text("7.1.5-0+deb13u1+rpt2", "h264", false),
+            "FFmpeg 7.1.5 h264 (software)"
+        );
+        assert_eq!(
+            decoder_text("8.1", "h264_v4l2m2m", true),
+            "FFmpeg 8.1 h264_v4l2m2m (hardware)"
+        );
+    }
 
     /// The fixture split into access units, one per Android Auto video message.
     fn access_units() -> Vec<&'static [u8]> {
@@ -630,6 +669,7 @@ mod tests {
                 std::process::id()
             )),
             generation: Arc::new(Mutex::new(0)),
+            decoder: String::new(),
         };
         let (keyframe, frame): (&[u8], &[u8]) = (&[0, 0, 0, 1, 0x65], &[0, 0, 0, 1, 0x41]);
         assert_eq!(pipeline.push_h264(frame), PushResult::Accepted);
@@ -681,6 +721,7 @@ mod tests {
             wait_for_idr: Arc::new(AtomicBool::new(false)),
             frame_path: path.clone(),
             generation: generation.clone(),
+            decoder: String::new(),
         };
         assert_eq!(
             pipeline.push_h264(&[0, 0, 0, 1, 0x65]),

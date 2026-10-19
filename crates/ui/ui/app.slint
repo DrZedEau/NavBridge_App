@@ -104,6 +104,45 @@ component PageLeds inherits HorizontalLayout {
     }
 }
 
+// A label and its value, as the System pages list them.
+struct InfoRow {
+    label: string,
+    value: string,
+}
+
+// A titled box of rows, spread evenly over its height.
+component InfoBox inherits Rectangle {
+    in property <string> title;
+    in property <[InfoRow]> rows;
+    in property <length> label-width: 140px;
+    property <length> row-height: (self.height - 28px) / max(1, self.rows.length);
+    border-radius: 4px;
+    background: AmberPalette.surface;
+    border-width: 1px;
+    border-color: AmberPalette.border;
+    Text {
+        x: 8px; y: 4px; width: parent.width - 16px; height: 18px;
+        text: root.title; color: AmberPalette.amber; font-size: 14px; font-weight: 700;
+    }
+    for row[index] in root.rows: Rectangle {
+        x: 8px; y: 24px + index * root.row-height;
+        width: parent.width - 16px; height: root.row-height;
+        Text {
+            x: 0px; width: root.label-width; height: parent.height;
+            text: row.label; color: AmberPalette.muted; font-size: 11px;
+            vertical-alignment: center;
+            wrap: no-wrap; overflow: elide;
+        }
+        Text {
+            x: root.label-width + 8px; width: parent.width - root.label-width - 8px;
+            height: parent.height;
+            text: row.value; color: AmberPalette.text; font-size: 12px;
+            horizontal-alignment: right; vertical-alignment: center;
+            wrap: no-wrap; overflow: elide;
+        }
+    }
+}
+
 // A label and its status light.
 component Indicator inherits HorizontalLayout {
     in property <string> label;
@@ -184,8 +223,11 @@ export component AppWindow inherits Window {
     in property <string> cpu-usage: "n/a";
     in property <string> ram-usage: "n/a";
     in property <string> cpu-temperature: "n/a";
-    in property <string> usb-device-status: "n/a";
-    in property <string> usb-device-name: "n/a";
+    // System's USB Devices: the phone, the GNSS receiver and the I-Bus
+    // interface; the codec is audio-codec.
+    in property <string> usb-phone: "n/a";
+    in property <string> usb-gnss: "n/a";
+    in property <string> usb-ibus: "n/a";
     in property <int> system-page: 0;
     in property <string> gnss-receiver: "n/a";
     in property <string> gnss-status: "n/a";
@@ -196,10 +238,9 @@ export component AppWindow inherits Window {
     in property <string> gnss-hdop: "n/a";
     in property <string> gnss-utc: "n/a";
 
-    in property <string> connected-phone: "n/a";
     in property <string> ui-resolution: "n/a";
     in property <string> projection-resolution: "n/a";
-    in property <string> projection-dpi-fps: "n/a";
+    in property <string> projection-decoder: "n/a";
     in property <string> audio-codec: "n/a";
     in property <string> audio-sample-rate: "n/a";
     in property <string> audio-volume: "n/a";
@@ -354,66 +395,52 @@ export component AppWindow inherits Window {
             count: 4;
             current: root.system-page;
         }
-        for group[index] in [
-            { title: "Compute Module 5", rows: [
+        // Each page fills the screen below its title.
+        // Page 1: the module, and the USB devices NavBridge uses.
+        if root.system-page == 0: InfoBox {
+            x: 8px; y: 32px; width: 384px; height: 84px;
+            title: "Compute Module";
+            rows: [
                 { label: "CPU Usage", value: root.cpu-usage },
                 { label: "RAM Usage", value: root.ram-usage },
                 { label: "CPU temperature", value: root.cpu-temperature },
-            ] },
-            { title: "USB connection", rows: [
-                { label: "USB Status", value: root.usb-device-status },
-                { label: "USB device", value: root.usb-device-name },
-                { label: "Connected phone", value: root.connected-phone },
-            ] },
-            { title: "Video", rows: [
+            ];
+        }
+        if root.system-page == 0: InfoBox {
+            x: 8px; y: 122px; width: 384px; height: 110px;
+            title: "USB Devices";
+            rows: [
+                { label: "Phone", value: root.usb-phone },
+                { label: "GNSS receiver", value: root.usb-gnss },
+                { label: "I-Bus interface", value: root.usb-ibus },
+                { label: "Audio codec", value: root.audio-codec },
+            ];
+        }
+        // Page 2: video and audio.
+        if root.system-page == 1: InfoBox {
+            x: 8px; y: 32px; width: 384px; height: 97px;
+            title: "Video";
+            rows: [
                 { label: "UI resolution", value: root.ui-resolution },
                 { label: "Projection resolution", value: root.projection-resolution },
-                { label: "DPI / FPS", value: root.projection-dpi-fps },
-            ] },
-            { title: "Audio", rows: [
+                { label: "Decoder", value: root.projection-decoder },
+            ];
+        }
+        if root.system-page == 1: InfoBox {
+            x: 8px; y: 135px; width: 384px; height: 97px;
+            title: "Audio";
+            rows: [
                 { label: "USB codec", value: root.audio-codec },
                 { label: "Sampling rate", value: root.audio-sample-rate },
                 { label: "Volume (ALSA mixer)", value: root.audio-volume },
-            ] },
-        ]: Rectangle {
-            // Two sections per page: page 1 has the first two, page 2 the others.
-            visible: (index < 2 ? 0 : 1) == root.system-page;
-            x: 8px;
-            y: 32px + (index == 0 || index == 2 ? 0px : 92px);
-            width: 384px; height: 86px;
-            border-radius: 4px;
-            background: AmberPalette.surface;
-            border-width: 1px; border-color: AmberPalette.border;
-            Text {
-                x: 8px; y: 4px; width: 368px; height: 18px;
-                text: group.title; color: AmberPalette.amber; font-size: 14px; font-weight: 700;
-            }
-            for row[row-index] in group.rows: Rectangle {
-                x: 8px; y: 25px + row-index * 19px; width: 368px; height: 19px;
-                background: transparent;
-                Text {
-                    x: 0px; y: 0px; width: 130px; height: 19px;
-                    text: row.label; color: AmberPalette.muted; font-size: 11px;
-                    horizontal-alignment: left; vertical-alignment: center;
-                    wrap: no-wrap; overflow: elide;
-                }
-                Text {
-                    x: 136px; y: 0px; width: 232px; height: 19px;
-                    text: row.value; color: AmberPalette.text; font-size: 12px;
-                    horizontal-alignment: right; vertical-alignment: center;
-                    wrap: no-wrap; overflow: elide;
-                }
-            }
+            ];
         }
-        if root.system-page == 2: Rectangle {
-            x: 8px; y: 32px; width: 384px; height: 178px;
-            border-radius: 4px; background: AmberPalette.surface;
-            border-width: 1px; border-color: AmberPalette.border;
-            Text {
-                x: 8px; y: 3px; width: 368px; height: 20px;
-                text: "GNSS Signal"; color: AmberPalette.amber; font-size: 14px; font-weight: 700;
-            }
-            for row[index] in [
+        // Page 3: the GNSS receiver.
+        if root.system-page == 2: InfoBox {
+            x: 8px; y: 32px; width: 384px; height: 200px;
+            title: "GNSS Signal";
+            label-width: 150px;
+            rows: [
                 { label: "Receiver", value: root.gnss-receiver },
                 { label: "Status / Fix", value: root.gnss-status },
                 { label: "Satellites (used / view)", value: root.gnss-satellites },
@@ -421,22 +448,8 @@ export component AppWindow inherits Window {
                 { label: "Altitude (MSL)", value: root.gnss-altitude },
                 { label: "Speed", value: root.gnss-speed },
                 { label: "HDOP", value: root.gnss-hdop },
-                { label: "UTC (fix time)", value: root.gnss-utc }
-            ]: Rectangle {
-                x: 8px; y: 25px + index * 18px; width: 368px; height: 18px;
-                Text {
-                    x: 0px; y: 0px; width: 140px; height: 18px;
-                    text: row.label; color: AmberPalette.muted; font-size: 11px;
-                    horizontal-alignment: left; vertical-alignment: center;
-                    wrap: no-wrap; overflow: elide;
-                }
-                Text {
-                    x: 152px; y: 0px; width: 216px; height: 18px;
-                    text: row.value; color: AmberPalette.text; font-size: 11px;
-                    horizontal-alignment: right; vertical-alignment: center;
-                    wrap: no-wrap; overflow: elide;
-                }
-            }
+                { label: "UTC (fix time)", value: root.gnss-utc },
+            ];
         }
         // Page 4: the car, from its I-Bus.
         if root.system-page == 3: Rectangle {

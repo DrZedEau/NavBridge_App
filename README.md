@@ -230,10 +230,12 @@ appears, as a power cut can lose ALSA's own copy.
 
 ## System pages
 
-1. Compute Module 5: CPU/RAM usage and temperature. USB connection: detected/
-   connected status, device model and the connected phone's name.
+1. Compute Module (CM5 or CM4): CPU/RAM usage and temperature. USB Devices: the
+   phone (its model and whether Android Auto runs on it; a phone on Wi-Fi shows
+   as Wireless), the GNSS receiver, the I-Bus interface and the audio codec.
 2. Video: UI resolution, projection resolution (Android Auto; CarPlay is not in
-   this build) and the DPI and frame rate requested from the phone. Audio: the
+   this build) and the H.264 decoder in use: FFmpeg's version, the decoder's
+   name, and software or hardware. Audio: the
    USB codec ALSA uses (name and USB id), its hardware sampling rates while
    playing or recording, and its ALSA mixer volume and microphone gain.
 3. GNSS: GPSD receiver/port, connection/fix status, satellite counts, coordinates,
