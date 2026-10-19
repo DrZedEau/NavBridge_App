@@ -222,9 +222,8 @@ at once, and Enter or Back close the row again.
 | | Microphone volume | 0-100%, 1% steps | The codec's `Mic` capture gain; held keys repeat |
 
 The video choices apply when a phone next connects. The codec has fewer steps than 1%
-(`Speaker` 0-76, `Mic` 0-42), so a press does not always change what is heard,
-and the System page, which shows the mixer's own reading, can be 1% off, such as
-14% for 15%. Choices are kept in
+(`Speaker` 0-76, `Mic` 0-42), so a press does not always change what is heard.
+Choices are kept in
 `/var/lib/navbridge/settings.toml`; the levels are set again whenever the codec
 appears, as a power cut can lose ALSA's own copy.
 
@@ -235,9 +234,9 @@ appears, as a power cut can lose ALSA's own copy.
    as Wireless), the GNSS receiver, the I-Bus interface and the audio codec.
 2. Video: UI resolution, projection resolution (Android Auto; CarPlay is not in
    this build) and the H.264 decoder in use: FFmpeg's version, the decoder's
-   name, and software or hardware. Audio: the
-   USB codec ALSA uses (name and USB id), its hardware sampling rates while
-   playing or recording, and its ALSA mixer volume and microphone gain.
+   name, and software or hardware. Audio: the codec's output and input, stereo
+   or mono, and their sampling rates as the hardware runs them; Idle while
+   nothing plays or records.
 3. GNSS: GPSD receiver/port, connection/fix status, satellite counts, coordinates,
    MSL altitude, speed, HDOP and UTC fix time.
 4. IBUS: the car's readings (see below).

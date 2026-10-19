@@ -242,8 +242,11 @@ export component AppWindow inherits Window {
     in property <string> projection-resolution: "n/a";
     in property <string> projection-decoder: "n/a";
     in property <string> audio-codec: "n/a";
-    in property <string> audio-sample-rate: "n/a";
-    in property <string> audio-volume: "n/a";
+    // The codec's output and input: stereo or mono, and sampling rate.
+    in property <string> audio-output-type: "n/a";
+    in property <string> audio-output-rate: "n/a";
+    in property <string> audio-input-type: "n/a";
+    in property <string> audio-input-rate: "n/a";
     // The car, from its I-Bus.
     in property <string> vehicle-status: "n/a";
     in property <string> vehicle-speed: "n/a";
@@ -418,7 +421,7 @@ export component AppWindow inherits Window {
         }
         // Page 2: video and audio.
         if root.system-page == 1: InfoBox {
-            x: 8px; y: 32px; width: 384px; height: 97px;
+            x: 8px; y: 32px; width: 384px; height: 88px;
             title: "Video";
             rows: [
                 { label: "UI resolution", value: root.ui-resolution },
@@ -427,12 +430,13 @@ export component AppWindow inherits Window {
             ];
         }
         if root.system-page == 1: InfoBox {
-            x: 8px; y: 135px; width: 384px; height: 97px;
+            x: 8px; y: 126px; width: 384px; height: 106px;
             title: "Audio";
             rows: [
-                { label: "USB codec", value: root.audio-codec },
-                { label: "Sampling rate", value: root.audio-sample-rate },
-                { label: "Volume (ALSA mixer)", value: root.audio-volume },
+                { label: "Output type", value: root.audio-output-type },
+                { label: "Output sampling rate", value: root.audio-output-rate },
+                { label: "Input type", value: root.audio-input-type },
+                { label: "Input sampling rate", value: root.audio-input-rate },
             ];
         }
         // Page 3: the GNSS receiver.

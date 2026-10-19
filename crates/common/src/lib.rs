@@ -48,8 +48,12 @@ pub struct SystemSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AudioSnapshot {
     pub codec: String,
-    /// Hardware rates while playback or the microphone runs.
-    pub sample_rate: String,
+    /// The codec's output and input as its hardware runs them; absent while
+    /// nothing plays or records.
+    #[serde(default)]
+    pub output: Option<StreamFormat>,
+    #[serde(default)]
+    pub input: Option<StreamFormat>,
     /// Output volume and microphone gain from the ALSA mixer.
     pub volume: String,
     /// The same levels in percent, for Settings; absent without the codec.
@@ -57,6 +61,13 @@ pub struct AudioSnapshot {
     pub volume_percent: Option<u8>,
     #[serde(default)]
     pub microphone_percent: Option<u8>,
+}
+
+/// A running stream's channels and sampling rate.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StreamFormat {
+    pub channels: u32,
+    pub rate: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

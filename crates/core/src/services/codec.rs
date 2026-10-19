@@ -3,7 +3,7 @@
 //! which Settings also changes.
 use crate::config::AudioConfig;
 use alsa::mixer::{Mixer, Selem, SelemChannelId};
-use navbridge_common::AudioSnapshot;
+use navbridge_common::{AudioSnapshot, StreamFormat};
 use std::fs;
 
 /// A sound card, from a line of /proc/asound/cards such as
@@ -67,14 +67,14 @@ pub fn status(config: &AudioConfig, chosen: (Option<u8>, Option<u8>)) -> AudioSn
         };
     };
     let usb_id = fs::read_to_string(format!("/proc/asound/card{}/usbid", codec.index)).ok();
-    // While a PCM is open, hw_params holds the rate after plug and dmix.
-    let rate = |found: Option<(&Card, u32)>, direction: char| -> Option<u32> {
+    // While a PCM is open, hw_params holds its format after plug and dmix.
+    let format = |found: Option<(&Card, u32)>, direction: char| -> Option<StreamFormat> {
         let (card, pcm) = found?;
         let path = format!(
             "/proc/asound/card{}/pcm{pcm}{direction}/sub0/hw_params",
             card.index
         );
-        hardware_rate(&fs::read_to_string(path).ok()?)
+        hardware_format(&fs::read_to_string(path).ok()?)
     };
     let mixer =
         |found: Option<(&Card, u32)>| found.map_or_else(Vec::new, |(card, _)| controls(card.index));
@@ -83,7 +83,8 @@ pub fn status(config: &AudioConfig, chosen: (Option<u8>, Option<u8>)) -> AudioSn
         |found: Option<(&Control, Level)>, chosen| found.map(|(_, level)| level.shown(chosen));
     AudioSnapshot {
         codec: describe(codec, usb_id.as_deref()),
-        sample_rate: rates(rate(output_pcm, 'p'), rate(input_pcm, 'c')),
+        output: format(output_pcm, 'p'),
+        input: format(input_pcm, 'c'),
         volume: levels(&output, &input),
         volume_percent: shown(speaker(&output), chosen.0),
         microphone_percent: shown(microphone(&input), chosen.1),
@@ -202,31 +203,22 @@ fn describe(card: &Card, usb_id: Option<&str>) -> String {
     }
 }
 
-/// The rate in a PCM's hw_params, or None while the PCM is closed.
-fn hardware_rate(hw_params: &str) -> Option<u32> {
-    hw_params
-        .lines()
-        .find_map(|line| {
-            line.strip_prefix("rate: ")?
+/// The channels and rate in a PCM's hw_params, or None while it is closed.
+fn hardware_format(hw_params: &str) -> Option<StreamFormat> {
+    let field = |name: &str| -> Option<u32> {
+        hw_params.lines().find_map(|line| {
+            line.strip_prefix(name)?
                 .split_whitespace()
                 .next()?
                 .parse()
                 .ok()
         })
-        .filter(|&rate| rate > 0)
-}
-
-fn rates(playback: Option<u32>, capture: Option<u32>) -> String {
-    if playback.is_none() && capture.is_none() {
-        return "Idle".into();
-    }
-    let khz = |rate: Option<u32>| {
-        rate.map_or_else(
-            || "idle".into(),
-            |rate| format!("{} kHz", f64::from(rate) / 1000.0),
-        )
     };
-    format!("Playback {} · Mic {}", khz(playback), khz(capture))
+    let format = StreamFormat {
+        channels: field("channels: ")?,
+        rate: field("rate: ")?,
+    };
+    (format.channels > 0 && format.rate > 0).then_some(format)
 }
 
 /// The card's simple mixer controls, in the order amixer lists them.
@@ -345,18 +337,22 @@ mod tests {
     }
 
     #[test]
-    fn hardware_rates_show_while_a_pcm_is_open() {
+    fn hardware_formats_show_while_a_pcm_is_open() {
         assert_eq!(
-            hardware_rate("access: RW_INTERLEAVED\nchannels: 2\nrate: 48000 (48000/1)\n"),
-            Some(48000)
+            hardware_format("access: RW_INTERLEAVED\nchannels: 2\nrate: 48000 (48000/1)\n"),
+            Some(StreamFormat {
+                channels: 2,
+                rate: 48000
+            })
         );
-        assert_eq!(hardware_rate("closed\n"), None);
-        assert_eq!(rates(Some(48000), None), "Playback 48 kHz · Mic idle");
         assert_eq!(
-            rates(Some(44100), Some(16000)),
-            "Playback 44.1 kHz · Mic 16 kHz"
+            hardware_format("channels: 1\nrate: 16000 (16000/1)\n"),
+            Some(StreamFormat {
+                channels: 1,
+                rate: 16000
+            })
         );
-        assert_eq!(rates(None, None), "Idle");
+        assert_eq!(hardware_format("closed\n"), None);
     }
 
     #[test]

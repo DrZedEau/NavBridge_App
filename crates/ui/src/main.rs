@@ -15,8 +15,8 @@ use input::{KeyAction, KeyMap};
 use ipc::IpcEvent;
 use navbridge_common::{
     AppSnapshot, ClientCommand, Ignition, NavigationKey, ProjectionEvent, ServerEvent,
-    VehicleSnapshot, MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH, VIDEO_FRAME_HEADER_SIZE,
-    VIDEO_FRAME_MAGIC, VIDEO_FRAME_PATH,
+    StreamFormat, VehicleSnapshot, MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH,
+    VIDEO_FRAME_HEADER_SIZE, VIDEO_FRAME_MAGIC, VIDEO_FRAME_PATH,
 };
 use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer};
 use tracing_subscriber::EnvFilter;
@@ -541,8 +541,13 @@ fn render_state(ui: &AppWindow, state: &UiState) {
     ui.set_projection_decoder(core(&state.snapshot.projection.decoder));
     let audio = &state.snapshot.system.audio;
     ui.set_audio_codec(core(&audio.codec));
-    ui.set_audio_sample_rate(core(&audio.sample_rate));
-    ui.set_audio_volume(core(&audio.volume));
+    let present = state.core_connected && audio.codec != "Not detected";
+    let (output_type, output_rate) = stream_text(audio.output, present, state.core_connected);
+    ui.set_audio_output_type(output_type.into());
+    ui.set_audio_output_rate(output_rate.into());
+    let (input_type, input_rate) = stream_text(audio.input, present, state.core_connected);
+    ui.set_audio_input_type(input_type.into());
+    ui.set_audio_input_rate(input_rate.into());
     let rows: Vec<SettingsRow> = SETTINGS
         .into_iter()
         .map(|row| {
@@ -903,6 +908,29 @@ fn odometer(km: Option<u32>) -> String {
         grouped.push(digit);
     }
     format!("{grouped} km")
+}
+
+/// An Audio row pair: stereo or mono, and the sampling rate, while the stream
+/// runs; "Idle" otherwise.
+fn stream_text(
+    format: Option<StreamFormat>,
+    codec_present: bool,
+    core_connected: bool,
+) -> (String, String) {
+    let both = |text: &str| (text.to_string(), text.to_string());
+    match format {
+        _ if !core_connected => both("Unavailable"),
+        _ if !codec_present => both("n/a"),
+        None => both("Idle"),
+        Some(format) => (
+            match format.channels {
+                1 => "Mono".into(),
+                2 => "Stereo".into(),
+                channels => format!("{channels} channels"),
+            },
+            format!("{} kHz", f64::from(format.rate) / 1000.0),
+        ),
+    }
 }
 
 /// The projection resolution row. CarPlay is not part of this build, so only
@@ -1632,6 +1660,25 @@ mod disconnect_tests {
             "AA 800x480 · CarPlay n/a"
         );
         assert_eq!(projection_resolution(None), "Unavailable");
+        let stereo = Some(StreamFormat {
+            channels: 2,
+            rate: 44100,
+        });
+        assert_eq!(
+            stream_text(stereo, true, true),
+            ("Stereo".into(), "44.1 kHz".into())
+        );
+        let mono = Some(StreamFormat {
+            channels: 1,
+            rate: 16000,
+        });
+        assert_eq!(
+            stream_text(mono, true, true),
+            ("Mono".into(), "16 kHz".into())
+        );
+        assert_eq!(stream_text(None, true, true).1, "Idle");
+        assert_eq!(stream_text(None, false, true).0, "n/a");
+        assert_eq!(stream_text(stereo, true, false).0, "Unavailable");
         assert_eq!(core_value(true, "Speaker 100%"), "Speaker 100%");
         assert_eq!(core_value(true, " "), "n/a");
         assert_eq!(core_value(false, "Speaker 100%"), "Unavailable");
@@ -1815,8 +1862,14 @@ mod preview {
         snapshot.system.memory = "1.2 / 7.9 GB".into();
         snapshot.system.cpu_temp = "52.3 °C".into();
         snapshot.system.audio.codec = "USB audio CODEC (08bb:2902)".into();
-        snapshot.system.audio.sample_rate = "Playback 48 kHz · Mic 16 kHz".into();
-        snapshot.system.audio.volume = "Speaker 75% · Mic 48%".into();
+        snapshot.system.audio.output = Some(StreamFormat {
+            channels: 2,
+            rate: 48000,
+        });
+        snapshot.system.audio.input = Some(StreamFormat {
+            channels: 1,
+            rate: 16000,
+        });
         snapshot.system.audio.volume_percent = Some(75);
         snapshot.system.audio.microphone_percent = Some(48);
         state.video = Some(VideoSettings {
