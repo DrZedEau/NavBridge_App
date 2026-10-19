@@ -18,7 +18,7 @@ export global AmberPalette {
 // red: not active.
 export enum LedState { off, waiting, on }
 
-// The one choice on the Android Auto and CarPlay pages, in wireless mode.
+// The one choice on the Phone page, in wireless mode.
 component PairButton inherits Rectangle {
     height: 34px;
     border-radius: 7px;
@@ -78,28 +78,27 @@ component MenuTile inherits Rectangle {
     in property <image> icon;
     in property <string> label;
     in property <bool> selected;
-    width: 88px;
-    height: 120px;
+    width: 112px;
+    height: 124px;
     border-radius: 8px;
     background: root.selected ? AmberPalette.selected-surface : AmberPalette.surface;
     border-width: root.selected ? 2px : 1px;
     border-color: root.selected ? AmberPalette.amber : AmberPalette.border;
     Image {
-        x: (root.width - 56px) / 2;
-        y: 18px;
-        width: 56px;
-        height: 56px;
+        x: (root.width - 64px) / 2;
+        y: 16px;
+        width: 64px;
+        height: 64px;
         source: root.icon;
     }
     Text {
-        x: 1px; y: 82px; width: 86px; height: 30px;
+        x: 0px; y: 88px; width: root.width; height: 26px;
         text: root.label;
         color: root.selected ? AmberPalette.amber : AmberPalette.text;
-        font-size: 11px;
+        font-size: 13px;
         font-weight: root.selected ? 700 : 400;
         horizontal-alignment: center;
         vertical-alignment: center;
-        wrap: word-wrap;
     }
 }
 
@@ -109,9 +108,9 @@ export component AppWindow inherits Window {
     title: "NavBridge";
     background: AmberPalette.background;
 
-    // 0 menu, 1 Android Auto, 2 System, 3 Settings, 4 CarPlay
+    // 0 menu, 1 Phone, 2 System, 3 Settings
     in property <int> screen: 0;
-    // Menu tiles: 0 Android Auto, 1 CarPlay, 2 Settings, 3 System.
+    // Menu tiles: 0 Phone, 1 Settings, 2 System.
     in property <int> menu-index: 0;
     in property <bool> core-connected: false;
     in property <LedState> bt-led: LedState.off;
@@ -131,7 +130,7 @@ export component AppWindow inherits Window {
     in property <int> settings-index: 0;
     in property <bool> settings-editing: false;
     in property <string> settings-note: "";
-    // Wireless mode is on: the Android Auto and CarPlay pages offer pairing.
+    // Wireless mode is on: the Phone page offers pairing.
     in property <bool> pair-option: false;
     // A phone asks to pair: its name and the code to compare.
     in property <bool> pairing-request: false;
@@ -216,13 +215,12 @@ export component AppWindow inherits Window {
         }
 
         for tile[index] in [
-            { label: "Android Auto", icon: @image-url("icons/android-auto.png") },
-            { label: "CarPlay", icon: @image-url("icons/carplay.png") },
+            { label: "Phone", icon: @image-url("icons/phone.png") },
             { label: "Settings", icon: @image-url("icons/settings.png") },
             { label: "System", icon: @image-url("icons/system.png") },
         ]: MenuTile {
-            x: 12px + index * 96px;
-            y: 60px;
+            x: 12px + index * 132px;
+            y: 58px;
             icon: tile.icon;
             label: tile.label;
             selected: index == root.menu-index;
@@ -251,6 +249,8 @@ export component AppWindow inherits Window {
         }
     }
 
+    // The connected phone's screen: Android Auto, the only projection in this
+    // build; CarPlay will show here too.
     if root.screen == 1: Rectangle {
         // Wired Android Auto is negotiated at 800x480 with configurable DPI. The backend performs
         // software H.264 decode and publishes this exact 400x240 presentation.
@@ -267,8 +267,15 @@ export component AppWindow inherits Window {
             background: AmberPalette.background;
             Text {
                 x: 12px; y: 5px; width: 376px; height: 23px;
-                text: "Android Auto";
+                text: "Phone";
                 color: AmberPalette.text; font-size: 17px; font-weight: 700;
+            }
+            Text {
+                x: 100px; y: 5px; width: 288px; height: 23px;
+                text: "Android Auto · CarPlay is not in this build yet";
+                color: AmberPalette.muted; font-size: 11px;
+                horizontal-alignment: right; vertical-alignment: center;
+                wrap: no-wrap; overflow: elide;
             }
             Text {
                 x: 12px; y: 40px; width: 376px; height: 54px;
@@ -505,50 +512,6 @@ export component AppWindow inherits Window {
                 : "LEFT / RIGHT choose          ENTER change          BACK / ESC: Menu";
             color: AmberPalette.muted;
             font-size: 10px;
-        }
-    }
-
-    if root.screen == 4: Rectangle {
-        x: 0px; y: 0px; width: 400px; height: 240px;
-        background: AmberPalette.background;
-        Text {
-            x: 12px; y: 5px; width: 376px; height: 23px;
-            text: "CarPlay";
-            color: AmberPalette.text; font-size: 17px; font-weight: 700;
-        }
-        Image {
-            x: 172px; y: 58px; width: 56px; height: 56px;
-            source: @image-url("icons/carplay.png");
-        }
-        Text {
-            x: 12px; y: 118px; width: 376px; height: 22px;
-            text: "CarPlay is not in this build yet.";
-            color: AmberPalette.text;
-            font-size: 14px;
-            horizontal-alignment: center;
-        }
-        if root.pair-option: PairButton {
-            x: 12px; y: 150px; width: 376px;
-        }
-        if root.pair-option: Text {
-            x: 12px; y: 190px; width: 376px; height: 18px;
-            text: root.bluetooth-status;
-            color: AmberPalette.text;
-            font-size: 11px;
-            wrap: no-wrap; overflow: elide;
-        }
-        if !root.pair-option: Text {
-            x: 12px; y: 158px; width: 376px; height: 18px;
-            text: "To pair a phone, turn Wireless on in Settings.";
-            color: AmberPalette.muted;
-            font-size: 11px;
-            horizontal-alignment: center;
-        }
-        Text {
-            x: 12px; y: 217px; width: 376px; height: 18px;
-            text: root.pair-option ? "ENTER pair a phone                                BACK / ESC: Menu"
-                : "BACK / ESC: Menu";
-            color: AmberPalette.muted; font-size: 10px;
         }
     }
 

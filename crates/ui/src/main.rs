@@ -26,14 +26,15 @@ slint::include_modules!();
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
     Menu = 0,
-    Projection = 1,
+    /// The connected phone's screen: Android Auto's projection, the only one
+    /// in this build, or while there is none, how far a phone has got.
+    Phone = 1,
     System = 2,
     Settings = 3,
-    CarPlay = 4,
 }
 
-/// The menu's tiles, left to right: Android Auto, CarPlay, Settings, System.
-const MENU_ITEMS: usize = 4;
+/// The menu's tiles, left to right: Phone, Settings, System.
+const MENU_ITEMS: usize = 3;
 /// System pages: module and USB, video and audio, GNSS, and the car's I-Bus.
 const SYSTEM_PAGES: usize = 4;
 /// The projection DPIs Settings offers.
@@ -107,7 +108,7 @@ impl UiState {
     }
     fn show_projection(&self) -> bool {
         self.core_connected
-            && self.screen == Screen::Projection
+            && self.screen == Screen::Phone
             && (self.snapshot.projection.phone_connected || self.snapshot.projection.streaming)
     }
 }
@@ -241,10 +242,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         // Snapshot transition is a safety net for a UI that was
                         // started/reconnected after the real-time event occurred.
                         if now_connected && !was_connected && !state.projection_hidden_by_phone {
-                            state.screen = Screen::Projection;
+                            state.screen = Screen::Phone;
                         } else if was_connected && !now_connected {
                             state.projection_hidden_by_phone = false;
-                            if state.screen == Screen::Projection {
+                            if state.screen == Screen::Phone {
                                 state.screen = Screen::Menu;
                             }
                         }
@@ -252,11 +253,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     IpcEvent::Server(ServerEvent::ProjectionEvent { event }) => match event {
                         ProjectionEvent::PhoneConnected => {
                             state.projection_hidden_by_phone = false;
-                            state.screen = Screen::Projection;
+                            state.screen = Screen::Phone;
                         }
                         ProjectionEvent::StreamingReady => {
                             if !state.projection_hidden_by_phone {
-                                state.screen = Screen::Projection;
+                                state.screen = Screen::Phone;
                             }
                         }
                         ProjectionEvent::PhoneDisconnected => {
@@ -387,7 +388,7 @@ fn handle_action(
     if action == KeyAction::Home {
         release_navigation(state, commands);
         // As when the phone asks for the car's screen: it can stop its video.
-        if state.screen == Screen::Projection
+        if state.screen == Screen::Phone
             && (state.snapshot.projection.phone_connected || state.snapshot.projection.streaming)
         {
             let _ = commands.send(ClientCommand::HideProjection);
@@ -416,10 +417,9 @@ fn handle_action(
                         {
                             let _ = commands.send(ClientCommand::ResumeProjection);
                         }
-                        Screen::Projection
+                        Screen::Phone
                     }
-                    1 => Screen::CarPlay,
-                    2 => {
+                    1 => {
                         state.settings_index = 0;
                         state.settings_editing = false;
                         Screen::Settings
@@ -432,7 +432,7 @@ fn handle_action(
             }
             _ => {}
         },
-        Screen::Projection => {
+        Screen::Phone => {
             if state.core_connected && state.snapshot.projection.phone_connected {
                 if let KeyAction::Phone(action) = action {
                     release_navigation(state, commands);
@@ -476,7 +476,6 @@ fn handle_action(
                 _ => (),
             }
         }
-        Screen::CarPlay => waiting_page(state, action, commands),
     }
 }
 
@@ -484,7 +483,7 @@ fn render_state(ui: &AppWindow, state: &UiState) {
     if ui.get_screen() != state.screen as i32 {
         ui.set_video_active(false);
         ui.set_projection_frame(Image::default());
-        let baseline = if state.screen == Screen::Projection {
+        let baseline = if state.screen == Screen::Phone {
             std::fs::File::open(VIDEO_FRAME_PATH)
                 .ok()
                 .and_then(|mut file| read_frame_header(&mut file).ok())
@@ -637,14 +636,13 @@ fn available(value: &str) -> String {
     }
 }
 
-/// With wireless mode on, the Android Auto and CarPlay pages offer pairing a
-/// phone.
+/// With wireless mode on, the Phone page offers pairing a phone.
 fn pair_option(state: &UiState) -> bool {
     state.core_connected && state.snapshot.wireless.enabled
 }
 
-/// The Android Auto page while there is no phone, and CarPlay's: Enter pairs a
-/// phone in wireless mode, and Back returns to the menu.
+/// The Phone page while there is no phone: Enter pairs one in wireless mode,
+/// and Back returns to the menu.
 fn waiting_page(
     state: &mut UiState,
     action: KeyAction,
@@ -980,7 +978,7 @@ mod navigation_tests {
 
     fn connected_projection() -> UiState {
         let mut state = UiState {
-            screen: Screen::Projection,
+            screen: Screen::Phone,
             core_connected: true,
             ..UiState::default()
         };
@@ -1002,10 +1000,9 @@ mod navigation_tests {
             assert_eq!(action, KeyAction::NightMode(night));
             for screen in [
                 Screen::Menu,
-                Screen::Projection,
+                Screen::Phone,
                 Screen::System,
                 Screen::Settings,
-                Screen::CarPlay,
             ] {
                 let mut state = UiState {
                     screen,
@@ -1040,10 +1037,9 @@ mod navigation_tests {
             assert_eq!(action, KeyAction::ParkingBrake(engaged));
             for screen in [
                 Screen::Menu,
-                Screen::Projection,
+                Screen::Phone,
                 Screen::System,
                 Screen::Settings,
-                Screen::CarPlay,
             ] {
                 let mut state = UiState {
                     screen,
@@ -1129,7 +1125,7 @@ mod navigation_tests {
             assert_eq!(action, KeyAction::Phone(expected));
             assert_eq!(map.action_for(&letter.to_uppercase()), Some(action));
             let mut state = UiState::default();
-            state.screen = Screen::Projection;
+            state.screen = Screen::Phone;
             state.core_connected = true;
             state.snapshot.projection.phone_connected = true;
             let (tx, rx) = std::sync::mpsc::channel();
@@ -1140,7 +1136,7 @@ mod navigation_tests {
                 matches!(rx.try_recv(), Ok(ClientCommand::PhoneAction { action }) if action == expected)
             );
             assert!(rx.try_recv().is_err());
-            assert_eq!(state.screen, Screen::Projection);
+            assert_eq!(state.screen, Screen::Phone);
             state.snapshot.projection.phone_connected = false;
             handle_key_event(&mut state, action, true, false, &tx);
             state.snapshot.projection.phone_connected = true;
@@ -1173,7 +1169,7 @@ mod navigation_tests {
             assert!(
                 matches!(commands[1], ClientCommand::NavigationInput { key, pressed: false } if key == expected)
             );
-            assert_eq!(state.screen, Screen::Projection);
+            assert_eq!(state.screen, Screen::Phone);
         }
     }
 
@@ -1203,7 +1199,7 @@ mod navigation_tests {
         let (tx, rx) = mpsc::channel();
         let mut state = UiState::default();
         handle_key_event(&mut state, KeyAction::Select, true, false, &tx);
-        assert_eq!(state.screen, Screen::Projection);
+        assert_eq!(state.screen, Screen::Phone);
         state.core_connected = true;
         state.snapshot.projection.phone_connected = true;
         handle_key_event(&mut state, KeyAction::Select, false, false, &tx);
@@ -1224,7 +1220,7 @@ mod navigation_tests {
     fn system_round_trip_preserves_phone_session_and_keyboard_routing() {
         let (tx, rx) = mpsc::channel();
         let mut state = connected_projection();
-        // Menu, left to System (the last tile), back, right to Android Auto.
+        // Menu, left to System (the last tile), back, right to Phone.
         for action in [
             KeyAction::Home,
             KeyAction::Left,
@@ -1236,7 +1232,7 @@ mod navigation_tests {
             handle_key_event(&mut state, action, true, false, &tx);
             handle_key_event(&mut state, action, false, false, &tx);
         }
-        assert_eq!(state.screen, Screen::Projection);
+        assert_eq!(state.screen, Screen::Phone);
         assert!(!state.projection_hidden_by_phone);
         assert!(matches!(rx.try_recv(), Ok(ClientCommand::HideProjection)));
         assert!(matches!(rx.try_recv(), Ok(ClientCommand::ResumeProjection)));
@@ -1270,7 +1266,7 @@ mod navigation_tests {
         state.snapshot.projection.phone_connected = false;
         state.snapshot.projection.streaming = true;
         handle_key_event(&mut state, KeyAction::Select, true, false, &tx);
-        assert_eq!(state.screen, Screen::Projection);
+        assert_eq!(state.screen, Screen::Phone);
         assert!(matches!(rx.try_recv(), Ok(ClientCommand::ResumeProjection)));
         assert!(rx.try_recv().is_err());
     }
@@ -1279,16 +1275,15 @@ mod navigation_tests {
     fn menu_tiles_wrap_and_open_their_screens() {
         let (tx, rx) = mpsc::channel();
         let mut state = UiState::default();
-        // From Android Auto, left wraps round to System.
+        // From Phone, left wraps round to System.
         handle_key_event(&mut state, KeyAction::Left, true, false, &tx);
-        assert_eq!(state.menu_index, 3);
+        assert_eq!(state.menu_index, 2);
         handle_key_event(&mut state, KeyAction::Right, true, false, &tx);
         assert_eq!(state.menu_index, 0);
         for (index, screen) in [
-            (0, Screen::Projection),
-            (1, Screen::CarPlay),
-            (2, Screen::Settings),
-            (3, Screen::System),
+            (0, Screen::Phone),
+            (1, Screen::Settings),
+            (2, Screen::System),
         ] {
             state.screen = Screen::Menu;
             state.menu_index = index;
@@ -1425,22 +1420,20 @@ mod navigation_tests {
     }
 
     #[test]
-    fn android_auto_and_carplay_pages_pair_phones_in_wireless_mode() {
+    fn the_phone_page_pairs_phones_in_wireless_mode() {
         let (tx, rx) = mpsc::channel();
-        for screen in [Screen::Projection, Screen::CarPlay] {
-            let mut state = UiState {
-                screen,
-                core_connected: true,
-                ..UiState::default()
-            };
-            // Wireless mode off: nothing to pair with.
-            handle_key_event(&mut state, KeyAction::Select, true, false, &tx);
-            assert!(rx.try_recv().is_err(), "{screen:?}");
-            state.snapshot.wireless.enabled = true;
-            handle_key_event(&mut state, KeyAction::Select, true, false, &tx);
-            assert!(matches!(rx.try_recv(), Ok(ClientCommand::StartPairing)));
-            assert_eq!(state.screen, screen);
-        }
+        let mut state = UiState {
+            screen: Screen::Phone,
+            core_connected: true,
+            ..UiState::default()
+        };
+        // Wireless mode off: nothing to pair with.
+        handle_key_event(&mut state, KeyAction::Select, true, false, &tx);
+        assert!(rx.try_recv().is_err());
+        state.snapshot.wireless.enabled = true;
+        handle_key_event(&mut state, KeyAction::Select, true, false, &tx);
+        assert!(matches!(rx.try_recv(), Ok(ClientCommand::StartPairing)));
+        assert_eq!(state.screen, Screen::Phone);
 
         // The phone's code is answered from any screen.
         let mut state = UiState {
@@ -1515,7 +1508,7 @@ mod disconnect_tests {
     #[test]
     fn reconnect_requires_a_fresh_snapshot_before_showing_projection() {
         let mut state = UiState {
-            screen: Screen::Projection,
+            screen: Screen::Phone,
             core_connected: true,
             ..Default::default()
         };
@@ -1693,10 +1686,9 @@ mod preview {
         };
         for (name, screen, page) in [
             ("menu", Screen::Menu, 0),
-            ("android-auto", Screen::Projection, 0),
+            ("phone", Screen::Phone, 0),
             ("settings", Screen::Settings, 0),
             ("settings-open", Screen::Settings, 0),
-            ("carplay", Screen::CarPlay, 0),
             ("system-ibus", Screen::System, 3),
         ] {
             state.screen = screen;

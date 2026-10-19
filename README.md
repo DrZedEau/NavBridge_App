@@ -21,7 +21,7 @@ and odometer from its I-Bus, through the carrier board's ATmega32U4.
   system metrics.
 - `navbridge-ui`: amber Slint menu with status lights and a clock, Settings,
   four System pages, keyboard navigation and the projection view. Escape/Home returns to the menu and gives video focus
-  back to the car, so the phone pauses its video; returning to Android Auto
+  back to the car, so the phone pauses its video; returning to Phone
   restores it while retaining the phone session and audio.
 - Bounded JSON-lines IPC carries commands and snapshots through a Unix socket.
   Video uses a generation-aware `/dev/shm/navbridge-video.rgba` frame exchange
@@ -187,14 +187,14 @@ shows the connection status while the core keeps looking for one.
 
 ## Menu
 
-The menu shows NavBridge and the core's status light at the top, four tiles in
+The menu shows NavBridge and the core's status light at the top, three tiles in
 the middle and, at the bottom, the BT, WIFI and GNSS lights and the time.
 Left/Up and Right/Down move between the tiles, Enter opens one, Back or Escape
 returns:
 
-- **Android Auto**: the phone's screen, or while there is none, its connection
-  status and, in wireless mode, how far a phone has got and PAIR A PHONE.
-- **CarPlay**: not in this build yet; in wireless mode, PAIR A PHONE.
+- **Phone**: the connected phone's screen, Android Auto in this build (CarPlay
+  is not in it yet), or while there is none, its connection status and, in
+  wireless mode, how far a phone has got and PAIR A PHONE.
 - **Settings**: wireless Android Auto, the projection's DPI, and the codec's
   volume and microphone gain (see below).
 - **System**: the System pages.
@@ -289,8 +289,8 @@ NavBridge:
   shows. Off, and whenever NavBridge stops: NetworkManager reconnects the saved
   home network; the hotspot never starts on its own, so a reboot also returns to
   it.
-- **PAIR A PHONE**, with Wireless ON, on the Android Auto page while no phone
-  is connected, or on the CarPlay page; Enter opens pairing. For 2 minutes, phones can find
+- **PAIR A PHONE**, with Wireless ON, on the Phone page while no phone is
+  connected; Enter opens pairing. For 2 minutes, phones can find
   NavBridge. Pair from the phone's Bluetooth settings; NavBridge then shows the
   6-digit code. Enter pairs if the phone shows the same code; Back refuses.
 

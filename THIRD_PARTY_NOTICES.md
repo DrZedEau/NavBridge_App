@@ -34,12 +34,8 @@ https://github.com/aa-proxy/aa-proxy-rs
 
 ## Menu icons
 
-The menu's icons in `crates/ui/ui/icons` are the Android Auto logo (Google LLC),
-the CarPlay logo (Apple Inc.), a settings gear and the Raspberry Pi logo
-(Raspberry Pi Ltd), supplied by the project owner and scaled down. These logos
-are trademarks of their owners, used only to name the matching features; they
-are not covered by NavBridge's licence. Check their owners' brand guidelines
-before distributing builds that include them.
+The menu's icons in `crates/ui/ui/icons`, a phone, a settings gear and a
+system monitor, were supplied by the project owner and scaled down.
 
 ## Accessory TLS identity
 
