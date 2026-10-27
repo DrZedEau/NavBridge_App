@@ -14,9 +14,9 @@ use config::{KeyboardConfig, UiConfig};
 use input::{KeyAction, KeyMap};
 use ipc::IpcEvent;
 use navbridge_common::{
-    AppSnapshot, ClientCommand, Ignition, NavigationKey, ProjectionEvent, ServerEvent,
-    StreamFormat, TouchKind, VehicleSnapshot, MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH,
-    VIDEO_FRAME_HEADER_SIZE, VIDEO_FRAME_MAGIC, VIDEO_FRAME_PATH,
+    AppSnapshot, ClientCommand, NavigationKey, ProjectionEvent, ServerEvent, StreamFormat,
+    TouchKind, MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH, VIDEO_FRAME_HEADER_SIZE,
+    VIDEO_FRAME_MAGIC, VIDEO_FRAME_PATH,
 };
 use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer};
 use tracing_subscriber::EnvFilter;
@@ -35,8 +35,8 @@ enum Screen {
 
 /// The menu's tiles, left to right: Phone, Settings, System.
 const MENU_ITEMS: usize = 3;
-/// System pages: module and USB, video and audio, GNSS, and the car's I-Bus.
-const SYSTEM_PAGES: usize = 4;
+/// System pages: module and USB, video and audio, and GNSS.
+const SYSTEM_PAGES: usize = 3;
 /// The projection DPIs and frame rates Settings offers.
 const DPI_CHOICES: [u32; 2] = [160, 140];
 const FPS_CHOICES: [u32; 2] = [60, 30];
@@ -724,10 +724,9 @@ fn render_state(ui: &AppWindow, state: &UiState) {
     ui.set_cpu_usage(available(&state.snapshot.system.cpu_usage).into());
     ui.set_ram_usage(available(&state.snapshot.system.memory).into());
     ui.set_cpu_temperature(available(&state.snapshot.system.cpu_temp).into());
-    let (phone, gnss, ibus) = usb_devices(&state.snapshot, state.core_connected);
+    let (phone, gnss) = usb_devices(&state.snapshot, state.core_connected);
     ui.set_usb_phone(phone.into());
     ui.set_usb_gnss(gnss.into());
-    ui.set_usb_ibus(ibus.into());
     // On the panel, the window takes the display mode; until it is shown, the
     // size this UI is designed for.
     let size = ui.window().size();
@@ -772,15 +771,6 @@ fn render_state(ui: &AppWindow, state: &UiState) {
         ui.set_pairing_device(request.device.clone().into());
         ui.set_pairing_code(spaced(&request.code).into());
     }
-    let vehicle = &state.snapshot.vehicle;
-    ui.set_vehicle_status(vehicle_status(vehicle, state.core_connected).into());
-    ui.set_vehicle_speed(reading(vehicle.speed_kmh, "km/h").into());
-    ui.set_vehicle_gnss_speed(gnss_speed(&state.snapshot.gnss.speed).into());
-    ui.set_vehicle_rpm(reading(vehicle.rpm, "rpm").into());
-    ui.set_vehicle_coolant(reading(vehicle.coolant_c, "°C").into());
-    ui.set_vehicle_outside(reading(vehicle.outside_c, "°C").into());
-    ui.set_vehicle_ignition(ignition_text(vehicle.ignition).into());
-    ui.set_vehicle_odometer(odometer(vehicle.odometer_km).into());
     // Frames that arrive while projection cannot be shown are skipped; pick up
     // the newest one as soon as it can be, without waiting for the phone.
     refresh_projection(ui, state);
@@ -1059,57 +1049,6 @@ fn core_value(connected: bool, value: &str) -> String {
     }
 }
 
-/// The I-Bus link, with how many frames it carried.
-fn vehicle_status(vehicle: &VehicleSnapshot, core_connected: bool) -> String {
-    let status = core_value(core_connected, &vehicle.status);
-    match (core_connected, vehicle.frames, vehicle.bad_lines) {
-        (false, ..) | (true, 0, 0) => status,
-        (true, frames, 0) => format!("{status} · {frames} frames"),
-        (true, frames, bad) => format!("{status} · {frames} frames, {bad} damaged"),
-    }
-}
-
-/// "120 km/h", or "n/a" until the car has said.
-fn reading(value: Option<impl std::fmt::Display>, unit: &str) -> String {
-    value.map_or_else(|| "n/a".into(), |value| format!("{value} {unit}"))
-}
-
-/// The GNSS speed beside the car's own, while there is a fix.
-fn gnss_speed(speed: &str) -> String {
-    if speed.trim().is_empty() {
-        String::new()
-    } else {
-        format!("GPS {speed}")
-    }
-}
-
-fn ignition_text(ignition: Option<Ignition>) -> String {
-    match ignition {
-        None => "n/a",
-        Some(Ignition::Off) => "Off",
-        Some(Ignition::Accessory) => "Position 1",
-        Some(Ignition::On) => "On",
-        Some(Ignition::Starting) => "Starting",
-    }
-    .into()
-}
-
-/// "123 456 km".
-fn odometer(km: Option<u32>) -> String {
-    let Some(km) = km else {
-        return "n/a".into();
-    };
-    let digits = km.to_string();
-    let mut grouped = String::new();
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
-            grouped.push(' ');
-        }
-        grouped.push(digit);
-    }
-    format!("{grouped} km")
-}
-
 /// An Audio row pair: stereo or mono, and the sampling rate, while the stream
 /// runs; "Idle" otherwise.
 fn stream_text(
@@ -1142,15 +1081,11 @@ fn projection_resolution(video: Option<VideoSettings>) -> String {
     }
 }
 
-/// System's USB Devices rows: the phone, the GNSS receiver and the I-Bus
-/// interface. A phone on Wi-Fi shows too, as it is the connected one.
-fn usb_devices(snapshot: &AppSnapshot, core_connected: bool) -> (String, String, String) {
+/// System's USB Devices rows: the phone and the GNSS receiver. A phone on
+/// Wi-Fi shows too, as it is the connected one.
+fn usb_devices(snapshot: &AppSnapshot, core_connected: bool) -> (String, String) {
     if !core_connected {
-        return (
-            "Unavailable".into(),
-            "Unavailable".into(),
-            "Unavailable".into(),
-        );
+        return ("Unavailable".into(), "Unavailable".into());
     }
     let projection = &snapshot.projection;
     let connected = projection.phone_connected || projection.streaming;
@@ -1171,16 +1106,7 @@ fn usb_devices(snapshot: &AppSnapshot, core_connected: bool) -> (String, String,
         "" => "Not detected".into(),
         receiver => receiver.into(),
     };
-    let vehicle = &snapshot.vehicle;
-    let ibus = if vehicle.interface {
-        "Detected".into()
-    } else if vehicle.status == "Interface not connected" {
-        "Not detected".into()
-    } else {
-        // Why it cannot be read, such as a missing permission.
-        available(&vehicle.status)
-    };
-    (phone, gnss, ibus)
+    (phone, gnss)
 }
 
 /// A frame's sequence number, if it is a projection frame of `size`.
@@ -1561,11 +1487,11 @@ mod navigation_tests {
             assert_eq!(state.screen, Screen::Menu);
         }
         assert!(rx.try_recv().is_err(), "no phone, nothing for the core");
-        // System's four pages, the I-Bus last, wrap both ways.
+        // System's three pages wrap both ways.
         state.screen = Screen::System;
         state.system_page = 0;
         handle_key_event(&mut state, KeyAction::Left, true, false, &tx);
-        assert_eq!(state.system_page, 3);
+        assert_eq!(state.system_page, 2);
         handle_key_event(&mut state, KeyAction::Right, true, false, &tx);
         assert_eq!(state.system_page, 0);
     }
@@ -2015,17 +1941,12 @@ mod disconnect_tests {
     }
 
     #[test]
-    fn usb_devices_list_the_phone_the_gnss_receiver_and_the_ibus_interface() {
+    fn usb_devices_list_the_phone_and_the_gnss_receiver() {
         let mut snapshot = AppSnapshot::default();
-        snapshot.vehicle.status = "Interface not connected".into();
-        let not_detected = || {
-            (
-                "Not detected".to_string(),
-                "Not detected".to_string(),
-                "Not detected".to_string(),
-            )
-        };
-        assert_eq!(usb_devices(&snapshot, true), not_detected());
+        assert_eq!(
+            usb_devices(&snapshot, true),
+            ("Not detected".to_string(), "Not detected".to_string())
+        );
         assert_eq!(usb_devices(&snapshot, false).0, "Unavailable");
         // A phone on USB, before and once Android Auto runs on it.
         snapshot.usb.selected = Some(navbridge_common::UsbDeviceInfo {
@@ -2040,19 +1961,7 @@ mod disconnect_tests {
         snapshot.projection.phone_name = "Pixel 10".into();
         assert_eq!(usb_devices(&snapshot, true).0, "Pixel 10 · Wireless");
         snapshot.gnss.receiver = "u-blox (ttyACM1)".into();
-        snapshot.vehicle.interface = true;
-        snapshot.vehicle.status = "No I-Bus traffic".into();
-        let (_, gnss, ibus) = usb_devices(&snapshot, true);
-        assert_eq!(
-            (gnss.as_str(), ibus.as_str()),
-            ("u-blox (ttyACM1)", "Detected")
-        );
-        snapshot.vehicle.interface = false;
-        snapshot.vehicle.status = "No permission to read the interface".into();
-        assert_eq!(
-            usb_devices(&snapshot, true).2,
-            "No permission to read the interface"
-        );
+        assert_eq!(usb_devices(&snapshot, true).1, "u-blox (ttyACM1)");
     }
 }
 
@@ -2093,52 +2002,6 @@ mod frame_read_tests {
         assert!(read_projection(&mut &data[..], None, PANEL).is_err());
         data[4] ^= 1;
         assert!(read_projection(&mut &data[..], Some(42), PANEL).is_err());
-    }
-}
-
-#[cfg(test)]
-mod vehicle_tests {
-    use super::*;
-
-    #[test]
-    fn the_ibus_page_shows_readings_and_what_is_missing() {
-        let vehicle = VehicleSnapshot {
-            status: "Receiving".into(),
-            interface: true,
-            frames: 1234,
-            bad_lines: 2,
-            ignition: Some(Ignition::On),
-            speed_kmh: Some(120),
-            rpm: Some(3000),
-            coolant_c: Some(90),
-            outside_c: Some(-4),
-            odometer_km: Some(123_456),
-        };
-        assert_eq!(
-            vehicle_status(&vehicle, true),
-            "Receiving · 1234 frames, 2 damaged"
-        );
-        assert_eq!(reading(vehicle.speed_kmh, "km/h"), "120 km/h");
-        assert_eq!(reading(vehicle.rpm, "rpm"), "3000 rpm");
-        assert_eq!(reading(vehicle.outside_c, "°C"), "-4 °C");
-        assert_eq!(ignition_text(vehicle.ignition), "On");
-        assert_eq!(ignition_text(Some(Ignition::Accessory)), "Position 1");
-        assert_eq!(odometer(vehicle.odometer_km), "123 456 km");
-        assert_eq!(odometer(Some(1_000)), "1 000 km");
-        assert_eq!(odometer(Some(987)), "987 km");
-        assert_eq!(gnss_speed("36.0 km/h"), "GPS 36.0 km/h");
-        assert_eq!(gnss_speed(""), "");
-
-        let unknown = VehicleSnapshot {
-            status: "Interface not connected".into(),
-            ..Default::default()
-        };
-        assert_eq!(vehicle_status(&unknown, true), "Interface not connected");
-        assert_eq!(reading(unknown.rpm, "rpm"), "n/a");
-        assert_eq!(ignition_text(unknown.ignition), "n/a");
-        assert_eq!(odometer(unknown.odometer_km), "n/a");
-        // Without the core, nothing is known about the car.
-        assert_eq!(vehicle_status(&vehicle, false), "Unavailable");
     }
 }
 
@@ -2213,19 +2076,6 @@ mod preview {
             width: 800,
             height: 480,
         });
-        let snapshot = &mut state.snapshot;
-        snapshot.vehicle = VehicleSnapshot {
-            status: "Receiving".into(),
-            interface: true,
-            frames: 1234,
-            bad_lines: 0,
-            ignition: Some(Ignition::On),
-            speed_kmh: Some(88),
-            rpm: Some(2400),
-            coolant_c: Some(90),
-            outside_c: Some(14),
-            odometer_km: Some(187_654),
-        };
         for (name, screen, page) in [
             // Each Phone page follows another screen, so that its switch is
             // drawn as it ends up, not as its animation starts.
@@ -2239,7 +2089,6 @@ mod preview {
             ("system-module", Screen::System, 0),
             ("system-video", Screen::System, 1),
             ("system-gnss", Screen::System, 2),
-            ("system-ibus", Screen::System, 3),
             ("pairing", Screen::Menu, 0),
         ] {
             state.screen = screen;

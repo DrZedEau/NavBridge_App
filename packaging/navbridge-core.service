@@ -1,5 +1,5 @@
 [Unit]
-Description=NavBridge Android Auto, audio, GNSS and I-Bus backend
+Description=NavBridge Android Auto, audio and GNSS backend
 Wants=gpsd.socket
 After=local-fs.target sound.target gpsd.socket
 StartLimitIntervalSec=0
@@ -8,7 +8,7 @@ StartLimitIntervalSec=0
 Type=simple
 User=@USER@
 Group=@GROUP@
-SupplementaryGroups=plugdev audio dialout
+SupplementaryGroups=plugdev audio
 WorkingDirectory=/opt/navbridge
 RuntimeDirectory=navbridge
 RuntimeDirectoryMode=0770

@@ -249,11 +249,10 @@ export component AppWindow inherits Window {
     in property <string> cpu-usage: "n/a";
     in property <string> ram-usage: "n/a";
     in property <string> cpu-temperature: "n/a";
-    // System's USB Devices: the phone, the GNSS receiver and the I-Bus
-    // interface; the codec is audio-codec.
+    // System's USB Devices: the phone and the GNSS receiver; the codec is
+    // audio-codec.
     in property <string> usb-phone: "n/a";
     in property <string> usb-gnss: "n/a";
-    in property <string> usb-ibus: "n/a";
     in property <int> system-page: 0;
     in property <string> gnss-receiver: "n/a";
     in property <string> gnss-status: "n/a";
@@ -273,15 +272,6 @@ export component AppWindow inherits Window {
     in property <string> audio-output-rate: "n/a";
     in property <string> audio-input-type: "n/a";
     in property <string> audio-input-rate: "n/a";
-    // The car, from its I-Bus.
-    in property <string> vehicle-status: "n/a";
-    in property <string> vehicle-speed: "n/a";
-    in property <string> vehicle-gnss-speed: "";
-    in property <string> vehicle-rpm: "n/a";
-    in property <string> vehicle-coolant: "n/a";
-    in property <string> vehicle-outside: "n/a";
-    in property <string> vehicle-ignition: "n/a";
-    in property <string> vehicle-odometer: "n/a";
 
     callback key-event(string, bool, bool);
     // Taps and drags, from a touchscreen or the mouse.
@@ -462,13 +452,13 @@ export component AppWindow inherits Window {
         PageLeds {
             x: 0px; y: 5px; width: 400px; height: 23px;
             alignment: center;
-            count: 4;
+            count: 3;
             current: root.system-page;
         }
         // Each page fills the screen below its title.
         // Page 1: the module, and the USB devices NavBridge uses.
         if root.system-page == 0: InfoBox {
-            x: 8px; y: 32px; width: 384px; height: 84px;
+            x: 8px; y: 32px; width: 384px; height: 97px;
             title: "Compute Module";
             rows: [
                 { label: "CPU Usage", value: root.cpu-usage },
@@ -477,12 +467,11 @@ export component AppWindow inherits Window {
             ];
         }
         if root.system-page == 0: InfoBox {
-            x: 8px; y: 122px; width: 384px; height: 110px;
+            x: 8px; y: 135px; width: 384px; height: 97px;
             title: "USB Devices";
             rows: [
                 { label: "Phone", value: root.usb-phone },
                 { label: "GNSS receiver", value: root.usb-gnss },
-                { label: "I-Bus interface", value: root.usb-ibus },
                 { label: "Audio codec", value: root.audio-codec },
             ];
         }
@@ -521,50 +510,6 @@ export component AppWindow inherits Window {
                 { label: "HDOP", value: root.gnss-hdop },
                 { label: "UTC (fix time)", value: root.gnss-utc },
             ];
-        }
-        // Page 4: the car, from its I-Bus.
-        if root.system-page == 3: Rectangle {
-            x: 0px; y: 0px; width: 400px; height: 240px;
-            // Below the readings, the link to the car.
-            Text {
-                x: 12px; y: 212px; width: 376px; height: 20px;
-                text: "IBUS · " + root.vehicle-status;
-                color: AmberPalette.muted; font-size: 11px;
-                horizontal-alignment: center; vertical-alignment: center;
-                wrap: no-wrap; overflow: elide;
-            }
-            // Two columns of three readings.
-            for tile[index] in [
-                { label: "SPEED", value: root.vehicle-speed, note: root.vehicle-gnss-speed },
-                { label: "ENGINE", value: root.vehicle-rpm, note: "" },
-                { label: "COOLANT", value: root.vehicle-coolant, note: "" },
-                { label: "OUTSIDE", value: root.vehicle-outside, note: "" },
-                { label: "IGNITION", value: root.vehicle-ignition, note: "" },
-                { label: "ODOMETER", value: root.vehicle-odometer, note: "" },
-            ]: Rectangle {
-                x: index == 0 || index == 2 || index == 4 ? 8px : 204px;
-                y: 32px + (index < 2 ? 0px : index < 4 ? 60px : 120px);
-                width: 188px; height: 56px;
-                border-radius: 4px;
-                background: AmberPalette.surface;
-                border-width: 1px; border-color: AmberPalette.border;
-                Text {
-                    x: 8px; y: 4px; width: 172px; height: 16px;
-                    text: tile.label; color: AmberPalette.amber; font-size: 11px; font-weight: 700;
-                }
-                Text {
-                    x: 8px; y: 20px; width: 172px; height: 32px;
-                    text: tile.value; color: AmberPalette.text; font-size: 22px; font-weight: 700;
-                    vertical-alignment: center;
-                    wrap: no-wrap; overflow: elide;
-                }
-                Text {
-                    x: 96px; y: 4px; width: 84px; height: 16px;
-                    text: tile.note; color: AmberPalette.muted; font-size: 10px;
-                    horizontal-alignment: right;
-                    wrap: no-wrap; overflow: elide;
-                }
-            }
         }
     }
 

@@ -107,9 +107,6 @@ the core with an error. Music, navigation and assistant audio use the USB codec.
 Bluetooth telephone call audio is not implemented. A connected GNSS receiver's
 position is sent to Android Auto.
 
-The core reads the car's I-Bus from the carrier board's ATmega32U4 through the
-`dialout` group; `[ibus] device` in core.toml names its serial port.
-
 The Android USB rule grants plugdev access to AOA and common phone vendors; add
 your phone vendor if absent, then replug the phone.
 OpenSSL runtime libraries are included in the runtime dependency installer.

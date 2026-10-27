@@ -2,7 +2,7 @@
 
 ## Design rules
 
-1. `navbridge-core` owns USB, the Android Auto session, media and future vehicle state.
+1. `navbridge-core` owns USB, the Android Auto session and media.
 2. `navbridge-ui` owns Slint presentation and keyboard and touch navigation
    only; touches on the projection go to the core, which passes them to the
    phone.
@@ -27,7 +27,6 @@ menu, Settings, System <--------->    H.264 decode and scale (FFmpeg)
 projection view                       ALSA playback and microphone
        ^                              GPSD client, system metrics
        |                              Wi-Fi hotspot, BlueZ (wireless)
-       |                              I-Bus (ATmega32U4 serial)
        | /dev/shm RGBA frames
        +----------------------------------------------
 ```
@@ -155,20 +154,6 @@ while wireless mode is on. It registers:
 
 Both services require a paired phone over an encrypted link.
 
-## I-Bus
-
-The I-Bus service reads the carrier board's ATmega32U4 on its own thread: one
-line per frame the board hears, which the service checks (length, XOR
-checksum) and decodes when the instrument cluster sends it: ignition (`11`),
-road and engine speed (`18`), outside and coolant temperature (`19`) and
-odometer (`17`). It opens the port read-only, raw and exclusive, so GPSD cannot
-probe it, and never at 1200 baud, which would restart the board into its
-bootloader. It waits for bytes in `poll()`, at most 500 ms so that it can stop,
-and reopens the port every 2 seconds while it is missing. Each reading keeps
-when it was heard: speeds expire after 10 seconds, and every reading once the
-bus has been quiet for 10 seconds or the board is gone. The `vehicle` part of
-the snapshot carries the readings, the link's status and its frame counts.
-
 ## Keyboard
 
 `keyboard.toml` maps Slint key events to UI actions. In Android Auto, Up/Down
@@ -188,6 +173,4 @@ Both use the same `app.slint`.
 ## Next
 
 - Bluetooth hands-free (HFP) for call audio.
-- IBUS: on-board computer values (consumption, range), battery voltage and oil
-  temperature.
 - iPhone CarPlay.

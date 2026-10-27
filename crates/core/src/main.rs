@@ -61,7 +61,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // While a receiver is connected, the phone gets the car's position.
     let gnss = services::gnss::GnssService::start(projection.gnss_input());
-    let ibus = services::ibus::IbusService::start(config.ibus.clone());
+    if config.legacy_ibus.is_some() {
+        info!("core.toml's [ibus] section is ignored: NavBridge no longer reads the I-Bus");
+    }
 
     info!(
         ui = "400x240",
@@ -153,7 +155,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 system: system.snapshot(),
                 wireless,
                 bluetooth: bluetooth.snapshot(),
-                vehicle: ibus.snapshot(),
             };
             server.broadcast_snapshot(snapshot);
 
