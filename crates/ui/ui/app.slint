@@ -59,6 +59,7 @@ component Switch inherits Rectangle {
 component PairSwitch inherits Rectangle {
     in property <bool> enabled;
     in property <bool> on;
+    callback tapped();
     height: 34px;
     border-radius: 7px;
     background: root.enabled ? AmberPalette.amber : AmberPalette.surface;
@@ -76,6 +77,24 @@ component PairSwitch inherits Rectangle {
         y: (parent.height - self.height) / 2;
         on: root.enabled && root.on;
         inverse: root.enabled;
+    }
+    TouchArea {
+        clicked => { root.tapped(); }
+    }
+}
+
+// A page's title, which a tap takes back to the menu.
+component BackTitle inherits Rectangle {
+    in property <string> text;
+    callback tapped();
+    Text {
+        x: 0px; width: parent.width; height: parent.height;
+        text: "‹  " + root.text;
+        color: AmberPalette.text; font-size: 17px; font-weight: 700;
+        vertical-alignment: center;
+    }
+    TouchArea {
+        clicked => { root.tapped(); }
     }
 }
 
@@ -165,6 +184,7 @@ component MenuTile inherits Rectangle {
     in property <image> icon;
     in property <string> label;
     in property <bool> selected;
+    callback tapped();
     width: 112px;
     height: 124px;
     border-radius: 8px;
@@ -185,6 +205,9 @@ component MenuTile inherits Rectangle {
         font-size: 13px;
         horizontal-alignment: center;
         vertical-alignment: center;
+    }
+    TouchArea {
+        clicked => { root.tapped(); }
     }
 }
 
@@ -261,12 +284,25 @@ export component AppWindow inherits Window {
     in property <string> vehicle-odometer: "n/a";
 
     callback key-event(string, bool, bool);
+    // Taps and drags, from a touchscreen or the mouse.
+    callback tile-tapped(int);
+    // A page's title: back to the menu.
+    callback back-tapped();
+    // A Settings row (index), on its value's left (-1) or right (1) half
+    // while it is open, else anywhere (0).
+    callback setting-tapped(int, int);
+    callback pair-tapped();
+    // System's pages: -1 the previous, 1 the next.
+    callback system-swiped(int);
+    callback pairing-answered(bool);
+    // On the projection: 0 down, 1 move, 2 up, at a point of the window.
+    callback projection-touch(int, length, length);
     // Invoked from Rust when the core has published a new projection frame.
     callback frame-ready();
     // Invoked from Rust when messages from the core are waiting.
     callback core-message();
 
-    // Keyboard is the only UI interaction path.
+    // The keyboard, and taps on the elements below.
     forward-focus: keyboard;
     keyboard := FocusScope {
         width: 100%;
@@ -316,6 +352,7 @@ export component AppWindow inherits Window {
             icon: tile.icon;
             label: tile.label;
             selected: index == root.menu-index;
+            tapped => { root.tile-tapped(index); }
         }
 
         Rectangle {
@@ -353,14 +390,27 @@ export component AppWindow inherits Window {
             x: 0px; y: 0px; width: 400px; height: 240px;
             source: root.projection-frame;
         }
+        // A finger or the left mouse button, passed on to the phone.
+        if root.video-active: TouchArea {
+            x: 0px; y: 0px; width: 400px; height: 240px;
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                    root.projection-touch(0, self.mouse-x, self.mouse-y);
+                }
+                if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                    root.projection-touch(2, self.mouse-x, self.mouse-y);
+                }
+            }
+            moved => { root.projection-touch(1, self.mouse-x, self.mouse-y); }
+        }
 
         if !root.video-active: Rectangle {
             x: 0px; y: 0px; width: 400px; height: 240px;
             background: AmberPalette.background;
-            Text {
-                x: 12px; y: 5px; width: 376px; height: 23px;
+            BackTitle {
+                x: 12px; y: 2px; width: 100px; height: 29px;
                 text: "Phone";
-                color: AmberPalette.text; font-size: 17px; font-weight: 700;
+                tapped => { root.back-tapped(); }
             }
             Text {
                 x: 100px; y: 5px; width: 288px; height: 23px;
@@ -373,6 +423,7 @@ export component AppWindow inherits Window {
                 x: 12px; y: 36px; width: 376px;
                 enabled: root.pair-option;
                 on: root.pairing;
+                tapped => { root.pair-tapped(); }
             }
             // How far a phone has got, in the middle of the screen.
             Text {
@@ -390,10 +441,23 @@ export component AppWindow inherits Window {
     if root.screen == 2: Rectangle {
         x: 0px; y: 0px; width: 400px; height: 240px;
         background: AmberPalette.background;
-        Text {
-            x: 12px; y: 5px; width: 120px; height: 23px;
+        BackTitle {
+            x: 12px; y: 2px; width: 120px; height: 29px;
             text: "System";
-            color: AmberPalette.text; font-size: 17px; font-weight: 700;
+            tapped => { root.back-tapped(); }
+        }
+        // Below the title, a swipe turns the page its way, and a tap towards
+        // its side.
+        TouchArea {
+            x: 0px; y: 32px; width: 400px; height: 208px;
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.up) {
+                    root.system-swiped(
+                        self.mouse-x - self.pressed-x < -30px ? 1
+                        : self.mouse-x - self.pressed-x > 30px ? -1
+                        : self.mouse-x < self.width / 2 ? -1 : 1);
+                }
+            }
         }
         PageLeds {
             x: 0px; y: 5px; width: 400px; height: 23px;
@@ -507,14 +571,14 @@ export component AppWindow inherits Window {
     if root.screen == 3: Rectangle {
         x: 0px; y: 0px; width: 400px; height: 240px;
         background: AmberPalette.background;
-        Text {
-            x: 12px; y: 5px; width: 376px; height: 23px;
+        BackTitle {
+            x: 12px; y: 2px; width: 130px; height: 29px;
             text: "Settings";
-            color: AmberPalette.text; font-size: 17px; font-weight: 700;
+            tapped => { root.back-tapped(); }
         }
         // Sections, each heading its rows. The chosen row is filled; once Enter
-        // opens it, it is outlined and its value takes arrows, as Left/Right
-        // then change it.
+        // or a tap opens it, it is outlined and its value takes arrows, as
+        // Left/Right, or a tap or hold on the value's halves, then change it.
         VerticalLayout {
             x: 12px; y: 32px; width: 376px; height: 200px;
             alignment: start;
@@ -576,6 +640,27 @@ export component AppWindow inherits Window {
                             vertical-alignment: center;
                         }
                     }
+                    area := TouchArea {
+                        // An open row's value: -1 its left half, 1 its right
+                        // half, which step at once and repeat while held.
+                        property <int> half: !line.open || self.pressed-x < 210px ? 0
+                            : self.pressed-x < 210px + (self.width - 210px) / 2 ? -1 : 1;
+                        pointer-event(event) => {
+                            if (event.kind == PointerEventKind.down && self.half != 0) {
+                                root.setting-tapped(index, self.half);
+                            }
+                        }
+                        clicked => {
+                            if (self.half == 0) {
+                                root.setting-tapped(index, 0);
+                            }
+                        }
+                    }
+                    Timer {
+                        interval: 120ms;
+                        running: area.pressed && area.half != 0;
+                        triggered => { root.setting-tapped(index, area.half); }
+                    }
                 }
             }
         }
@@ -584,6 +669,8 @@ export component AppWindow inherits Window {
     if root.pairing-request: Rectangle {
         x: 0px; y: 0px; width: 400px; height: 240px;
         background: AmberPalette.background;
+        // Taps reach its two answers only, never the page beneath.
+        TouchArea { }
         Rectangle {
             x: 12px; y: 12px; width: 376px; height: 216px;
             border-radius: 8px;
@@ -606,16 +693,25 @@ export component AppWindow inherits Window {
                 color: AmberPalette.amber; font-size: 48px; font-weight: 700;
                 horizontal-alignment: center; vertical-alignment: center;
             }
-            Text {
-                x: 16px; y: 182px; width: 172px; height: 18px;
-                text: "ENTER pair";
-                color: AmberPalette.muted; font-size: 11px;
-            }
-            Text {
-                x: 188px; y: 182px; width: 172px; height: 18px;
-                text: "BACK refuse";
-                color: AmberPalette.muted; font-size: 11px;
-                horizontal-alignment: right;
+            // Enter or Back, or a tap on either.
+            for answer[index] in [
+                { label: "PAIR", accept: true },
+                { label: "REFUSE", accept: false },
+            ]: Rectangle {
+                x: 16px + index * 180px; y: 168px; width: 164px; height: 32px;
+                border-radius: 6px;
+                background: answer.accept ? AmberPalette.amber : transparent;
+                border-width: 1px;
+                border-color: AmberPalette.amber;
+                Text {
+                    text: answer.label;
+                    color: answer.accept ? AmberPalette.selected-text : AmberPalette.amber;
+                    font-size: 14px; font-weight: 700;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+                TouchArea {
+                    clicked => { root.pairing-answered(answer.accept); }
+                }
             }
         }
     }

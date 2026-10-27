@@ -15,7 +15,7 @@ use input::{KeyAction, KeyMap};
 use ipc::IpcEvent;
 use navbridge_common::{
     AppSnapshot, ClientCommand, Ignition, NavigationKey, ProjectionEvent, ServerEvent,
-    StreamFormat, VehicleSnapshot, MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH,
+    StreamFormat, TouchKind, VehicleSnapshot, MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH,
     VIDEO_FRAME_HEADER_SIZE, VIDEO_FRAME_MAGIC, VIDEO_FRAME_PATH,
 };
 use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer};
@@ -83,6 +83,10 @@ struct UiState {
     /// The size projection frames come in: the panel's 400x240, or 800x480
     /// for a UI drawn twice as large.
     frame_size: (u32, u32),
+    /// Where a finger or the mouse holds the projection, in Android Auto's
+    /// pixels, and when it last moved there.
+    touch: Option<(u32, u32)>,
+    touch_moved_at: Option<Instant>,
 }
 
 impl Default for UiState {
@@ -100,6 +104,8 @@ impl Default for UiState {
             held_navigation: None,
             video_sequence: std::cell::Cell::new(None),
             frame_size: (UI_WIDTH, UI_HEIGHT),
+            touch: None,
+            touch_moved_at: None,
         }
     }
 }
@@ -203,6 +209,49 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let mut state = state.borrow_mut();
             handle_key_event(&mut state, action, pressed, repeat, &command_tx);
             render_state(&ui, &state);
+        });
+    }
+
+    // Taps, from a touchscreen or the mouse: each changes the state much as
+    // its key would, then the window is redrawn.
+    {
+        let tapped = {
+            let state = Rc::clone(&state);
+            let commands = command_tx.clone();
+            let weak = ui.as_weak();
+            Rc::new(move |act: &dyn Fn(&mut UiState, &Commands)| {
+                let Some(ui) = weak.upgrade() else {
+                    return;
+                };
+                let mut state = state.borrow_mut();
+                act(&mut state, &commands);
+                render_state(&ui, &state);
+            })
+        };
+        let t = Rc::clone(&tapped);
+        ui.on_tile_tapped(move |index| {
+            t(&|state, commands| tap_tile(state, index as usize, commands))
+        });
+        let t = Rc::clone(&tapped);
+        ui.on_back_tapped(move || t(&|state, commands| tap_back(state, commands)));
+        let t = Rc::clone(&tapped);
+        ui.on_setting_tapped(move |index, half| {
+            t(&|state, commands| tap_setting(state, index as usize, half, commands))
+        });
+        let t = Rc::clone(&tapped);
+        ui.on_pair_tapped(move || t(&|state, commands| tap_pair(state, commands)));
+        let t = Rc::clone(&tapped);
+        ui.on_system_swiped(move |delta| t(&|state, _| swipe_system(state, delta)));
+        ui.on_pairing_answered(move |accept| {
+            tapped(&|state, commands| answer_pairing(state, accept, commands))
+        });
+    }
+    // Touches on the projection go to the phone; the window stays as it is.
+    {
+        let state = Rc::clone(&state);
+        let commands = command_tx.clone();
+        ui.on_projection_touch(move |kind, x, y| {
+            touch_projection(&mut state.borrow_mut(), kind, x, y, &commands);
         });
     }
 
@@ -346,12 +395,147 @@ fn navigation_key(action: KeyAction) -> Option<NavigationKey> {
     }
 }
 
-fn release_navigation(state: &mut UiState, commands: &std::sync::mpsc::Sender<ClientCommand>) {
+type Commands = std::sync::mpsc::Sender<ClientCommand>;
+
+/// Releases a key or a finger the phone still holds.
+fn release_navigation(state: &mut UiState, commands: &Commands) {
     if let Some(key) = state.held_navigation.take() {
         let _ = commands.send(ClientCommand::NavigationInput {
             key,
             pressed: false,
         });
+    }
+    if let Some((x, y)) = state.touch.take() {
+        let _ = commands.send(ClientCommand::Touch {
+            kind: TouchKind::Up,
+            x,
+            y,
+        });
+    }
+}
+
+/// Moves on the projection closer together than this are skipped; the last
+/// point still goes out with the release.
+const TOUCH_MOVE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(15);
+
+/// A finger or the mouse on the projection, at a point of the 400x240 window
+/// (whatever its scale), passed to the phone in Android Auto's 800x480.
+fn touch_projection(state: &mut UiState, kind: i32, x: f32, y: f32, commands: &Commands) {
+    if !(state.show_projection() && state.snapshot.projection.phone_connected) {
+        return;
+    }
+    let scale = |at: f32, ui: u32, media: u32| -> u32 {
+        (at.max(0.0) * media as f32 / ui as f32)
+            .round()
+            .min((media - 1) as f32) as u32
+    };
+    let point = (
+        scale(x, UI_WIDTH, MEDIA_WIDTH),
+        scale(y, UI_HEIGHT, MEDIA_HEIGHT),
+    );
+    let kind = match kind {
+        0 => TouchKind::Down,
+        1 => TouchKind::Move,
+        _ => TouchKind::Up,
+    };
+    match kind {
+        TouchKind::Down => {
+            release_navigation(state, commands);
+            state.touch = Some(point);
+            state.touch_moved_at = Some(Instant::now());
+        }
+        TouchKind::Move => {
+            let recent = state
+                .touch_moved_at
+                .is_some_and(|at| at.elapsed() < TOUCH_MOVE_INTERVAL);
+            if state.touch.is_none() || state.touch == Some(point) || recent {
+                return;
+            }
+            state.touch = Some(point);
+            state.touch_moved_at = Some(Instant::now());
+        }
+        TouchKind::Up => {
+            if state.touch.take().is_none() {
+                return;
+            }
+        }
+    }
+    let _ = commands.send(ClientCommand::Touch {
+        kind,
+        x: point.0,
+        y: point.1,
+    });
+}
+
+/// While the phone's pairing code shows, only its two answers take taps.
+fn pairing_shown(state: &UiState) -> bool {
+    state.snapshot.bluetooth.confirm.is_some()
+}
+
+/// A menu tile: chosen and opened, as Enter does.
+fn tap_tile(state: &mut UiState, index: usize, commands: &Commands) {
+    if state.screen != Screen::Menu || pairing_shown(state) {
+        return;
+    }
+    state.menu_index = index.min(MENU_ITEMS - 1);
+    handle_action(state, KeyAction::Select, commands);
+}
+
+/// A page's title: back to the menu, as Escape does.
+fn tap_back(state: &mut UiState, commands: &Commands) {
+    if !pairing_shown(state) {
+        handle_action(state, KeyAction::Home, commands);
+    }
+}
+
+fn tap_pair(state: &mut UiState, commands: &Commands) {
+    if state.screen == Screen::Phone && !pairing_shown(state) {
+        waiting_page(state, KeyAction::Select, commands);
+    }
+}
+
+/// System's pages, turned by a swipe or a tap: -1 back, 1 on.
+fn swipe_system(state: &mut UiState, delta: i32) {
+    if state.screen == Screen::System && !pairing_shown(state) {
+        let step = if delta < 0 { SYSTEM_PAGES - 1 } else { 1 };
+        state.system_page = (state.system_page + step) % SYSTEM_PAGES;
+    }
+}
+
+fn answer_pairing(state: &mut UiState, accept: bool, commands: &Commands) {
+    if pairing_shown(state) {
+        let key = if accept {
+            KeyAction::Select
+        } else {
+            KeyAction::Back
+        };
+        handle_action(state, key, commands);
+    }
+}
+
+/// A Settings row tapped: the hotspot, the DPI and the frame rate change at
+/// once; a level opens, then its value's halves (`half` -1 and 1) step it
+/// down and up, and a tap on its label closes it.
+fn tap_setting(state: &mut UiState, index: usize, half: i32, commands: &Commands) {
+    if state.screen != Screen::Settings || pairing_shown(state) {
+        return;
+    }
+    let index = index.min(SETTINGS.len() - 1);
+    let open = state.settings_editing && settings_index(state) == index;
+    if half != 0 {
+        if open {
+            change_setting(state, half > 0, commands);
+        }
+        return;
+    }
+    state.settings_index = index;
+    state.settings_editing = false;
+    if open || !state.core_connected {
+        return;
+    }
+    match SETTINGS[index] {
+        Setting::Hotspot | Setting::Dpi | Setting::Fps => change_setting(state, true, commands),
+        Setting::Volume | Setting::Microphone => state.settings_editing = true,
     }
 }
 
@@ -1601,6 +1785,134 @@ mod navigation_tests {
     }
 
     #[test]
+    fn taps_open_tiles_go_back_turn_pages_and_answer_pairing() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = UiState {
+            core_connected: true,
+            ..UiState::default()
+        };
+        tap_tile(&mut state, 2, &tx);
+        assert_eq!(state.screen, Screen::System);
+        swipe_system(&mut state, -1);
+        assert_eq!(state.system_page, SYSTEM_PAGES - 1);
+        swipe_system(&mut state, 1);
+        assert_eq!(state.system_page, 0);
+        tap_back(&mut state, &tx);
+        assert_eq!(state.screen, Screen::Menu);
+        // Pages only turn on System.
+        swipe_system(&mut state, 1);
+        assert_eq!(state.system_page, 0);
+        tap_tile(&mut state, 0, &tx);
+        assert_eq!(state.screen, Screen::Phone);
+        state.snapshot.wireless.enabled = true;
+        tap_pair(&mut state, &tx);
+        assert!(matches!(rx.try_recv(), Ok(ClientCommand::StartPairing)));
+        tap_back(&mut state, &tx);
+        assert_eq!(state.screen, Screen::Menu);
+        // While the phone's code shows, only its answers take taps.
+        state.snapshot.bluetooth.confirm = Some(navbridge_common::PairingRequest {
+            device: "Pixel 10".into(),
+            code: "042137".into(),
+        });
+        tap_tile(&mut state, 1, &tx);
+        tap_back(&mut state, &tx);
+        assert_eq!(state.screen, Screen::Menu);
+        assert!(rx.try_recv().is_err());
+        answer_pairing(&mut state, false, &tx);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientCommand::ConfirmPairing { accept: false })
+        ));
+        assert_eq!(state.screen, Screen::Menu);
+        // With no code showing, an answer does nothing.
+        answer_pairing(&mut state, true, &tx);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn taps_switch_settings_and_step_an_open_level() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = UiState {
+            screen: Screen::Settings,
+            core_connected: true,
+            ..UiState::default()
+        };
+        state.snapshot.projection.dpi = 160;
+        state.snapshot.projection.fps = 60;
+        state.snapshot.system.audio.volume_percent = Some(50);
+        // The hotspot, the DPI and the frame rate change with one tap.
+        tap_setting(&mut state, 0, 0, &tx);
+        tap_setting(&mut state, 1, 0, &tx);
+        tap_setting(&mut state, 2, 0, &tx);
+        let sent: Vec<_> = rx.try_iter().collect();
+        assert!(matches!(
+            sent[..],
+            [
+                ClientCommand::SetWireless { enabled: true },
+                ClientCommand::SetDpi { dpi: 140 },
+                ClientCommand::SetFps { fps: 30 }
+            ]
+        ));
+        assert_eq!(selected_setting(&state), Setting::Fps);
+        assert!(!state.settings_editing);
+        // A level opens; its value's halves step it; its label closes it.
+        tap_setting(&mut state, 3, 0, &tx);
+        assert!(state.settings_editing && selected_setting(&state) == Setting::Volume);
+        assert!(rx.try_recv().is_err());
+        tap_setting(&mut state, 3, 1, &tx);
+        tap_setting(&mut state, 3, 1, &tx);
+        tap_setting(&mut state, 3, -1, &tx);
+        for expected in [51, 52, 51] {
+            assert!(matches!(
+                rx.try_recv(),
+                Ok(ClientCommand::SetVolume { percent }) if percent == expected
+            ));
+        }
+        // Another row's halves do nothing while it is closed.
+        tap_setting(&mut state, 4, 1, &tx);
+        assert!(rx.try_recv().is_err());
+        tap_setting(&mut state, 3, 0, &tx);
+        assert!(!state.settings_editing);
+        tap_setting(&mut state, 3, 1, &tx);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn touches_on_the_projection_reach_the_phone_in_its_pixels() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = connected_projection();
+        let touch = |rx: &mpsc::Receiver<ClientCommand>| match rx.try_recv() {
+            Ok(ClientCommand::Touch { kind, x, y }) => Some((kind, x, y)),
+            _ => None,
+        };
+        // The 400x240 window's points, in Android Auto's 800x480.
+        touch_projection(&mut state, 0, 200.0, 120.0, &tx);
+        assert_eq!(touch(&rx), Some((TouchKind::Down, 400, 240)));
+        // Moves come at most every TOUCH_MOVE_INTERVAL.
+        touch_projection(&mut state, 1, 201.0, 121.0, &tx);
+        assert_eq!(touch(&rx), None);
+        state.touch_moved_at = Instant::now().checked_sub(TOUCH_MOVE_INTERVAL * 2);
+        touch_projection(&mut state, 1, 210.0, 125.0, &tx);
+        assert_eq!(touch(&rx), Some((TouchKind::Move, 420, 250)));
+        // The release, past the edge, stays on it.
+        touch_projection(&mut state, 2, 400.0, 250.0, &tx);
+        assert_eq!(touch(&rx), Some((TouchKind::Up, 799, 479)));
+        // Nothing held: no move or release.
+        touch_projection(&mut state, 1, 10.0, 10.0, &tx);
+        touch_projection(&mut state, 2, 10.0, 10.0, &tx);
+        assert_eq!(touch(&rx), None);
+        // A finger still down when Escape leaves is lifted first.
+        touch_projection(&mut state, 0, 10.0, 10.0, &tx);
+        assert_eq!(touch(&rx), Some((TouchKind::Down, 20, 20)));
+        handle_key_event(&mut state, KeyAction::Home, true, false, &tx);
+        assert_eq!(touch(&rx), Some((TouchKind::Up, 20, 20)));
+        assert!(matches!(rx.try_recv(), Ok(ClientCommand::HideProjection)));
+        // Without the projection on screen, touches go nowhere.
+        touch_projection(&mut state, 0, 10.0, 10.0, &tx);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
     fn status_lights_follow_bluetooth_the_hotspot_and_the_gnss_fix() {
         let mut snapshot = AppSnapshot::default();
         assert_eq!(
@@ -1928,6 +2240,7 @@ mod preview {
             ("system-video", Screen::System, 1),
             ("system-gnss", Screen::System, 2),
             ("system-ibus", Screen::System, 3),
+            ("pairing", Screen::Menu, 0),
         ] {
             state.screen = screen;
             state.system_page = page;
@@ -1942,9 +2255,46 @@ mod preview {
             // page, pairing open, then not, then the hotspot off.
             state.snapshot.wireless.enabled = !matches!(name, "settings-fps" | "phone-off");
             state.snapshot.bluetooth.pairing = name == "phone";
+            state.snapshot.bluetooth.confirm =
+                (name == "pairing").then(|| navbridge_common::PairingRequest {
+                    device: "Pixel 10".into(),
+                    code: "042137".into(),
+                });
             render_state(&ui, &state);
             capture(&ui, &window, name, 1);
         }
+        // Taps reach their callbacks: a menu tile, a page's title, a row.
+        let taps = Rc::new(RefCell::new(Vec::new()));
+        let log = |taps: &Rc<RefCell<Vec<String>>>| Rc::clone(taps);
+        let t = log(&taps);
+        ui.on_tile_tapped(move |index| t.borrow_mut().push(format!("tile {index}")));
+        let t = log(&taps);
+        ui.on_back_tapped(move || t.borrow_mut().push("back".into()));
+        let t = log(&taps);
+        ui.on_setting_tapped(move |index, half| t.borrow_mut().push(format!("row {index} {half}")));
+        let tap = |x: f32, y: f32| {
+            let position = slint::LogicalPosition::new(x, y);
+            let button = slint::platform::PointerEventButton::Left;
+            window
+                .dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+            window
+                .dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+        };
+        // The pairing code, drawn last, keeps taps from the menu beneath.
+        state.screen = Screen::Menu;
+        render_state(&ui, &state);
+        tap(200.0, 120.0);
+        assert!(taps.borrow().is_empty());
+        state.snapshot.bluetooth.confirm = None;
+        render_state(&ui, &state);
+        tap(200.0, 120.0);
+        state.screen = Screen::Settings;
+        state.settings_editing = false;
+        render_state(&ui, &state);
+        tap(40.0, 15.0);
+        tap(100.0, 60.0);
+        assert_eq!(*taps.borrow(), ["tile 1", "back", "row 0 0"]);
+
         // The menu as a PC window draws it at frontend.toml's scale = 2.
         window
             .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged { scale_factor: 2.0 });

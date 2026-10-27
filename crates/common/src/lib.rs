@@ -228,6 +228,16 @@ pub struct AppSnapshot {
     pub vehicle: VehicleSnapshot,
 }
 
+/// A finger or the mouse on the projection: x and y are in Android Auto's
+/// 800x480 pixels, whatever size the UI shows it at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TouchKind {
+    Down,
+    Move,
+    Up,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NavigationKey {
@@ -268,6 +278,7 @@ pub enum ClientCommand {
     HideProjection,
     ResumeProjection,
     NavigationInput { key: NavigationKey, pressed: bool },
+    Touch { kind: TouchKind, x: u32, y: u32 },
     PhoneAction { action: PhoneAction },
     SetWireless { enabled: bool },
     SetDpi { dpi: u32 },

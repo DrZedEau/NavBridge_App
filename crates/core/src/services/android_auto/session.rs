@@ -5,7 +5,7 @@ use super::{
 use crate::config::AndroidAutoConfig;
 use crate::services::audio::Stream;
 use crate::services::gnss::Fix;
-use navbridge_common::{NavigationKey, PhoneAction};
+use navbridge_common::{NavigationKey, PhoneAction, TouchKind, MEDIA_HEIGHT, MEDIA_WIDTH};
 use protobuf::{Message, MessageField};
 use std::time::{Duration, Instant};
 pub mod generated {
@@ -182,6 +182,11 @@ pub fn discovery(config: &AndroidAutoConfig, gnss: bool) -> p::Discovery {
     input.set_channel_id(INPUT as u32);
     let mut ic = p::InputChannel::new();
     ic.supported_keycodes = KEYS.to_vec();
+    // Touch and the mouse work on the projection, in its own pixels.
+    let mut touch = p::TouchConfig::new();
+    touch.set_width(MEDIA_WIDTH);
+    touch.set_height(MEDIA_HEIGHT);
+    ic.touch_screen = MessageField::some(touch);
     input.input_channel = MessageField::some(ic);
     d.channels.push(input);
     let mut sensor = p::Channel::new();
@@ -777,6 +782,28 @@ impl Session {
         };
         self.key(keycode, pressed)
     }
+    /// One finger, or the mouse, at a point of the 800x480 projection.
+    pub fn touch(&mut self, kind: TouchKind, x: u32, y: u32) -> Result<(), String> {
+        if !self.opened[INPUT as usize] {
+            return Ok(());
+        }
+        let mut location = p::TouchLocation::new();
+        location.set_x(x.min(MEDIA_WIDTH - 1));
+        location.set_y(y.min(MEDIA_HEIGHT - 1));
+        location.set_pointer_id(0);
+        let mut touch = p::TouchEvent::new();
+        touch.locations.push(location);
+        touch.set_action_index(0);
+        touch.set_action(match kind {
+            TouchKind::Down => 0,
+            TouchKind::Up => 1,
+            TouchKind::Move => 2,
+        });
+        let mut input = p::Input::new();
+        input.set_timestamp(self.clock.elapsed().as_micros() as u64);
+        input.touch = MessageField::some(touch);
+        self.send(INPUT, msg::input::EVENT, &input)
+    }
     pub fn key(&mut self, key: u32, pressed: bool) -> Result<(), String> {
         if self.opened[INPUT as usize] && KEYS.contains(&key) {
             let mut b = p::Button::new();
@@ -961,6 +988,36 @@ mod tests {
             s.navigation_input(key, false).unwrap();
             assert!(s.outgoing.is_empty());
         }
+    }
+    #[test]
+    fn touches_go_out_in_the_projections_pixels() {
+        let (tls, mut peer) = super::super::tls::tests::pair();
+        let mut s = connected_session();
+        s.tls = tls;
+        // Nothing before the phone opens its input channel.
+        s.touch(TouchKind::Down, 10, 10).unwrap();
+        assert!(s.outgoing.is_empty());
+        s.opened[INPUT as usize] = true;
+        for (kind, x, y) in [
+            (TouchKind::Down, 100, 200),
+            (TouchKind::Move, 120, 210),
+            (TouchKind::Up, 900, 600),
+        ] {
+            s.touch(kind, x, y).unwrap();
+        }
+        let touches = sent_inputs(&mut s, &mut peer)
+            .iter()
+            .map(|input| {
+                let touch = input.touch.as_ref().unwrap();
+                let at = &touch.locations[0];
+                (touch.action(), at.x(), at.y(), at.pointer_id())
+            })
+            .collect::<Vec<_>>();
+        // Android's down, move and up; a point past the edge stays on it.
+        assert_eq!(
+            touches,
+            [(0, 100, 200, 0), (2, 120, 210, 0), (1, 799, 479, 0)]
+        );
     }
     /// Decrypts the messages queued for the phone, as (message id, body).
     fn sent(
@@ -1201,11 +1258,10 @@ mod tests {
             .video_configs[0];
         assert_eq!(v.video_resolution(), 1);
         assert_eq!(v.dpi(), 160);
-        let keycodes = &parsed.channels[0]
-            .input_channel
-            .as_ref()
-            .unwrap()
-            .supported_keycodes;
+        let input = parsed.channels[0].input_channel.as_ref().unwrap();
+        let touch = input.touch_screen.as_ref().unwrap();
+        assert_eq!((touch.width(), touch.height()), (800, 480));
+        let keycodes = &input.supported_keycodes;
         // The phone only acts on keys the car said it has.
         for action in [
             PhoneAction::NextTrack,

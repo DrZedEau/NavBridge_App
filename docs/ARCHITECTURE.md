@@ -3,7 +3,9 @@
 ## Design rules
 
 1. `navbridge-core` owns USB, the Android Auto session, media and future vehicle state.
-2. `navbridge-ui` owns Slint presentation and keyboard navigation only.
+2. `navbridge-ui` owns Slint presentation and keyboard and touch navigation
+   only; touches on the projection go to the core, which passes them to the
+   phone.
 3. Control and state travel over a Unix domain socket as newline-delimited JSON.
 4. Projection frames travel through tmpfs, never through the JSON socket.
 5. The NavBridge UI is fixed at **400x240**. Android Auto runs at **800x480**;

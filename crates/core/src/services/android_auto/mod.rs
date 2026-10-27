@@ -19,8 +19,8 @@ use crate::services::{
 };
 use crate::settings::Settings;
 use navbridge_common::{
-    NavigationKey, PhoneAction, ProjectionEvent, ProjectionPhase, ProjectionSnapshot, UsbSnapshot,
-    VIDEO_FRAME_PATH,
+    NavigationKey, PhoneAction, ProjectionEvent, ProjectionPhase, ProjectionSnapshot, TouchKind,
+    UsbSnapshot, VIDEO_FRAME_PATH,
 };
 use std::{
     io::{self, Read, Write},
@@ -54,6 +54,7 @@ enum Command {
     Hide,
     Resume,
     Key(NavigationKey, bool),
+    Touch(TouchKind, u32, u32),
     Phone(PhoneAction),
     Night(bool),
     ParkingBrake(bool),
@@ -235,6 +236,9 @@ impl ProjectionService {
     }
     pub fn navigation_input(&self, k: NavigationKey, p: bool) {
         self.command(Command::Key(k, p))
+    }
+    pub fn touch(&self, kind: TouchKind, x: u32, y: u32) {
+        self.command(Command::Touch(kind, x, y))
     }
     pub fn phone_action(&self, a: PhoneAction) {
         self.command(Command::Phone(a))
@@ -529,6 +533,7 @@ fn runner(
                         Command::Hide => session.hide()?,
                         Command::Resume => session.resume()?,
                         Command::Key(k, p) => session.navigation_input(k, p)?,
+                        Command::Touch(kind, x, y) => session.touch(kind, x, y)?,
                         Command::Phone(a) => {
                             let key = session::phone_key(a);
                             session.key(key, true)?;

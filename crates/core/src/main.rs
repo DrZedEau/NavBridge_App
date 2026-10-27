@@ -97,6 +97,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 ClientCommand::NavigationInput { key, pressed } => {
                     projection.navigation_input(key, pressed)
                 }
+                ClientCommand::Touch { kind, x, y } => projection.touch(kind, x, y),
                 ClientCommand::PhoneAction { action } => projection.phone_action(action),
                 ClientCommand::SetWireless { enabled } => {
                     wifi.set_enabled(enabled);

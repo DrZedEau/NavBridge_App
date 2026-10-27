@@ -9,7 +9,9 @@ message DiscoveryRequest { optional string device_name = 4; optional string devi
 message AudioConfig { required uint32 sample_rate = 1; required uint32 bit_depth = 2; required uint32 channel_count = 3; }
 message VideoConfig { required uint32 video_resolution = 1; required uint32 video_fps = 2; required uint32 margin_width = 3; required uint32 margin_height = 4; required uint32 dpi = 5; }
 message AVChannel { required uint32 stream_type = 1; optional uint32 audio_type = 2; repeated AudioConfig audio_configs = 3; repeated VideoConfig video_configs = 4; }
-message InputChannel { repeated uint32 supported_keycodes = 1; }
+// A touchscreen in the projection's own pixels.
+message TouchConfig { required uint32 width = 1; required uint32 height = 2; }
+message InputChannel { repeated uint32 supported_keycodes = 1; optional TouchConfig touch_screen = 2; }
 message AVInputChannel { required uint32 stream_type = 1; required AudioConfig audio_config = 2; }
 message Sensor { required uint32 type = 1; }
 message SensorChannel { repeated Sensor sensors = 1; }
@@ -37,7 +39,10 @@ message Button { required uint32 keycode = 1; required bool pressed = 2; require
 message Buttons { repeated Button events = 1; }
 message RelativeInput { required uint32 scan_code = 1; required int32 delta = 2; }
 message RelativeInputs { repeated RelativeInput events = 1; }
-message Input { required uint64 timestamp = 1; optional Buttons buttons = 4; optional RelativeInputs relative = 6; }
+message TouchLocation { required uint32 x = 1; required uint32 y = 2; required uint32 pointer_id = 3; }
+// action as Android's MotionEvent: 0 down, 1 up, 2 move.
+message TouchEvent { repeated TouchLocation locations = 1; optional uint32 action_index = 2; required uint32 action = 3; }
+message Input { required uint64 timestamp = 1; optional TouchEvent touch = 3; optional Buttons buttons = 4; optional RelativeInputs relative = 6; }
 message SensorStart { required uint32 sensor_type = 1; optional uint32 minimum_interval = 2; }
 message Night { required bool is_night = 1; }
 // Degrees x 1e7, accuracy in mm, altitude in cm, speed in mm/s, bearing in

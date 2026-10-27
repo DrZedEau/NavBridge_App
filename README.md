@@ -20,7 +20,7 @@ and odometer from its I-Bus, through the carrier board's ATmega32U4.
   sensor, audio/video focus, H.264 decoding, ALSA audio, GPSD, the I-Bus and
   system metrics.
 - `navbridge-ui`: amber Slint menu with status lights and a clock, Settings,
-  four System pages, keyboard navigation and the projection view. Escape/Home returns to the menu and gives video focus
+  four System pages, keyboard and touch navigation and the projection view. Escape/Home returns to the menu and gives video focus
   back to the car, so the phone pauses its video; returning to Phone
   restores it while retaining the phone session and audio.
 - Bounded JSON-lines IPC carries commands and snapshots through a Unix socket.
@@ -197,6 +197,22 @@ when the brake changes, and once more when it powers up, rather than hold it:
 held, Ctrl and Alt together with Backspace would quit the UI. The phone can
 still restrict itself when it notices it is moving. Without a phone, the projection page
 shows the connection status while the core keeps looking for one.
+
+## Touch and mouse
+
+A touchscreen panel (through libinput on the Pi) or the left mouse button in a
+PC window works alongside the keyboard:
+
+- **Menu**: a tap opens a tile.
+- **Page titles** (‹ Phone, ‹ Settings, ‹ System): a tap returns to the menu.
+- **Phone**: a tap switches Enable pairing. Android Auto's screen takes one
+  finger's taps and drags, as the core declares an 800x480 touchscreen to the
+  phone; Exit in Android Auto's launcher returns to the menu.
+- **Settings**: a tap switches Hotspot, DPI and FPS. A tap opens a volume row;
+  then a tap on the left or right half of its value steps it by 1%, repeating
+  while held, and a tap on its label closes it.
+- **System**: a swipe turns the page its way; a tap turns it towards its side.
+- **Bluetooth pairing**: PAIR and REFUSE buttons, as well as Enter and Back.
 
 ## Menu
 
