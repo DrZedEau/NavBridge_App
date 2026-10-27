@@ -3,6 +3,7 @@ pub mod audio;
 pub mod bluetooth;
 pub mod codec;
 pub mod gnss;
+pub mod ibus;
 pub mod media;
 pub mod system;
 pub mod wifi;

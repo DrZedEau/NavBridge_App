@@ -9,14 +9,16 @@ is paired over Bluetooth. This build does not provide iPhone CarPlay or a
 hands-free Bluetooth call-audio path.
 Music, navigation/assistant playback and assistant microphone capture use the
 PCM2912A USB codec. An external GNSS receiver shows on the System page and, when
-connected as the phone connects, gives Android Auto the car's position.
+connected as the phone connects, gives Android Auto the car's position. The
+last System page shows the car's speed, engine speed, temperatures, ignition
+and odometer from its I-Bus, through the carrier board's ATmega32U4.
 
 ## Architecture
 
 - `navbridge-core`: Android Open Accessory USB discovery, GAL version exchange,
   TLS 1.2 peer verification, protobuf channel negotiation, keyboard input, night
-  sensor, audio/video focus, H.264 decoding, ALSA audio, GPSD and system
-  metrics.
+  sensor, audio/video focus, H.264 decoding, ALSA audio, GPSD, the I-Bus and
+  system metrics.
 - `navbridge-ui`: amber Slint menu with status lights and a clock, Settings,
   four System pages, keyboard and touch navigation and the projection view. Escape/Home returns to the menu and gives video focus
   back to the car, so the phone pauses its video; returning to Phone
@@ -66,9 +68,9 @@ x86-64, with the UI in a window:
 ```
 
 `install_build_deps.sh` asks apt for this release's runtime library names, adds
-your account to `plugdev` (phones) if needed,
+your account to `plugdev` (phones) and `dialout` (the I-Bus board) if needed,
 which takes effect at your next login, and installs udev rules: Android phones,
-and the carrier board's microcontroller, which ModemManager then leaves alone. With stock FFmpeg,
+and the I-Bus board, which ModemManager then leaves alone. With stock FFmpeg,
 `build_kms.sh` builds the UI with both the window (`navbridge-ui/desktop`) and
 the KMS backend. `run_desktop.sh` runs both as your account and sends sound
 through the desktop's default device; `--codec` uses core.toml's USB codec
@@ -106,6 +108,10 @@ dpi = 160
 fps = 60
 decoder = "auto"
 left_hand_drive = true
+
+[ibus]
+enabled = true
+device = "/dev/serial/by-id/usb-Arduino_LLC_Arduino_Micro_HIDPC-if00"
 
 [audio]
 enabled = true
@@ -254,7 +260,7 @@ appears, as a power cut can lose ALSA's own copy.
 
 1. Compute Module (CM5 or CM4): CPU/RAM usage and temperature. USB Devices: the
    phone (its model and whether Android Auto runs on it; a phone on Wi-Fi shows
-   as Wireless), the GNSS receiver and the audio codec.
+   as Wireless), the GNSS receiver, the I-Bus interface and the audio codec.
 2. Video: UI resolution, projection resolution (Android Auto; CarPlay is not in
    this build) and the H.264 decoder in use: FFmpeg's version, the decoder's
    name, and software or hardware. Audio: the codec's output and input, stereo
@@ -262,6 +268,7 @@ appears, as a power cut can lose ALSA's own copy.
    nothing plays or records.
 3. GNSS: GPSD receiver/port, connection/fix status, satellite counts, coordinates,
    MSL altitude, speed, HDOP and UTC fix time.
+4. IBUS: the car's readings (see below).
 
 Left/Up and Right/Down change System pages; four lights at the top centre show
 which is open. GNSS readings expire after five
@@ -275,6 +282,34 @@ altitude, speed, and heading while moving. The core logs `Android Auto uses the
 car's GNSS position` when the phone takes it. Without a receiver at connection,
 the phone uses its own GPS; a receiver plugged in later counts from the next
 connection.
+
+## IBUS (System page 4)
+
+The carrier board's ATmega32U4 hears the car's I-Bus (BMW E46 and E85
+electrics) and passes each frame to the Pi over USB serial, one line each, such
+as `IBUS1 RX 7323494 8004BF110329`: bus, direction, its milliseconds since it
+started, and the frame in hex. The core reads `[ibus] device` in core.toml, the
+board's stable `/dev/serial/by-id/` name, checks each frame's length and
+checksum, and reopens the port whenever the board is unplugged and back. It
+never sends anything towards the car.
+
+From the instrument cluster's broadcasts, System page 4 shows:
+
+| Tile | I-Bus message | Notes |
+| --- | --- | --- |
+| Speed | `18`, road speed | In steps of 2 km/h; the GNSS speed beside it while there is a fix |
+| Engine | `18`, engine speed | In steps of 100 rpm |
+| Coolant, Outside | `19` | °C |
+| Ignition | `11` | Off, Position 1, On, Starting |
+| Odometer | `17` | km, once something on the bus asks the cluster for it |
+
+Speed and engine speed go back to n/a after 10 seconds without an update, or
+when the ignition is off; everything does after 10 seconds without any I-Bus
+traffic, as the car is then asleep. The line below the readings shows the link
+and how many frames it carried; damaged frames point to a wiring or interference problem.
+With `RUST_LOG=debug`, the core logs each reading that changes and, once each,
+the kinds of message it does not decode, to find out what else the car sends.
+The systemd service reads the port through the `dialout` group.
 
 ## Wireless Android Auto
 

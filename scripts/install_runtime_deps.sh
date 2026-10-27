@@ -43,7 +43,7 @@ RULES=(70-navbridge-android.rules 71-navbridge-ibus.rules)
 if [[ ${1:-} == --dry-run ]]; then
   printf 'Runtime packages for %s (%s):\n' "${CODENAME:-unknown}" "$(dpkg --print-architecture)"
   printf '%s\n' "${PACKAGES[@]}"
-  echo 'Also installs udev rules for Android phones and the carrier board, creates hardware groups and enables GPSD USB hotplug.'
+  echo 'Also installs Android phone and I-Bus board udev rules, creates hardware groups and enables GPSD USB hotplug.'
   exit 0
 fi
 for rule in "${RULES[@]}"; do

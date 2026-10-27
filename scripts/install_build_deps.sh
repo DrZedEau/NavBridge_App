@@ -16,10 +16,10 @@ USER_HOME=$(getent passwd "$USER_NAME" | cut -d: -f6)
 PACKAGES=(build-essential ca-certificates curl git pkg-config cmake clang libclang-dev
   libssl-dev libasound2-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
   libfontconfig-dev libusb-1.0-0-dev libudev-dev libxkbcommon-dev libinput-dev)
-# For running the core as this account: phones (plugdev). The services get
-# this group from their units instead.
+# For running the core as this account: phones (plugdev) and the I-Bus board
+# (dialout). The services get these groups from their units instead.
 GROUPS_NEEDED=()
-for group in plugdev; do
+for group in plugdev dialout; do
   id -nG "$USER_NAME" | tr ' ' '\n' | grep -qx "$group" || GROUPS_NEEDED+=("$group")
 done
 if [[ ${1:-} == --dry-run ]]; then

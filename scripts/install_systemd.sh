@@ -109,7 +109,7 @@ for app in navbridge-core navbridge-ui; do
   fi
 done
 
-for group in plugdev audio video render input; do
+for group in plugdev audio dialout video render input; do
   getent group "$group" >/dev/null || groupadd --system "$group"
 done
 # SupplementaryGroups in each unit applies immediately without changing login groups.

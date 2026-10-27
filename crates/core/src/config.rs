@@ -9,10 +9,7 @@ pub struct CoreConfig {
     pub snapshot_interval_ms: u64,
     pub android_auto: AndroidAutoConfig,
     pub audio: AudioConfig,
-    /// The [ibus] section of older files, accepted so that they still load,
-    /// and otherwise ignored: NavBridge no longer reads the I-Bus.
-    #[serde(rename = "ibus")]
-    pub legacy_ibus: Option<toml::Table>,
+    pub ibus: IbusConfig,
 }
 impl Default for CoreConfig {
     fn default() -> Self {
@@ -21,7 +18,7 @@ impl Default for CoreConfig {
             snapshot_interval_ms: 500,
             android_auto: Default::default(),
             audio: Default::default(),
-            legacy_ibus: None,
+            ibus: Default::default(),
         }
     }
 }
@@ -91,6 +88,22 @@ impl Default for AudioConfig {
         }
     }
 }
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct IbusConfig {
+    pub enabled: bool,
+    /// The carrier board's microcontroller, which passes on each I-Bus frame
+    /// as a line on its USB serial port.
+    pub device: String,
+}
+impl Default for IbusConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            device: "/dev/serial/by-id/usb-Arduino_LLC_Arduino_Micro_HIDPC-if00".into(),
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,13 +112,8 @@ mod tests {
         let c: CoreConfig = toml::from_str(include_str!("../../../config/core.toml")).unwrap();
         assert_eq!(c.android_auto.fps, 60);
         assert_eq!(c.android_auto.decoder, DecoderChoice::Auto);
-        assert!(c.legacy_ibus.is_none());
-        // A file from when the I-Bus was read still loads.
-        let c: CoreConfig = toml::from_str(
-            "[ibus]\nenabled = true\ndevice = \"/dev/serial/by-id/usb-Arduino_LLC_Arduino_Micro_HIDPC-if00\"",
-        )
-        .unwrap();
-        assert!(c.legacy_ibus.is_some());
+        assert!(c.ibus.enabled);
+        assert_eq!(c.ibus.device, IbusConfig::default().device);
         let c: CoreConfig = toml::from_str("[android_auto]\ndecoder = \"software\"").unwrap();
         assert_eq!(c.android_auto.decoder, DecoderChoice::Software);
         assert!(toml::from_str::<CoreConfig>("[android_auto]\ndecoder = \"gpu\"").is_err());
@@ -118,6 +126,7 @@ mod tests {
         for typo in [
             "[carplay]\ndpi = 240",
             "[android_auto]\nfsp = 60",
+            "[ibus]\nport = \"/dev/ttyACM0\"",
             "snapshot_ms = 500",
             // An address, not a host name: resolving one could stall startup.
             "[android_auto]\nhead_unit_server = \"phone:5277\"",

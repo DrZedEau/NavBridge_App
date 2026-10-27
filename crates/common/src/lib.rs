@@ -177,6 +177,42 @@ pub struct PairingRequest {
     pub code: String,
 }
 
+/// The car, as its I-Bus reports it through the carrier board's
+/// microcontroller. A reading is absent until it is heard, and again once it
+/// is too old to trust.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct VehicleSnapshot {
+    /// What the I-Bus link does, or why it does not.
+    pub status: String,
+    /// The interface is open, whether or not the car is talking.
+    #[serde(default)]
+    pub interface: bool,
+    /// Frames heard since the core started, and lines that were not valid
+    /// frames, which point to a wiring or interference problem.
+    pub frames: u64,
+    pub bad_lines: u64,
+    pub ignition: Option<Ignition>,
+    /// The instrument cluster's road speed, in steps of 2 km/h.
+    pub speed_kmh: Option<u16>,
+    /// Engine speed, in steps of 100 rpm.
+    pub rpm: Option<u16>,
+    pub coolant_c: Option<i8>,
+    pub outside_c: Option<i8>,
+    pub odometer_km: Option<u32>,
+}
+
+/// The ignition key's position, as the instrument cluster reports it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Ignition {
+    Off,
+    /// Position 1: radio and accessories.
+    Accessory,
+    /// Position 2: ignition on.
+    On,
+    Starting,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppSnapshot {
     #[serde(default)]
@@ -188,6 +224,8 @@ pub struct AppSnapshot {
     pub wireless: WirelessSnapshot,
     #[serde(default)]
     pub bluetooth: BluetoothSnapshot,
+    #[serde(default)]
+    pub vehicle: VehicleSnapshot,
 }
 
 /// A finger or the mouse on the projection: x and y are in Android Auto's

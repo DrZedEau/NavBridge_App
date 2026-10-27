@@ -15,6 +15,12 @@ left_hand_drive = true
 # server (developer settings), forwarded by `adb forward tcp:5277 tcp:5277`.
 # head_unit_server = "127.0.0.1:5277"
 
+[ibus]
+enabled = true
+# The carrier board's ATmega32U4, which passes on each I-Bus frame it hears.
+# Its by-id name stays the same whichever ttyACM number it gets.
+device = "/dev/serial/by-id/usb-Arduino_LLC_Arduino_Micro_HIDPC-if00"
+
 [audio]
 enabled = true
 # plug converts rates/channels; dmix mixes music and navigation/assistant streams.
