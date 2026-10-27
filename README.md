@@ -28,6 +28,8 @@ and odometer from its I-Bus, through the carrier board's ATmega32U4.
   rather than JSON. See [architecture](docs/ARCHITECTURE.md).
 - Projection is H.264 at 800x480, downscaled with Lanczos to the 400x240 panel.
   FFmpeg normalizes full/limited color range. DPI and 30/60 fps are configurable.
+  The Pi 4 / CM4's hardware decoder (`h264_v4l2m2m`) is used when present; the
+  Pi 5 / CM5 has none and decodes in software.
 - A dedicated USB reader uses 16 KB transfers and a bounded queue. The session
   worker handles replies without interrupting reads. USB unplug/error clears
   decoder, playback and capture state; a new connection negotiates fresh TLS
@@ -101,6 +103,7 @@ snapshot_interval_ms = 500
 [android_auto]
 dpi = 160
 fps = 60
+decoder = "auto"
 left_hand_drive = true
 
 [ibus]
@@ -112,6 +115,13 @@ enabled = true
 playback_device = 'plug:SLAVE="dmix:CARD=CODEC,DEV=0"'
 capture_device = "plughw:CARD=CODEC,DEV=0"
 ```
+
+`decoder = "auto"` tries the board's hardware H.264 decoder first and falls back
+to FFmpeg's software decoder when there is none, as on the Pi 5 / CM5; it also
+falls back for the rest of the run if the hardware decoder fails or returns no
+frame for 30 pictures, then asks the phone for a keyframe. `decoder =
+"software"` never tries the hardware one. The core logs the decoder it uses, and
+System's Video box shows it.
 
 The default configuration requests 60 fps. Frame-rate wire values are 60=1 and
 30=2, verified on the Pixel/CM5 during live comparison. Older AASDK definitions

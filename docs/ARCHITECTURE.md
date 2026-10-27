@@ -8,7 +8,8 @@
 4. Projection frames travel through tmpfs, never through the JSON socket.
 5. The NavBridge UI is fixed at **400x240**. Android Auto runs at **800x480**;
    its DPI is configurable (default 160).
-6. H.264 is decoded in software with FFmpeg.
+6. H.264 is decoded with FFmpeg: on the board's hardware decoder where there is
+   one (Pi 4 / CM4), in software otherwise (Pi 5 / CM5).
 7. Audio stays in the core.
 8. The UI has no pointer or touch input.
 9. Restarting the UI does not end the phone's session.
@@ -83,7 +84,9 @@ each one.
 Phone: one H.264 access unit per Android Auto message (SPS/PPS first)
     |
     v
-FFmpeg software decoder, one packet per message (no parser delay)
+FFmpeg decoder, one packet per message (no parser delay): h264_v4l2m2m
+where the board has it, else the software h264; a failing hardware decoder
+gives way to software, which starts from the last SPS/PPS and a new keyframe
     |
     v
 libswscale (Lanczos): 800x480 -> 400x240 RGBA

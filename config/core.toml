@@ -4,6 +4,9 @@ snapshot_interval_ms = 500
 [android_auto]
 dpi = 160
 fps = 60
+# "auto": the board's hardware H.264 decoder (Pi 4 / CM4), else software, as
+# on the Pi 5 / CM5; "software" never tries the hardware one.
+decoder = "auto"
 left_hand_drive = true
 # Optional paired PEM files for a custom AA accessory identity:
 # certificate = "/opt/navbridge/config/headunit.crt"

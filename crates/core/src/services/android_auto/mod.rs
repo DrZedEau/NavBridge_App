@@ -10,7 +10,7 @@ mod tls;
 mod transport;
 mod usb;
 pub mod wireless;
-use crate::config::{AndroidAutoConfig, AudioConfig};
+use crate::config::{AndroidAutoConfig, AudioConfig, DecoderChoice};
 use crate::services::{
     audio::AudioPipeline,
     gnss::{Fix, GnssUpdate},
@@ -427,8 +427,9 @@ fn runner(
         );
         thread::sleep(Duration::from_secs(1));
     }
-    let video = VideoPipeline::start(VIDEO_FRAME_PATH)?;
-    state.write().unwrap().projection.decoder = video.decoder().into();
+    let video = VideoPipeline::start(VIDEO_FRAME_PATH, config.decoder == DecoderChoice::Auto)?;
+    video.decoder_changed();
+    state.write().unwrap().projection.decoder = video.decoder();
     let audio = AudioPipeline::start(&audio, inbox.wake.clone())
         .map_err(|e| format!("start audio workers: {e}"))?;
     let mut rejected = usb::Rejected::default();
@@ -516,6 +517,9 @@ fn runner(
                     }
                 }
                 session.tick()?;
+                if video.decoder_changed() {
+                    state.write().unwrap().projection.decoder = video.decoder();
+                }
                 for captured in audio.outgoing() {
                     session.microphone(&captured.bytes, clock.elapsed().as_micros() as u64)?;
                 }

@@ -42,6 +42,7 @@ impl CoreConfig {
 pub struct AndroidAutoConfig {
     pub dpi: u32,
     pub fps: u32,
+    pub decoder: DecoderChoice,
     pub left_hand_drive: bool,
     pub certificate: Option<String>,
     pub private_key: Option<String>,
@@ -54,12 +55,22 @@ impl Default for AndroidAutoConfig {
         Self {
             dpi: MEDIA_DPI,
             fps: 30,
+            decoder: DecoderChoice::Auto,
             left_hand_drive: true,
             certificate: None,
             private_key: None,
             head_unit_server: None,
         }
     }
+}
+/// Which H.264 decoder shows the projection.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DecoderChoice {
+    /// The board's hardware decoder (Pi 4 / CM4), else FFmpeg's software one.
+    #[default]
+    Auto,
+    Software,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -100,8 +111,12 @@ mod tests {
     fn shipped_config_parses_and_unknown_keys_are_rejected() {
         let c: CoreConfig = toml::from_str(include_str!("../../../config/core.toml")).unwrap();
         assert_eq!(c.android_auto.fps, 60);
+        assert_eq!(c.android_auto.decoder, DecoderChoice::Auto);
         assert!(c.ibus.enabled);
         assert_eq!(c.ibus.device, IbusConfig::default().device);
+        let c: CoreConfig = toml::from_str("[android_auto]\ndecoder = \"software\"").unwrap();
+        assert_eq!(c.android_auto.decoder, DecoderChoice::Software);
+        assert!(toml::from_str::<CoreConfig>("[android_auto]\ndecoder = \"gpu\"").is_err());
         let c: CoreConfig =
             toml::from_str("[android_auto]\nhead_unit_server = \"127.0.0.1:5277\"").unwrap();
         assert_eq!(
