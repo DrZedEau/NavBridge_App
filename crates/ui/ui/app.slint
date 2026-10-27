@@ -198,6 +198,9 @@ export component AppWindow inherits Window {
     in property <int> screen: 0;
     // Menu tiles: 0 Phone, 1 Settings, 2 System.
     in property <int> menu-index: 0;
+    // Drawn twice as large (frontend.toml's scale = 2): icons come from their
+    // 2x files, so they stay sharp.
+    in property <bool> double-size: false;
     in property <bool> core-connected: false;
     in property <LedState> bt-led: LedState.off;
     in property <LedState> wifi-led: LedState.off;
@@ -304,9 +307,9 @@ export component AppWindow inherits Window {
         }
 
         for tile[index] in [
-            { label: "Phone", icon: @image-url("icons/phone.png") },
-            { label: "Settings", icon: @image-url("icons/settings.png") },
-            { label: "System", icon: @image-url("icons/system.png") },
+            { label: "Phone", icon: root.double-size ? @image-url("icons/phone@2x.png") : @image-url("icons/phone.png") },
+            { label: "Settings", icon: root.double-size ? @image-url("icons/settings@2x.png") : @image-url("icons/settings.png") },
+            { label: "System", icon: root.double-size ? @image-url("icons/system@2x.png") : @image-url("icons/system.png") },
         ]: MenuTile {
             x: 12px + index * 132px;
             y: 58px;

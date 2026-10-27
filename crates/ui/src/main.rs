@@ -149,6 +149,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let ui = AppWindow::new()?;
     ui.window().set_fullscreen(ui_config.fullscreen);
+    ui.set_double_size(ui_config.scale > 1);
 
     let state = Rc::new(RefCell::new(UiState {
         frame_size,
@@ -1942,19 +1943,33 @@ mod preview {
             state.snapshot.wireless.enabled = !matches!(name, "settings-fps" | "phone-off");
             state.snapshot.bluetooth.pairing = name == "phone";
             render_state(&ui, &state);
-            ui.set_clock("14:05".into());
-            ui.window().request_redraw();
-            let mut pixels = vec![slint::Rgb8Pixel::default(); (UI_WIDTH * UI_HEIGHT) as usize];
-            window.draw_if_needed(|renderer| {
-                renderer.render(&mut pixels, UI_WIDTH as usize);
-            });
-            let mut image = format!("P6\n{UI_WIDTH} {UI_HEIGHT}\n255\n").into_bytes();
-            for pixel in &pixels {
-                image.extend_from_slice(&[pixel.r, pixel.g, pixel.b]);
-            }
-            let path = format!("/tmp/navbridge-{name}.ppm");
-            std::fs::write(&path, image).unwrap();
-            println!("{path}");
+            capture(&ui, &window, name, 1);
         }
+        // The menu as a PC window draws it at frontend.toml's scale = 2.
+        window
+            .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged { scale_factor: 2.0 });
+        window.set_size(slint::PhysicalSize::new(UI_WIDTH * 2, UI_HEIGHT * 2));
+        ui.set_double_size(true);
+        state.screen = Screen::Menu;
+        render_state(&ui, &state);
+        capture(&ui, &window, "menu-800x480", 2);
+    }
+
+    /// Draws the window, `scale` times the UI's size, into /tmp/navbridge-NAME.ppm.
+    fn capture(ui: &AppWindow, window: &MinimalSoftwareWindow, name: &str, scale: u32) {
+        let (width, height) = (UI_WIDTH * scale, UI_HEIGHT * scale);
+        ui.set_clock("14:05".into());
+        ui.window().request_redraw();
+        let mut pixels = vec![slint::Rgb8Pixel::default(); (width * height) as usize];
+        window.draw_if_needed(|renderer| {
+            renderer.render(&mut pixels, width as usize);
+        });
+        let mut image = format!("P6\n{width} {height}\n255\n").into_bytes();
+        for pixel in &pixels {
+            image.extend_from_slice(&[pixel.r, pixel.g, pixel.b]);
+        }
+        let path = format!("/tmp/navbridge-{name}.ppm");
+        std::fs::write(&path, image).unwrap();
+        println!("{path}");
     }
 }
