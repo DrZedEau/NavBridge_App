@@ -18,6 +18,7 @@ use navbridge_common::{
 use tracing::{debug, info, warn};
 
 const RGBA_BYTES_PER_PIXEL: usize = 4;
+#[cfg(test)]
 const FRAME_BYTES: usize = UI_WIDTH as usize * UI_HEIGHT as usize * RGBA_BYTES_PER_PIXEL;
 const VIDEO_QUEUE_DEPTH: usize = 12;
 const MAX_CODEC_CONFIG_BYTES: usize = 64 * 1024;
@@ -78,6 +79,37 @@ pub struct VideoPipeline {
     decoder: DecoderInfo,
 }
 
+/// The size frames are published at, which the UI chooses: the panel's
+/// 400x240, or Android Auto's own 800x480 for a UI drawn twice as large on a
+/// PC. It can change while video plays.
+#[derive(Clone)]
+pub struct FrameSize(Arc<AtomicU64>);
+
+impl Default for FrameSize {
+    fn default() -> Self {
+        Self(Arc::new(AtomicU64::new(Self::pack(UI_WIDTH, UI_HEIGHT))))
+    }
+}
+
+impl FrameSize {
+    /// The sizes a UI can ask for; any other is refused.
+    pub const CHOICES: [(u32, u32); 2] = [(UI_WIDTH, UI_HEIGHT), (MEDIA_WIDTH, MEDIA_HEIGHT)];
+
+    fn pack(width: u32, height: u32) -> u64 {
+        u64::from(width) << 32 | u64::from(height)
+    }
+
+    /// Returns whether the size changed.
+    pub fn set(&self, width: u32, height: u32) -> bool {
+        self.0.swap(Self::pack(width, height), Ordering::Relaxed) != Self::pack(width, height)
+    }
+
+    pub fn get(&self) -> (u32, u32) {
+        let packed = self.0.load(Ordering::Relaxed);
+        ((packed >> 32) as u32, packed as u32)
+    }
+}
+
 /// The decoder in use, as the System page shows it, shared with the decoder
 /// thread, which can change it.
 #[derive(Clone, Default)]
@@ -90,7 +122,12 @@ struct DecoderInfo {
 
 impl VideoPipeline {
     /// `hardware`: try a hardware decoder first; core.toml can turn it off.
-    pub fn start(frame_path: impl AsRef<Path>, hardware: bool) -> Result<Self, String> {
+    /// Frames are published at `size`.
+    pub fn start(
+        frame_path: impl AsRef<Path>,
+        hardware: bool,
+        size: FrameSize,
+    ) -> Result<Self, String> {
         let frame_path = frame_path.as_ref().to_path_buf();
         let counters = VideoCounters::default();
         let _ = fs::remove_file(&frame_path);
@@ -124,6 +161,7 @@ impl VideoPipeline {
                     Arc::clone(&worker_counters.decoded),
                     candidates,
                     worker_decoder,
+                    size,
                 ) {
                     Ok(engine) => {
                         let _ = ready_tx.send(Ok(()));
@@ -192,7 +230,6 @@ impl VideoPipeline {
         info!(
             output = %frame_path.display(),
             decoder = %decoder.name.lock().unwrap(),
-            display = %format!("{}x{} RGBA", UI_WIDTH, UI_HEIGHT),
             "projection decoder started"
         );
 
@@ -309,6 +346,7 @@ struct DecoderEngine {
     codec_config: Vec<u8>,
     /// The stream's last SPS/PPS, for a decoder that takes over mid-stream.
     last_config: Vec<u8>,
+    size: FrameSize,
     scaler: Option<Scaler>,
     decoded_count: Arc<AtomicU64>,
     frame_path: PathBuf,
@@ -323,6 +361,7 @@ impl DecoderEngine {
         decoded_count: Arc<AtomicU64>,
         hardware: Vec<&'static str>,
         info: DecoderInfo,
+        size: FrameSize,
     ) -> Result<Self, String> {
         let (decoder, on_hardware) = open_decoder(&hardware, &info)?;
         let mut engine = Self {
@@ -333,6 +372,7 @@ impl DecoderEngine {
             info,
             codec_config: Vec::new(),
             last_config: Vec::new(),
+            size,
             scaler: None,
             decoded_count,
             frame_path,
@@ -409,12 +449,15 @@ impl DecoderEngine {
             self.pending_pictures = 0;
 
             normalize_full_range(&mut decoded);
+            let (width, height) = self.size.get();
             let spec = (
                 decoded.format(),
                 decoded.width(),
                 decoded.height(),
                 decoded.color_range(),
                 decoded.color_space(),
+                width,
+                height,
             );
             let rebuild = self.scaler.as_ref().map(|s| s.spec != spec).unwrap_or(true);
             if rebuild {
@@ -423,8 +466,8 @@ impl DecoderEngine {
                     decoded.width(),
                     decoded.height(),
                     Pixel::RGBA,
-                    UI_WIDTH,
-                    UI_HEIGHT,
+                    width,
+                    height,
                     ScalingFlags::LANCZOS
                         | ScalingFlags::ACCURATE_RND
                         | ScalingFlags::FULL_CHR_H_INT,
@@ -439,11 +482,12 @@ impl DecoderEngine {
                     source_fps = ?self.decoder.frame_rate(),
                     source_range = ?decoded.color_range(),
                     source_colorspace = ?decoded.color_space(),
+                    output = %format!("{width}x{height} RGBA"),
                     "projection video format established"
                 );
             }
 
-            let mut rgba = ffmpeg::frame::Video::new(Pixel::RGBA, UI_WIDTH, UI_HEIGHT);
+            let mut rgba = ffmpeg::frame::Video::new(Pixel::RGBA, width, height);
             self.scaler
                 .as_mut()
                 .expect("scaler was initialized")
@@ -510,7 +554,8 @@ fn configure_colors(
 }
 
 struct Scaler {
-    spec: (Pixel, u32, u32, Range, Space),
+    /// The source's format, size and colours, and the output size.
+    spec: (Pixel, u32, u32, Range, Space, u32, u32),
     context: ScalingContext,
 }
 
@@ -618,10 +663,11 @@ fn publish_frame(
     sequence: u64,
     frame: &ffmpeg::frame::Video,
 ) -> Result<(), std::io::Error> {
-    let row_bytes = UI_WIDTH as usize * RGBA_BYTES_PER_PIXEL;
+    let (width, height) = (frame.width(), frame.height());
+    let row_bytes = width as usize * RGBA_BYTES_PER_PIXEL;
     let stride = frame.stride(0);
     let data = frame.data(0);
-    if stride < row_bytes || data.len() < stride.saturating_mul(UI_HEIGHT as usize) {
+    if stride < row_bytes || data.len() < stride.saturating_mul(height as usize) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "invalid RGBA stride or buffer",
@@ -630,14 +676,14 @@ fn publish_frame(
     let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
     let mut file = File::create(&tmp)?;
     file.write_all(&VIDEO_FRAME_MAGIC)?;
-    file.write_all(&UI_WIDTH.to_le_bytes())?;
-    file.write_all(&UI_HEIGHT.to_le_bytes())?;
+    file.write_all(&width.to_le_bytes())?;
+    file.write_all(&height.to_le_bytes())?;
     file.write_all(&sequence.to_le_bytes())?;
     debug_assert_eq!(VIDEO_FRAME_HEADER_SIZE, 20);
     if stride == row_bytes {
-        file.write_all(&data[..FRAME_BYTES])?;
+        file.write_all(&data[..row_bytes * height as usize])?;
     } else {
-        for row in data.chunks_exact(stride).take(UI_HEIGHT as usize) {
+        for row in data.chunks_exact(stride).take(height as usize) {
             file.write_all(&row[..row_bytes])?;
         }
     }
@@ -768,7 +814,46 @@ mod tests {
     }
 
     fn software_engine(path: PathBuf, count: Arc<AtomicU64>) -> DecoderEngine {
-        DecoderEngine::new(path, count, Vec::new(), DecoderInfo::default()).unwrap()
+        DecoderEngine::new(
+            path,
+            count,
+            Vec::new(),
+            DecoderInfo::default(),
+            FrameSize::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn frames_follow_the_size_the_ui_asks_for() {
+        let path = std::env::temp_dir().join(format!(
+            "navbridge-frame-size-test-{}.rgba",
+            std::process::id()
+        ));
+        let size = FrameSize::default();
+        assert_eq!(size.get(), (400, 240));
+        let mut engine = DecoderEngine::new(
+            path.clone(),
+            Arc::new(AtomicU64::new(0)),
+            Vec::new(),
+            DecoderInfo::default(),
+            size.clone(),
+        )
+        .unwrap();
+        let header = |path: &Path| {
+            let frame = fs::read(path).unwrap();
+            let number = |at: usize| u32::from_le_bytes(frame[at..at + 4].try_into().unwrap());
+            (number(4), number(8), frame.len() - VIDEO_FRAME_HEADER_SIZE)
+        };
+        let mut units = access_units().into_iter();
+        engine.push(units.next().unwrap()).unwrap();
+        assert_eq!(header(&path), (400, 240, 400 * 240 * 4));
+        // Twice as large, mid-stream: Android Auto's own 800x480.
+        assert!(size.set(800, 480));
+        assert!(!size.set(800, 480), "unchanged");
+        engine.push(units.next().unwrap()).unwrap();
+        assert_eq!(header(&path), (800, 480, 800 * 480 * 4));
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
@@ -784,6 +869,7 @@ mod tests {
             Arc::clone(&count),
             vec!["no_such_decoder"],
             info.clone(),
+            FrameSize::default(),
         )
         .unwrap();
         assert!(!engine.on_hardware);
@@ -807,9 +893,14 @@ mod tests {
         let info = DecoderInfo::default();
         // FFmpeg's HEVC decoder stands in for a hardware one that opens but
         // cannot decode the stream.
-        let mut engine =
-            DecoderEngine::new(path.clone(), Arc::clone(&count), vec!["hevc"], info.clone())
-                .unwrap();
+        let mut engine = DecoderEngine::new(
+            path.clone(),
+            Arc::clone(&count),
+            vec!["hevc"],
+            info.clone(),
+            FrameSize::default(),
+        )
+        .unwrap();
         assert!(engine.on_hardware);
         assert!(info.name.lock().unwrap().ends_with(" hevc (hardware)"));
         // As Android Auto sends it: the SPS/PPS alone, then the pictures. The
@@ -929,7 +1020,7 @@ mod tests {
             std::process::id()
         ));
         // Software, as this test expects each frame before the next unit.
-        let pipeline = VideoPipeline::start(&path, false).unwrap();
+        let pipeline = VideoPipeline::start(&path, false, FrameSize::default()).unwrap();
         let counters = pipeline.counters.clone();
         // One unit at a time, so the shallow queue never overflows.
         for (index, unit) in access_units().into_iter().enumerate() {
@@ -992,21 +1083,28 @@ mod tests {
 
     #[test]
     fn publication_writes_rgba_rows_without_stride_padding() {
-        // The extra source column guarantees padding beyond the display width.
-        let mut frame = ffmpeg::frame::Video::new(Pixel::RGBA, UI_WIDTH + 1, UI_HEIGHT);
+        // An odd width guarantees stride padding after each row.
+        let (width, height) = (UI_WIDTH as usize + 1, UI_HEIGHT as usize);
+        let mut frame = ffmpeg::frame::Video::new(Pixel::RGBA, width as u32, height as u32);
         let stride = frame.stride(0);
+        assert!(stride > width * 4);
         frame.data_mut(0).fill(0xee);
-        for y in 0..UI_HEIGHT as usize {
-            frame.data_mut(0)[y * stride..y * stride + UI_WIDTH as usize * 4].fill(y as u8);
+        for y in 0..height {
+            frame.data_mut(0)[y * stride..y * stride + width * 4].fill(y as u8);
         }
-        let expected = tightly_pack_rgba(&frame).unwrap();
         let path =
             std::env::temp_dir().join(format!("navbridge-stride-test-{}.rgba", std::process::id()));
         publish_frame(&path, 17, &frame).unwrap();
         let published = fs::read(&path).unwrap();
         fs::remove_file(path).unwrap();
+        assert_eq!(&published[4..8], &(width as u32).to_le_bytes());
+        assert_eq!(&published[8..12], &(height as u32).to_le_bytes());
         assert_eq!(&published[12..20], &17u64.to_le_bytes());
-        assert_eq!(&published[VIDEO_FRAME_HEADER_SIZE..], expected.as_slice());
+        let pixels = &published[VIDEO_FRAME_HEADER_SIZE..];
+        assert_eq!(pixels.len(), width * height * 4);
+        for (y, row) in pixels.chunks_exact(width * 4).enumerate() {
+            assert!(row.iter().all(|&b| b == y as u8), "row {y} has padding");
+        }
     }
 
     #[test]

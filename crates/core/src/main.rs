@@ -82,6 +82,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for command in server.read_commands() {
             match command {
                 ClientCommand::Hello { client } => info!(%client, "IPC hello"),
+                // The size the UI shows projection frames at.
+                ClientCommand::SetFrameSize { width, height } => {
+                    projection.set_frame_size(width, height)
+                }
                 ClientCommand::RequestSnapshot => next_snapshot = Instant::now(),
                 ClientCommand::SetNightMode { enabled } => projection.set_night_mode(enabled),
                 ClientCommand::SetParkingBrake { engaged } => {

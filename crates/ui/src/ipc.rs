@@ -41,9 +41,12 @@ impl EventSender {
     }
 }
 
+/// `video_size` is the size the UI shows projection frames at, which the core
+/// is asked to publish them in.
 pub fn spawn(
     socket_path: String,
     reconnect_ms: u64,
+    video_size: (u32, u32),
     wake: impl Fn() + Send + Sync + 'static,
 ) -> (Sender<ClientCommand>, Receiver<IpcEvent>) {
     let (command_tx, command_rx) = mpsc::channel::<ClientCommand>();
@@ -55,7 +58,7 @@ pub fn spawn(
 
     thread::spawn(move || loop {
         let reason = match UnixStream::connect(&socket_path) {
-            Ok(stream) => serve(stream, &command_rx, &events),
+            Ok(stream) => serve(stream, video_size, &command_rx, &events),
             Err(err) => err.to_string(),
         };
         if !events.send(IpcEvent::Disconnected(reason)) {
@@ -72,6 +75,7 @@ pub fn spawn(
 /// connection ended, once no more events can arrive from it.
 fn serve(
     mut stream: UnixStream,
+    (video_width, video_height): (u32, u32),
     commands: &Receiver<ClientCommand>,
     events: &EventSender,
 ) -> String {
@@ -87,8 +91,13 @@ fn serve(
     let hello = ClientCommand::Hello {
         client: "navbridge-ui".into(),
     };
-    let mut written =
-        send(&mut stream, &hello).and_then(|()| send(&mut stream, &ClientCommand::RequestSnapshot));
+    let size = ClientCommand::SetFrameSize {
+        width: video_width,
+        height: video_height,
+    };
+    let mut written = send(&mut stream, &hello)
+        .and_then(|()| send(&mut stream, &size))
+        .and_then(|()| send(&mut stream, &ClientCommand::RequestSnapshot));
     while written.is_ok() && !reader.is_finished() {
         match commands.recv_timeout(CLOSE_CHECK) {
             Ok(command) => written = send(&mut stream, &command),
@@ -233,10 +242,15 @@ mod tests {
         command_tx
             .send(ClientCommand::SetNightMode { enabled: true })
             .unwrap();
-        let serving = thread::spawn(move || serve(ui, &command_rx, &events));
+        let serving = thread::spawn(move || serve(ui, (400, 240), &command_rx, &events));
         // The core has sent nothing yet, so the reader is blocked throughout.
         let mut lines = std::io::BufReader::new(core.try_clone().unwrap()).lines();
-        for kind in ["hello", "request_snapshot", "set_night_mode"] {
+        for kind in [
+            "hello",
+            "set_frame_size",
+            "request_snapshot",
+            "set_night_mode",
+        ] {
             let line = lines.next().unwrap().unwrap();
             assert!(line.contains(&format!(r#""type":"{kind}""#)), "{line}");
         }

@@ -11,6 +11,9 @@ pub struct UiConfig {
     pub socket_path: String,
     pub fullscreen: bool,
     pub reconnect_ms: u64,
+    /// 1 for the panel's 400x240; 2 draws the UI at 800x480 on a PC, with
+    /// Android Auto's video at its full size.
+    pub scale: u32,
 }
 
 impl Default for UiConfig {
@@ -19,6 +22,7 @@ impl Default for UiConfig {
             socket_path: DEFAULT_SOCKET_PATH.into(),
             fullscreen: false,
             reconnect_ms: 1_000,
+            scale: 1,
         }
     }
 }
@@ -26,7 +30,11 @@ impl Default for UiConfig {
 impl UiConfig {
     pub fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let raw = fs::read_to_string(path)?;
-        Ok(toml::from_str(&raw)?)
+        let config: Self = toml::from_str(&raw)?;
+        if !matches!(config.scale, 1 | 2) {
+            return Err(format!("scale must be 1 or 2, not {}", config.scale).into());
+        }
+        Ok(config)
     }
 }
 

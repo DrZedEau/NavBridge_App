@@ -14,7 +14,7 @@ use crate::config::{AndroidAutoConfig, AudioConfig, DecoderChoice};
 use crate::services::{
     audio::AudioPipeline,
     gnss::{Fix, GnssUpdate},
-    media::{PushResult, VideoPipeline},
+    media::{FrameSize, PushResult, VideoPipeline},
     wifi::HOTSPOT_IP,
 };
 use crate::settings::Settings;
@@ -116,6 +116,7 @@ impl EventReceiver {
 pub struct ProjectionService {
     state: Arc<RwLock<State>>,
     settings: Arc<Settings>,
+    frame_size: FrameSize,
     tx: SyncSender<Command>,
     wake: SyncSender<()>,
     events: EventReceiver,
@@ -153,8 +154,10 @@ impl ProjectionService {
             woken,
         };
         let (s, end) = (state.clone(), stop.clone());
+        let frame_size = FrameSize::default();
+        let video_size = frame_size.clone();
         let worker = thread::spawn(move || {
-            if let Err(e) = runner(config, audio, s.clone(), inbox, event_tx, end) {
+            if let Err(e) = runner(config, audio, video_size, s.clone(), inbox, event_tx, end) {
                 warn!(%e,"wired AA service stopped");
                 let mut state = s.write().unwrap();
                 state.projection.phase = ProjectionPhase::Error;
@@ -164,6 +167,7 @@ impl ProjectionService {
         Ok(Self {
             state,
             settings,
+            frame_size,
             tx,
             wake,
             events,
@@ -188,6 +192,20 @@ impl ProjectionService {
     pub fn set_dpi(&self, dpi: u32) {
         self.state.write().unwrap().projection.dpi = dpi;
         self.settings.update(|saved| saved.dpi = Some(dpi));
+    }
+    /// The size the UI shows projection frames at: 400x240, or 800x480 for a
+    /// UI drawn twice as large.
+    pub fn set_frame_size(&self, width: u32, height: u32) {
+        if !FrameSize::CHOICES.contains(&(width, height)) {
+            warn!(
+                width,
+                height, "projection frame size not offered; keeping it"
+            );
+            return;
+        }
+        if self.frame_size.set(width, height) {
+            info!(width, height, "projection frames at the UI's size");
+        }
     }
     /// For the next phone too: 30 or 60 frames a second.
     pub fn set_fps(&self, fps: u32) {
@@ -411,6 +429,7 @@ fn listen_before_address(address: SocketAddr) -> io::Result<TcpListener> {
 fn runner(
     config: AndroidAutoConfig,
     audio: AudioConfig,
+    frame_size: FrameSize,
     state: Arc<RwLock<State>>,
     inbox: Inbox,
     events: EventSender,
@@ -427,7 +446,11 @@ fn runner(
         );
         thread::sleep(Duration::from_secs(1));
     }
-    let video = VideoPipeline::start(VIDEO_FRAME_PATH, config.decoder == DecoderChoice::Auto)?;
+    let video = VideoPipeline::start(
+        VIDEO_FRAME_PATH,
+        config.decoder == DecoderChoice::Auto,
+        frame_size,
+    )?;
     video.decoder_changed();
     state.write().unwrap().projection.decoder = video.decoder();
     let audio = AudioPipeline::start(&audio, inbox.wake.clone())

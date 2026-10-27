@@ -1,4 +1,7 @@
-# Slint frontend configuration. The UI canvas is always 400x240.
+# Slint frontend configuration. The UI is laid out at 400x240.
 socket_path = "/run/navbridge/core.sock"
 fullscreen = false
 reconnect_ms = 1000
+# 1 for the panel. 2 draws the UI at 800x480, with Android Auto's video at its
+# full size, for testing in a PC window (./scripts/run_desktop.sh --800x480).
+scale = 1

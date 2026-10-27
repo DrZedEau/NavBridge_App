@@ -261,6 +261,7 @@ pub enum PhoneAction {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientCommand {
     Hello { client: String },
+    SetFrameSize { width: u32, height: u32 },
     RequestSnapshot,
     SetNightMode { enabled: bool },
     SetParkingBrake { engaged: bool },

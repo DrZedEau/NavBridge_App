@@ -74,7 +74,10 @@ and the I-Bus board, which ModemManager then leaves alone. With stock FFmpeg,
 `build_kms.sh` builds the UI with both the window (`navbridge-ui/desktop`) and
 the KMS backend. `run_desktop.sh` runs both as your account and sends sound
 through the desktop's default device; `--codec` uses core.toml's USB codec
-instead. A phone plugged into the PC starts Android Auto as on the Pi. Settings
+instead. `--800x480` draws the UI twice as large, at 800x480, and the core then
+publishes Android Auto's video at its full 800x480 instead of downscaling it
+(frontend.toml's `scale = 2`; the panel keeps `scale = 1`). A phone plugged into
+the PC starts Android Auto as on the Pi. Settings
 cannot be kept there, as `/var/lib/navbridge` belongs to root: changes last
 until the core stops, with a warning in its log. Wireless mode switches `wlan0`,
 which most PCs do not have. `run_kms.sh` refuses to start inside the desktop,

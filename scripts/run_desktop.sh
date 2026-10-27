@@ -3,11 +3,12 @@
 # both as your account. On the Pi's display itself, use run_kms.sh.
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-CODEC=0
+CODEC=0 SCALE=1
 for arg in "$@"; do
   case $arg in
-    --help|-h) echo "Usage: $0 [--codec] (runs the built core and UI in a window; --codec plays and records through the USB codec of config/core.toml instead of the desktop's default sound device)"; exit 0 ;;
+    --help|-h) echo "Usage: $0 [--codec] [--800x480] (runs the built core and UI in a window; --codec plays and records through the USB codec of config/core.toml instead of the desktop's default sound device; --800x480 draws the UI twice as large, with Android Auto's video at its full size)"; exit 0 ;;
     --codec) CODEC=1 ;;
+    --800x480) SCALE=2 ;;
     *) echo "Unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -45,7 +46,8 @@ fi
 sed -e "s|^socket_path = .*|socket_path = \"$RUN_DIR/core.sock\"|" "${AUDIO[@]}" \
   "$ROOT/config/core.toml" > "$RUN_DIR/core.toml"
 sed -e "s|^socket_path = .*|socket_path = \"$RUN_DIR/core.sock\"|" \
-  -e 's|^fullscreen = .*|fullscreen = false|' "$ROOT/config/frontend.toml" > "$RUN_DIR/frontend.toml"
+  -e 's|^fullscreen = .*|fullscreen = false|' -e "s|^scale = .*|scale = $SCALE|" \
+  "$ROOT/config/frontend.toml" > "$RUN_DIR/frontend.toml"
 export SLINT_BACKEND=${SLINT_BACKEND:-winit-software}
 "$ROOT/target/release/navbridge-core" --config "$RUN_DIR/core.toml" & CORE_PID=$!
 "$ROOT/target/release/navbridge-ui" --config "$RUN_DIR/frontend.toml" --keyboard "$ROOT/config/keyboard.toml" & UI_PID=$!

@@ -80,6 +80,9 @@ struct UiState {
     video: Option<VideoSettings>,
     held_navigation: Option<NavigationKey>,
     video_sequence: std::cell::Cell<Option<u64>>,
+    /// The size projection frames come in: the panel's 400x240, or 800x480
+    /// for a UI drawn twice as large.
+    frame_size: (u32, u32),
 }
 
 impl Default for UiState {
@@ -96,6 +99,7 @@ impl Default for UiState {
             video: None,
             held_navigation: None,
             video_sequence: std::cell::Cell::new(None),
+            frame_size: (UI_WIDTH, UI_HEIGHT),
         }
     }
 }
@@ -136,10 +140,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let keyboard_config = KeyboardConfig::load(&keyboard_path)?;
     let keymap = Rc::new(KeyMap::new(&keyboard_config)?);
 
+    // Twice as large: the same 400x240 layout drawn at 800x480. The window
+    // reads this as it opens, before any other thread runs.
+    if ui_config.scale > 1 {
+        env::set_var("SLINT_SCALE_FACTOR", ui_config.scale.to_string());
+    }
+    let frame_size = (UI_WIDTH * ui_config.scale, UI_HEIGHT * ui_config.scale);
+
     let ui = AppWindow::new()?;
     ui.window().set_fullscreen(ui_config.fullscreen);
 
-    let state = Rc::new(RefCell::new(UiState::default()));
+    let state = Rc::new(RefCell::new(UiState {
+        frame_size,
+        ..UiState::default()
+    }));
     render_state(&ui, &state.borrow());
 
     // The menu's clock, checked every second and redrawn when the minute changes.
@@ -165,6 +179,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (command_tx, event_rx) = ipc::spawn(
         ui_config.socket_path.clone(),
         ui_config.reconnect_ms,
+        frame_size,
         move || {
             let _ = weak.upgrade_in_event_loop(|ui| ui.invoke_core_message());
         },
@@ -493,7 +508,7 @@ fn render_state(ui: &AppWindow, state: &UiState) {
         let baseline = if state.screen == Screen::Phone {
             std::fs::File::open(VIDEO_FRAME_PATH)
                 .ok()
-                .and_then(|mut file| read_frame_header(&mut file).ok())
+                .and_then(|mut file| read_frame_header(&mut file, state.frame_size).ok())
         } else {
             None
         };
@@ -597,7 +612,7 @@ fn refresh_projection(ui: &AppWindow, state: &UiState) -> bool {
     // Open once: atomic replacement cannot mix a header from one frame
     // with pixels from another. Unchanged frames cost only 20 bytes.
     let result = std::fs::File::open(VIDEO_FRAME_PATH)
-        .and_then(|mut file| read_projection(&mut file, previous));
+        .and_then(|mut file| read_projection(&mut file, previous, state.frame_size));
     match result {
         Ok(Some((sequence, pixels))) => {
             state.video_sequence.set(Some(sequence));
@@ -983,12 +998,13 @@ fn usb_devices(snapshot: &AppSnapshot, core_connected: bool) -> (String, String,
     (phone, gnss, ibus)
 }
 
-fn read_frame_header(reader: &mut impl Read) -> io::Result<u64> {
+/// A frame's sequence number, if it is a projection frame of `size`.
+fn read_frame_header(reader: &mut impl Read, size: (u32, u32)) -> io::Result<u64> {
     let mut header = [0u8; VIDEO_FRAME_HEADER_SIZE];
     reader.read_exact(&mut header)?;
     let width = u32::from_le_bytes(header[4..8].try_into().unwrap());
     let height = u32::from_le_bytes(header[8..12].try_into().unwrap());
-    if header[..4] != VIDEO_FRAME_MAGIC || (width, height) != (UI_WIDTH, UI_HEIGHT) {
+    if header[..4] != VIDEO_FRAME_MAGIC || (width, height) != size {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid video header",
@@ -1000,12 +1016,13 @@ fn read_frame_header(reader: &mut impl Read) -> io::Result<u64> {
 fn read_projection(
     reader: &mut impl Read,
     previous: Option<u64>,
+    size: (u32, u32),
 ) -> io::Result<Option<(u64, SharedPixelBuffer<Rgba8Pixel>)>> {
-    let sequence = read_frame_header(reader)?;
+    let sequence = read_frame_header(reader, size)?;
     if previous == Some(sequence) {
         return Ok(None);
     }
-    let mut pixels = SharedPixelBuffer::<Rgba8Pixel>::new(UI_WIDTH, UI_HEIGHT);
+    let mut pixels = SharedPixelBuffer::<Rgba8Pixel>::new(size.0, size.1);
     reader.read_exact(pixels.make_mut_bytes())?;
     if reader.read(&mut [0u8; 1])? != 0 {
         return Err(io::Error::new(
@@ -1738,24 +1755,31 @@ mod frame_read_tests {
         ]
         .concat()
     }
+    const PANEL: (u32, u32) = (UI_WIDTH, UI_HEIGHT);
     #[test]
     fn unchanged_frame_does_not_read_or_allocate_pixels() {
         let mut reader = io::Cursor::new(header());
-        assert!(read_projection(&mut reader, Some(42)).unwrap().is_none());
+        assert!(read_projection(&mut reader, Some(42), PANEL)
+            .unwrap()
+            .is_none());
         assert_eq!(reader.position(), VIDEO_FRAME_HEADER_SIZE as u64);
     }
     #[test]
     fn new_frame_loads_directly_and_rejects_bad_lengths_and_geometry() {
         let mut data = header();
-        assert!(read_projection(&mut &data[..], None).is_err());
+        assert!(read_projection(&mut &data[..], None, PANEL).is_err());
         data.extend(vec![123; (UI_WIDTH * UI_HEIGHT * 4) as usize]);
-        let (sequence, pixels) = read_projection(&mut &data[..], None).unwrap().unwrap();
+        let (sequence, pixels) = read_projection(&mut &data[..], None, PANEL)
+            .unwrap()
+            .unwrap();
         assert_eq!(sequence, 42);
         assert!(pixels.as_bytes().iter().all(|&b| b == 123));
+        // A UI drawn twice as large takes only frames of its size.
+        assert!(read_projection(&mut &data[..], None, (800, 480)).is_err());
         data.push(0);
-        assert!(read_projection(&mut &data[..], None).is_err());
+        assert!(read_projection(&mut &data[..], None, PANEL).is_err());
         data[4] ^= 1;
-        assert!(read_projection(&mut &data[..], Some(42)).is_err());
+        assert!(read_projection(&mut &data[..], Some(42), PANEL).is_err());
     }
 }
 
