@@ -164,7 +164,9 @@ accessories.
 
 ## Keyboard
 
-Bindings live in `config/keyboard.toml`.
+Bindings live in `config/keyboard.toml`. The keyboard acts while the core
+reads no I-Bus, as on a PC; in the car, the car's buttons do (see The car's
+buttons).
 
 | Key | Action |
 | --- | --- |
@@ -319,6 +321,55 @@ and how many frames it carried; damaged frames point to a wiring or interference
 With `RUST_LOG=debug`, the core logs each reading that changes and, once each,
 the kinds of message it does not decode, to find out what else the car sends.
 The systemd service reads the port through the `dialout` group.
+
+### The car's buttons
+
+While the core reads the I-Bus, NavBridge acts on the car's buttons itself:
+the radio panel's presets and arrows, its knob, and the steering wheel's
+buttons. The core reads them from the I-Bus frames, and the UI acts on each as
+on the key of the same action. `[ibus.buttons]` in core.toml says what each
+button does, with the action names of keyboard.toml; the shipped table is the
+keys the board's firmware types. The panel's select key is left out: the
+firmware typed Tab, which NavBridge no longer uses.
+
+- A button acts when it is pressed, once, also for buttons the UI passes to
+  Android Auto; holding it or letting it go does nothing more for now.
+- Each detent of the knob is one Left or Right.
+- Telephone and the radio's own buttons switch the screen on the board; they
+  stay unmapped.
+
+The keyboard acts only while the core reads no I-Bus, as on a PC without the
+board: in the car, the board's firmware still types keys for the same buttons,
+which would act twice.
+
+The board's firmware is to:
+
+- stop typing keys when NavBridge sends the line `KEYS OFF` (on opening the
+  port), until the port closes, so that it types them again whenever
+  NavBridge stops;
+- pass frames on only while NavBridge's screen shows, so that the buttons are
+  the radio's while the BMW navigation shows, except the cluster's ignition
+  off (`80 04 BF 11 00`), which it always passes on (see Shutdown);
+- not drop frames while the port is open.
+
+Until it does, the buttons also act while the BMW navigation shows. With
+`RUST_LOG=debug`, the core logs `I-Bus button` with each one it decodes,
+pressed, held or released, to check the codes in the car.
+
+### Shutdown
+
+When the cluster reports the ignition off, the core shuts the Pi down at
+once through systemd-logind, which the installer's polkit rule
+(`51-navbridge-power.rules`) lets the service's account do; position 1 (radio)
+counts as on. The core logs `ignition off`, then `shutting the Pi down: the
+ignition is off`. With `shutdown_delay_s` above 0, it waits that many seconds
+first, and turning the key back meanwhile, as for an engine restart, cancels
+it.
+`shutdown = false` in core.toml's `[ibus]` keeps the Pi on, and
+`run_desktop.sh` always sets it, so the car never shuts a PC down. The current
+board also presses the Pi's power button and cuts its power 3 seconds after
+the ignition goes off; the next board leaves the shutdown to NavBridge and keeps
+the Pi powered until it is off.
 
 ## Wireless Android Auto
 

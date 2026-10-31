@@ -1,0 +1,11 @@
+// NavBridge shuts the Pi down once the car's ignition stays off. Its service
+// runs as @USER@, outside any login session.
+polkit.addRule(function (action, subject) {
+    var allowed = [
+        "org.freedesktop.login1.power-off",
+        "org.freedesktop.login1.power-off-multiple-sessions"
+    ];
+    if (subject.user == "@USER@" && allowed.indexOf(action.id) >= 0) {
+        return polkit.Result.YES;
+    }
+});

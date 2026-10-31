@@ -31,7 +31,9 @@ bin/navbridge-ui
 config/*.toml
 packaging/*.service
 packaging/70-navbridge-android.rules
+packaging/71-navbridge-ibus.rules
 packaging/50-navbridge-wifi.rules
+packaging/51-navbridge-power.rules
 scripts/install_systemd.sh
 scripts/install_runtime_deps.sh
 release.info
@@ -65,7 +67,7 @@ Installed layout:
 
 Systemd units are installed in `/etc/systemd/system/` with the invoking account as `User` and its primary group as `Group`, including when invoked through sudo. Direct root logins are rejected. Hardware groups are assigned through the services.
 
-The installer also adds `/etc/polkit-1/rules.d/50-navbridge-wifi.rules`, which lets that account switch the Wi-Fi between the wireless Android Auto hotspot and the home network through NetworkManager. Settings that survive a restart (wireless mode, the projection's DPI, the codec's volume and microphone gain) are kept in `/var/lib/navbridge`.
+The installer also adds `/etc/polkit-1/rules.d/50-navbridge-wifi.rules`, which lets that account switch the Wi-Fi between the wireless Android Auto hotspot and the home network through NetworkManager, and `51-navbridge-power.rules`, which lets it shut the Pi down once the car's ignition stays off. Settings that survive a restart (wireless mode, the projection's DPI, the codec's volume and microphone gain) are kept in `/var/lib/navbridge`.
 
 Existing config under `/opt/navbridge/config` is preserved. For upgrades from the previous layout, existing `/etc/navbridge/*.toml` files are copied into the new directory if it has no corresponding file. Future edits belong under `/opt/navbridge/config`. Both core and frontend socket paths must be `/run/navbridge/core.sock`. Previous installed binaries and units are saved under `/var/backups/navbridge/`.
 

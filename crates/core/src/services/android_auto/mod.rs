@@ -13,6 +13,7 @@ pub mod wireless;
 use crate::config::{AndroidAutoConfig, AudioConfig, DecoderChoice};
 use crate::services::{
     audio::AudioPipeline,
+    events,
     gnss::{Fix, GnssUpdate},
     media::{FrameSize, PushResult, VideoPipeline},
     wifi::HOTSPOT_IP,
@@ -23,15 +24,12 @@ use navbridge_common::{
     UsbSnapshot, VIDEO_FRAME_PATH,
 };
 use std::{
-    io::{self, Read, Write},
+    io,
     net::{SocketAddr, TcpListener},
-    os::{
-        fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
-        unix::net::UnixStream,
-    },
+    os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, Sender, SyncSender},
+        mpsc::{self, Receiver, SyncSender},
         Arc, RwLock,
     },
     thread::{self, JoinHandle},
@@ -80,45 +78,9 @@ struct Inbox {
     wake: SyncSender<()>,
     woken: Receiver<()>,
 }
-/// Projection events for the main loop, which sleeps in poll(): each event also
-/// writes a byte that makes `woken` readable.
-struct EventSender {
-    events: Sender<ProjectionEvent>,
-    wake: UnixStream,
-}
-struct EventReceiver {
-    events: Receiver<ProjectionEvent>,
-    woken: UnixStream,
-}
-fn event_channel() -> io::Result<(EventSender, EventReceiver)> {
-    let (wake, woken) = UnixStream::pair()?;
-    wake.set_nonblocking(true)?;
-    woken.set_nonblocking(true)?;
-    let (events, receiver) = mpsc::channel();
-    Ok((
-        EventSender { events, wake },
-        EventReceiver {
-            events: receiver,
-            woken,
-        },
-    ))
-}
-impl EventSender {
-    fn send(&self, event: ProjectionEvent) -> Result<(), mpsc::SendError<ProjectionEvent>> {
-        self.events.send(event)?;
-        // A full socket is already readable, so a failed write loses nothing.
-        let _ = (&self.wake).write(&[1]);
-        Ok(())
-    }
-}
-impl EventReceiver {
-    fn take(&self) -> Vec<ProjectionEvent> {
-        // Drain first: an event sent meanwhile keeps its own wake byte.
-        let mut bytes = [0u8; 64];
-        while matches!((&self.woken).read(&mut bytes), Ok(n) if n > 0) {}
-        self.events.try_iter().collect()
-    }
-}
+/// Projection events for the main loop.
+type EventSender = events::EventSender<ProjectionEvent>;
+type EventReceiver = events::EventReceiver<ProjectionEvent>;
 pub struct ProjectionService {
     state: Arc<RwLock<State>>,
     settings: Arc<Settings>,
@@ -154,7 +116,7 @@ impl ProjectionService {
         let (tx, commands) = mpsc::sync_channel(128);
         // One pending wakeup covers everything queued before the thread runs.
         let (wake, woken) = mpsc::sync_channel(1);
-        let (event_tx, events) = event_channel()?;
+        let (event_tx, events) = events::channel()?;
         let stop = Arc::new(AtomicBool::new(false));
         let inbox = Inbox {
             commands,
@@ -276,7 +238,7 @@ impl ProjectionService {
     }
     /// Readable whenever `take_events` has something to return.
     pub fn event_fd(&self) -> BorrowedFd<'_> {
-        self.events.woken.as_fd()
+        self.events.fd()
     }
 }
 impl Drop for ProjectionService {
@@ -679,23 +641,5 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(1));
         let transport = on.accept(&wake).expect("the phone was not accepted");
         assert_eq!(transport.peer, phone.local_addr().unwrap());
-    }
-    #[test]
-    fn events_wake_the_main_loop_until_taken() {
-        let (sender, receiver) = event_channel().unwrap();
-        sender.send(ProjectionEvent::PhoneConnected).unwrap();
-        sender.send(ProjectionEvent::StreamingReady).unwrap();
-        let mut byte = [0u8; 1];
-        assert_eq!((&receiver.woken).read(&mut byte).unwrap(), 1);
-        assert_eq!(
-            receiver.take(),
-            [
-                ProjectionEvent::PhoneConnected,
-                ProjectionEvent::StreamingReady
-            ]
-        );
-        // A leftover byte would keep the descriptor readable and make poll() spin.
-        let leftover = (&receiver.woken).read(&mut byte).unwrap_err();
-        assert_eq!(leftover.kind(), io::ErrorKind::WouldBlock);
     }
 }

@@ -1,8 +1,8 @@
-//! The microcontroller's USB serial port, opened read-only: NavBridge never
-//! sends anything towards the car.
+//! The microcontroller's USB serial port. NavBridge never sends anything
+//! towards the car: only lines for the microcontroller itself.
 use std::{
     fs::{File, OpenOptions},
-    io::{self, Read},
+    io::{self, Read, Write},
     os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     path::Path,
     time::Duration,
@@ -14,6 +14,7 @@ impl Port {
     pub fn open(path: &Path) -> io::Result<Self> {
         let file = OpenOptions::new()
             .read(true)
+            .write(true)
             .custom_flags(libc::O_NOCTTY)
             .open(path)?;
         let fd = file.as_raw_fd();
@@ -36,6 +37,11 @@ impl Port {
             libc::ioctl(fd, libc::TIOCEXCL);
         }
         Ok(Self(file))
+    }
+
+    /// A line for the microcontroller, such as "KEYS OFF".
+    pub fn send_line(&mut self, line: &str) -> io::Result<()> {
+        self.0.write_all(format!("{line}\n").as_bytes())
     }
 
     /// Waits up to `limit` for bytes and returns how many arrived, perhaps

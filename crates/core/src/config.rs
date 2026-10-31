@@ -1,6 +1,7 @@
-use navbridge_common::{DEFAULT_SOCKET_PATH, MEDIA_DPI};
+use crate::services::ibus::Button;
+use navbridge_common::{InputAction, DEFAULT_SOCKET_PATH, MEDIA_DPI};
 use serde::Deserialize;
-use std::{fs, net::SocketAddr, path::Path};
+use std::{collections::BTreeMap, fs, net::SocketAddr, path::Path};
 // Unknown keys are rejected so that a typo stops the core instead of being ignored.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -95,14 +96,43 @@ pub struct IbusConfig {
     /// The carrier board's microcontroller, which passes on each I-Bus frame
     /// as a line on its USB serial port.
     pub device: String,
+    /// What each of the car's buttons does; a button left out does nothing.
+    pub buttons: BTreeMap<Button, InputAction>,
+    /// The Pi shuts down when the ignition goes off, or once it has been off
+    /// for `shutdown_delay_s` seconds, unless it comes back first.
+    pub shutdown: bool,
+    pub shutdown_delay_s: u64,
 }
 impl Default for IbusConfig {
     fn default() -> Self {
         Self {
             enabled: true,
             device: "/dev/serial/by-id/usb-Arduino_LLC_Arduino_Micro_HIDPC-if00".into(),
+            buttons: default_buttons(),
+            shutdown: true,
+            shutdown_delay_s: 0,
         }
     }
+}
+/// The keys the board's firmware typed for each button.
+fn default_buttons() -> BTreeMap<Button, InputAction> {
+    BTreeMap::from([
+        (Button::Preset1, InputAction::PhoneHome),
+        (Button::Preset2, InputAction::Back),
+        (Button::Preset3, InputAction::PlayPause),
+        (Button::Preset4, InputAction::OpenMedia),
+        (Button::Preset5, InputAction::Up),
+        (Button::Preset6, InputAction::Down),
+        (Button::Next, InputAction::NextTrack),
+        (Button::Previous, InputAction::PreviousTrack),
+        (Button::KnobPress, InputAction::Select),
+        (Button::KnobLeft, InputAction::Left),
+        (Button::KnobRight, InputAction::Right),
+        (Button::WheelNext, InputAction::NextTrack),
+        (Button::WheelPrevious, InputAction::PreviousTrack),
+        (Button::WheelSendEnd, InputAction::VoiceAssistant),
+        (Button::WheelRt, InputAction::AnswerCall),
+    ])
 }
 #[cfg(test)]
 mod tests {
@@ -114,6 +144,15 @@ mod tests {
         assert_eq!(c.android_auto.decoder, DecoderChoice::Auto);
         assert!(c.ibus.enabled);
         assert_eq!(c.ibus.device, IbusConfig::default().device);
+        // The shipped table is the keys the board's firmware types.
+        assert_eq!(c.ibus.buttons, default_buttons());
+        assert!(c.ibus.shutdown);
+        assert_eq!(c.ibus.shutdown_delay_s, 0);
+        let c: CoreConfig = toml::from_str("[ibus.buttons]\npreset_1 = \"home\"").unwrap();
+        assert_eq!(
+            c.ibus.buttons,
+            BTreeMap::from([(Button::Preset1, InputAction::Home)])
+        );
         let c: CoreConfig = toml::from_str("[android_auto]\ndecoder = \"software\"").unwrap();
         assert_eq!(c.android_auto.decoder, DecoderChoice::Software);
         assert!(toml::from_str::<CoreConfig>("[android_auto]\ndecoder = \"gpu\"").is_err());
@@ -127,6 +166,8 @@ mod tests {
             "[carplay]\ndpi = 240",
             "[android_auto]\nfsp = 60",
             "[ibus]\nport = \"/dev/ttyACM0\"",
+            "[ibus.buttons]\npreset_7 = \"home\"",
+            "[ibus.buttons]\npreset_1 = \"jump\"",
             "snapshot_ms = 500",
             // An address, not a host name: resolving one could stall startup.
             "[android_auto]\nhead_unit_server = \"phone:5277\"",

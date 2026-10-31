@@ -43,8 +43,9 @@ if (( ! CODEC )); then
   AUDIO=(-e 's|^playback_device = .*|playback_device = "default"|'
     -e 's|^capture_device = .*|capture_device = "default"|')
 fi
+# The car's ignition must not shut the PC down.
 sed -e "s|^socket_path = .*|socket_path = \"$RUN_DIR/core.sock\"|" "${AUDIO[@]}" \
-  "$ROOT/config/core.toml" > "$RUN_DIR/core.toml"
+  -e 's|^shutdown = .*|shutdown = false|' "$ROOT/config/core.toml" > "$RUN_DIR/core.toml"
 sed -e "s|^socket_path = .*|socket_path = \"$RUN_DIR/core.sock\"|" \
   -e 's|^fullscreen = .*|fullscreen = false|' -e "s|^scale = .*|scale = $SCALE|" \
   "$ROOT/config/frontend.toml" > "$RUN_DIR/frontend.toml"

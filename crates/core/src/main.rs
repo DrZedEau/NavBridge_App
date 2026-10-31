@@ -19,7 +19,7 @@ use services::android_auto::ProjectionService;
 use services::codec::Gain;
 use services::system::SystemService;
 use settings::Settings;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 fn main() {
@@ -76,6 +76,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let interval = Duration::from_millis(config.snapshot_interval_ms.clamp(100, 5_000));
     let mut next_snapshot = Instant::now();
+    let mut powering_off = false;
     loop {
         server.accept_pending();
 
@@ -140,6 +141,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for event in projection.take_events() {
             server.broadcast_event(ServerEvent::ProjectionEvent { event });
         }
+        for input in ibus.take_inputs() {
+            server.broadcast_event(ServerEvent::Input {
+                action: input.action,
+                pressed: input.pressed,
+            });
+        }
 
         if Instant::now() >= next_snapshot {
             let phone = projection.snapshot();
@@ -148,6 +155,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             bluetooth.update(wireless.enabled, wireless.hotspot, session);
             let vehicle = ibus.snapshot();
             projection.set_vehicle(vehicle.interface, vehicle.speed_kmh);
+            // The ignition off (for long enough): the Pi shuts down, which
+            // stops this core first.
+            if !powering_off && ibus.shutdown_due() {
+                powering_off = true;
+                info!("shutting the Pi down: the ignition is off");
+                if let Err(e) = services::power::power_off() {
+                    warn!(%e, "could not shut the Pi down");
+                }
+            }
             let snapshot = AppSnapshot {
                 gnss: gnss.snapshot(),
                 usb: projection.usb_snapshot(),
@@ -168,7 +184,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // Sleep until a client, the phone, a stop request or the next snapshot
         // needs attention, so a command is forwarded the moment it arrives.
         server.wait(
-            &[projection.event_fd(), stop.as_fd()],
+            &[projection.event_fd(), ibus.input_fd(), stop.as_fd()],
             next_snapshot.saturating_duration_since(Instant::now()),
         );
     }

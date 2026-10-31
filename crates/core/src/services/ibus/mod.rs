@@ -1,15 +1,23 @@
 //! The car's I-Bus, through the carrier board's ATmega32U4, which passes on
 //! each frame it hears as a line on its USB serial port. Read only: nothing is
 //! ever sent towards the car.
+//!
+//! The car's buttons become UI inputs, as from keys: the service asks the board
+//! to stop typing keys for them ("KEYS OFF", which holds until the port
+//! closes). The board passes frames on only while NavBridge's screen shows,
+//! except the cluster's ignition-off, after which the Pi shuts down.
 mod frame;
 mod serial;
 
 use crate::config::IbusConfig;
-use frame::Reading;
-use navbridge_common::{Ignition, VehicleSnapshot};
+use crate::services::events::{self, EventReceiver, EventSender};
+pub use frame::Button;
+use frame::{Phase, Press, Reading};
+use navbridge_common::{Ignition, InputAction, VehicleSnapshot};
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     io,
+    os::fd::BorrowedFd,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -33,8 +41,24 @@ const READ_WAIT: Duration = Duration::from_millis(500);
 /// A longer line is not one of the board's.
 const MAX_LINE: usize = 512;
 
+/// A car button's action for the UI, as a key's: pressed, then released.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ButtonInput {
+    pub action: InputAction,
+    pub pressed: bool,
+}
+
+/// The car's buttons, for the UI.
+struct Buttons {
+    bindings: BTreeMap<Button, InputAction>,
+    inputs: EventSender<ButtonInput>,
+}
+
 pub struct IbusService {
     state: Arc<Mutex<State>>,
+    inputs: EventReceiver<ButtonInput>,
+    /// How long after the ignition goes off the Pi shuts down, if it does.
+    shutdown_delay: Option<Duration>,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
@@ -43,13 +67,22 @@ impl IbusService {
     pub fn start(config: IbusConfig) -> Self {
         let state = Arc::new(Mutex::new(State::default()));
         let stop = Arc::new(AtomicBool::new(false));
+        let (sender, inputs) = events::channel().expect("create the I-Bus input channel");
+        let shutdown_delay = config
+            .shutdown
+            .then(|| Duration::from_secs(config.shutdown_delay_s));
+        state.lock().unwrap().shutdown_delay = shutdown_delay;
         let worker = if config.enabled {
             state.lock().unwrap().problem = Some("Opening the interface".into());
             let (shared, stopped) = (state.clone(), stop.clone());
             let device = PathBuf::from(config.device);
+            let buttons = Buttons {
+                bindings: config.buttons,
+                inputs: sender,
+            };
             let worker = thread::Builder::new()
                 .name("ibus".into())
-                .spawn(move || run(&device, &shared, &stopped))
+                .spawn(move || run(&device, &shared, &stopped, &buttons))
                 .expect("start the I-Bus thread");
             Some(worker)
         } else {
@@ -58,6 +91,8 @@ impl IbusService {
         };
         Self {
             state,
+            inputs,
+            shutdown_delay,
             stop,
             worker,
         }
@@ -65,6 +100,29 @@ impl IbusService {
 
     pub fn snapshot(&self) -> VehicleSnapshot {
         self.state.lock().unwrap().snapshot(Instant::now())
+    }
+
+    /// The ignition has been off for the shutdown delay, and stayed off: time
+    /// for the Pi to shut down.
+    pub fn shutdown_due(&self) -> bool {
+        let Some(delay) = self.shutdown_delay else {
+            return false;
+        };
+        self.state
+            .lock()
+            .unwrap()
+            .ignition_off_at
+            .is_some_and(|at| at.elapsed() >= delay)
+    }
+
+    /// The car's buttons since the last call, for the UI.
+    pub fn take_inputs(&self) -> Vec<ButtonInput> {
+        self.inputs.take()
+    }
+
+    /// Readable whenever `take_inputs` has something to return.
+    pub fn input_fd(&self) -> BorrowedFd<'_> {
+        self.inputs.fd()
     }
 }
 
@@ -79,7 +137,7 @@ impl Drop for IbusService {
 
 /// Keeps the interface open, opening it again whenever it is missing or goes
 /// away, until the core stops.
-fn run(device: &Path, state: &Mutex<State>, stop: &AtomicBool) {
+fn run(device: &Path, state: &Mutex<State>, stop: &AtomicBool, buttons: &Buttons) {
     let mut reported: Option<String> = None;
     let mut undecoded = HashSet::new();
     while !stop.load(Ordering::Relaxed) {
@@ -87,7 +145,10 @@ fn run(device: &Path, state: &Mutex<State>, stop: &AtomicBool) {
             Ok(mut port) => {
                 info!(device = %device.display(), "reading the I-Bus");
                 state.lock().unwrap().opened();
-                let Some(e) = listen(&mut port, state, stop, &mut undecoded) else {
+                if let Err(e) = port.send_line("KEYS OFF") {
+                    warn!(%e, "could not ask the board to stop typing keys");
+                }
+                let Some(e) = listen(&mut port, state, stop, &mut undecoded, buttons) else {
                     return;
                 };
                 warn!(%e, "I-Bus interface lost");
@@ -126,6 +187,7 @@ fn listen(
     state: &Mutex<State>,
     stop: &AtomicBool,
     undecoded: &mut HashSet<(u8, u8, u8)>,
+    buttons: &Buttons,
 ) -> Option<io::Error> {
     let mut pending = Vec::new();
     let mut chunk = [0u8; 1024];
@@ -136,7 +198,12 @@ fn listen(
         };
         pending.extend_from_slice(&chunk[..n]);
         while let Some(end) = pending.iter().position(|&byte| byte == b'\n') {
-            received(&String::from_utf8_lossy(&pending[..end]), state, undecoded);
+            received(
+                &String::from_utf8_lossy(&pending[..end]),
+                state,
+                undecoded,
+                buttons,
+            );
             pending.drain(..=end);
         }
         if pending.len() > MAX_LINE {
@@ -147,13 +214,25 @@ fn listen(
     None
 }
 
-fn received(line: &str, state: &Mutex<State>, undecoded: &mut HashSet<(u8, u8, u8)>) {
+fn received(
+    line: &str,
+    state: &Mutex<State>,
+    undecoded: &mut HashSet<(u8, u8, u8)>,
+    buttons: &Buttons,
+) {
     match frame::parse_line(line) {
         Ok(Some(frame)) => {
             let reading = frame::decode(&frame);
+            let press = frame::button(&frame);
+            if let Some(press) = press {
+                debug!(?press, "I-Bus button");
+                for input in inputs(press, &buttons.bindings) {
+                    let _ = buttons.inputs.send(input);
+                }
+            }
             let kind = (frame.source, frame.destination, frame.message[0]);
             // Each kind once, to find out what else the car sends.
-            if reading.is_none() && undecoded.insert(kind) {
+            if reading.is_none() && press.is_none() && undecoded.insert(kind) {
                 debug!(
                     source = %format!("{:02X}", kind.0),
                     destination = %format!("{:02X}", kind.1),
@@ -173,10 +252,41 @@ fn received(line: &str, state: &Mutex<State>, undecoded: &mut HashSet<(u8, u8, u
     }
 }
 
+/// The UI's inputs for a button: a tap, pressed and released at once, for a
+/// press and for each detent of the knob. Buttons act on their press alone:
+/// holding one, and letting it go, do nothing more. A button with no action
+/// gives none.
+fn inputs(press: Press, bindings: &BTreeMap<Button, InputAction>) -> Vec<ButtonInput> {
+    let Some(&action) = bindings.get(&press.button) else {
+        return Vec::new();
+    };
+    if press.phase != Phase::Press {
+        return Vec::new();
+    }
+    (0..press.steps)
+        .flat_map(|_| {
+            [
+                ButtonInput {
+                    action,
+                    pressed: true,
+                },
+                ButtonInput {
+                    action,
+                    pressed: false,
+                },
+            ]
+        })
+        .collect()
+}
+
 #[derive(Default)]
 struct State {
     /// Why the interface is not open; `None` while it is.
     problem: Option<String>,
+    /// When the cluster said the ignition went off, until it says otherwise;
+    /// it outlasts the bus falling asleep and the interface going away.
+    ignition_off_at: Option<Instant>,
+    shutdown_delay: Option<Duration>,
     frames: u64,
     bad_lines: u64,
     heard_at: Option<Instant>,
@@ -193,12 +303,32 @@ impl State {
         self.problem = None;
     }
 
+    /// Off starts the shutdown delay; any other position ends it.
+    fn ignition_changed(&mut self, ignition: Ignition, now: Instant) {
+        let off = ignition == Ignition::Off;
+        if off && self.ignition_off_at.is_none() {
+            self.ignition_off_at = Some(now);
+            match self.shutdown_delay {
+                Some(delay) if delay.is_zero() => info!("ignition off"),
+                Some(delay) => info!(
+                    seconds = delay.as_secs(),
+                    "ignition off: the Pi shuts down unless it comes back on"
+                ),
+                None => {}
+            }
+        } else if !off && self.ignition_off_at.take().is_some() {
+            info!(?ignition, "ignition back: no shutdown");
+        }
+    }
+
     /// Nothing the interface said before holds any more; the counts stay.
     fn closed(&mut self, problem: String) {
         *self = Self {
             problem: Some(problem),
             frames: self.frames,
             bad_lines: self.bad_lines,
+            ignition_off_at: self.ignition_off_at,
+            shutdown_delay: self.shutdown_delay,
             ..Self::default()
         };
     }
@@ -209,7 +339,10 @@ impl State {
         self.frames += 1;
         self.heard_at = Some(now);
         match reading {
-            Some(Reading::Ignition(ignition)) => self.ignition.replace(ignition) != Some(ignition),
+            Some(Reading::Ignition(ignition)) => {
+                self.ignition_changed(ignition, now);
+                self.ignition.replace(ignition) != Some(ignition)
+            }
             Some(Reading::Speed { kmh, rpm }) => self
                 .speed
                 .replace((kmh, rpm, now))
@@ -262,9 +395,150 @@ mod tests {
     use super::*;
     use std::{
         fs::{self, File},
-        io::Write,
-        os::fd::FromRawFd,
+        io::{Read, Write},
+        os::fd::{AsRawFd, FromRawFd},
     };
+
+    #[test]
+    fn buttons_act_on_their_press_alone() {
+        let bindings = BTreeMap::from([
+            (Button::KnobPress, InputAction::Select),
+            (Button::KnobRight, InputAction::Right),
+        ]);
+        let press = |button, phase, steps| Press {
+            button,
+            phase,
+            steps,
+        };
+        let input = |action, pressed| ButtonInput { action, pressed };
+        assert_eq!(
+            inputs(press(Button::KnobPress, Phase::Press, 1), &bindings),
+            [
+                input(InputAction::Select, true),
+                input(InputAction::Select, false)
+            ]
+        );
+        // Held and released: nothing more.
+        assert!(inputs(press(Button::KnobPress, Phase::Hold, 1), &bindings).is_empty());
+        assert!(inputs(press(Button::KnobPress, Phase::Release, 1), &bindings).is_empty());
+        // A detent each.
+        assert_eq!(
+            inputs(press(Button::KnobRight, Phase::Press, 2), &bindings).len(),
+            4
+        );
+        // A button with nothing to do.
+        assert!(inputs(press(Button::Telephone, Phase::Press, 1), &bindings).is_empty());
+    }
+
+    /// What the service sent the board, waiting up to a second for it.
+    fn sent_to_board(board: &mut File) -> String {
+        let mut fd = libc::pollfd {
+            fd: board.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one pollfd, for the board side's open descriptor.
+        if unsafe { libc::poll(&mut fd, 1, 1000) } <= 0 {
+            return String::new();
+        }
+        let mut bytes = [0u8; 64];
+        let n = board.read(&mut bytes).unwrap();
+        String::from_utf8_lossy(&bytes[..n]).into()
+    }
+
+    fn wait_for_inputs(ibus: &IbusService, count: usize) -> Vec<ButtonInput> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut taken = Vec::new();
+        while taken.len() < count {
+            assert!(Instant::now() < deadline, "only {taken:?}");
+            taken.extend(ibus.take_inputs());
+            thread::sleep(Duration::from_millis(20));
+        }
+        taken
+    }
+
+    #[test]
+    fn buttons_reach_the_ui_and_the_board_stops_typing_keys() {
+        let (mut board, device) = pseudo_terminal();
+        let ibus = IbusService::start(IbusConfig {
+            enabled: true,
+            device: device.display().to_string(),
+            ..IbusConfig::default()
+        });
+        wait_for(&ibus, |v| v.status == "No I-Bus traffic");
+        // The board is asked to stop typing keys itself.
+        assert_eq!(sent_to_board(&mut board), "KEYS OFF\n");
+        // The knob pressed, and turned two detents to the left.
+        board
+            .write_all(b"IBUS1 RX 1 F0043B480582\r\nIBUS1 RX 2 F0043B490284\r\n")
+            .unwrap();
+        let taken = wait_for_inputs(&ibus, 6);
+        let presses = taken
+            .iter()
+            .filter(|input| input.pressed)
+            .map(|input| input.action)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            presses,
+            [InputAction::Select, InputAction::Left, InputAction::Left]
+        );
+        assert_eq!(ibus.snapshot().bad_lines, 0);
+    }
+
+    #[test]
+    fn the_ignition_off_starts_the_shutdown_delay_and_coming_back_ends_it() {
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut state = State {
+            shutdown_delay: Some(Duration::from_secs(10)),
+            ..State::default()
+        };
+        state.frame(Some(Reading::Ignition(Ignition::On)), at(0));
+        assert_eq!(state.ignition_off_at, None);
+        state.frame(Some(Reading::Ignition(Ignition::Off)), at(1));
+        // Repeated, it still counts from the first.
+        state.frame(Some(Reading::Ignition(Ignition::Off)), at(3));
+        assert_eq!(state.ignition_off_at, Some(at(1)));
+        // The bus falling quiet or the interface going away changes nothing.
+        state.closed("Interface lost".into());
+        assert_eq!(state.ignition_off_at, Some(at(1)));
+        // Position 1, as for the radio, is not off.
+        state.frame(Some(Reading::Ignition(Ignition::Accessory)), at(4));
+        assert_eq!(state.ignition_off_at, None);
+    }
+
+    #[test]
+    fn the_shutdown_is_due_once_the_ignition_has_stayed_off() {
+        let (mut board, device) = pseudo_terminal();
+        let ibus = IbusService::start(IbusConfig {
+            enabled: true,
+            device: device.display().to_string(),
+            shutdown_delay_s: 0,
+            ..IbusConfig::default()
+        });
+        wait_for(&ibus, |v| v.status == "No I-Bus traffic");
+        assert!(!ibus.shutdown_due());
+        // The cluster: ignition off, then back on for an engine restart.
+        board.write_all(b"IBUS1 RX 1 8004BF11002A\r\n").unwrap();
+        wait_for(&ibus, |v| v.ignition == Some(Ignition::Off));
+        assert!(ibus.shutdown_due());
+        board.write_all(b"IBUS1 RX 2 8004BF110329\r\n").unwrap();
+        wait_for(&ibus, |v| v.ignition == Some(Ignition::On));
+        assert!(!ibus.shutdown_due());
+        // With shutdown off in core.toml, never.
+        let (mut board, device) = pseudo_terminal();
+        let kept_on = IbusService::start(IbusConfig {
+            enabled: true,
+            device: device.display().to_string(),
+            shutdown: false,
+            shutdown_delay_s: 0,
+            ..IbusConfig::default()
+        });
+        wait_for(&kept_on, |v| v.status == "No I-Bus traffic");
+        board.write_all(b"IBUS1 RX 1 8004BF11002A\r\n").unwrap();
+        wait_for(&kept_on, |v| v.ignition == Some(Ignition::Off));
+        assert!(!kept_on.shutdown_due());
+    }
 
     #[test]
     fn readings_follow_the_bus_and_expire() {
@@ -355,6 +629,7 @@ mod tests {
         let ibus = IbusService::start(IbusConfig {
             enabled: true,
             device: device.display().to_string(),
+            ..IbusConfig::default()
         });
         // Open, and set to pass bytes through as they come.
         wait_for(&ibus, |v| v.status == "No I-Bus traffic");
@@ -386,6 +661,7 @@ mod tests {
         let missing = IbusService::start(IbusConfig {
             enabled: true,
             device: "/dev/serial/by-id/no-such-board".into(),
+            ..IbusConfig::default()
         });
         wait_for(&missing, |v| v.status == "Interface not connected");
         let off = IbusService::start(IbusConfig {

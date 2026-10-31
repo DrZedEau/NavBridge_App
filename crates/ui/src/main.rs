@@ -207,6 +207,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             let mut state = state.borrow_mut();
+            if !keyboard_active(&state) {
+                return;
+            }
             handle_key_event(&mut state, action, pressed, repeat, &command_tx);
             render_state(&ui, &state);
         });
@@ -259,6 +262,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // from the core to apply it on Slint's main/UI thread.
     {
         let state = Rc::clone(&state);
+        let commands = command_tx.clone();
         let weak = ui.as_weak();
         ui.on_core_message(move || {
             let Some(ui) = weak.upgrade() else {
@@ -334,6 +338,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             state.screen = Screen::Menu;
                         }
                     },
+                    // A car button, as its key would act.
+                    IpcEvent::Server(ServerEvent::Input { action, pressed }) => {
+                        handle_key_event(&mut state, action.into(), pressed, false, &commands)
+                    }
                 }
             }
             if changed {
@@ -396,6 +404,13 @@ fn navigation_key(action: KeyAction) -> Option<NavigationKey> {
 }
 
 type Commands = std::sync::mpsc::Sender<ClientCommand>;
+
+/// The keyboard acts only while the core reads no I-Bus, as on a PC: in the
+/// car, the buttons come from the I-Bus, and the board's typed keys for them
+/// would act twice.
+fn keyboard_active(state: &UiState) -> bool {
+    !(state.core_connected && state.snapshot.vehicle.interface)
+}
 
 /// Releases a key or a finger the phone still holds.
 fn release_navigation(state: &mut UiState, commands: &Commands) {
@@ -1931,6 +1946,62 @@ mod navigation_tests {
         assert_eq!(status_lights(&snapshot).2, LedState::On);
         let clock = clock_text();
         assert!(clock.len() == 5 && clock.as_bytes()[2] == b':', "{clock}");
+    }
+
+    #[test]
+    fn car_buttons_act_as_the_keyboard_bindings_of_the_same_name() {
+        use navbridge_common::InputAction::*;
+        let table: toml::Table =
+            toml::from_str(include_str!("../../../config/keyboard.toml")).unwrap();
+        let bindings = table["bindings"].as_table().unwrap();
+        for action in [
+            Up,
+            Down,
+            Left,
+            Right,
+            Select,
+            Back,
+            Home,
+            NormalMode,
+            NightMode,
+            ParkingBrakeOn,
+            ParkingBrakeOff,
+            NextTrack,
+            PreviousTrack,
+            VoiceAssistant,
+            AnswerCall,
+            EndCall,
+            PhoneHome,
+            OpenMaps,
+            OpenMedia,
+            PlayPause,
+        ] {
+            let name = serde_json::to_value(action).unwrap();
+            let name = name.as_str().unwrap();
+            assert!(bindings.contains_key(name), "{name} is not a key binding");
+        }
+        assert_eq!(KeyAction::from(Select), KeyAction::Select);
+        assert_eq!(KeyAction::from(NightMode), KeyAction::NightMode(true));
+        assert_eq!(
+            KeyAction::from(ParkingBrakeOff),
+            KeyAction::ParkingBrake(false)
+        );
+        assert_eq!(
+            KeyAction::from(PlayPause),
+            KeyAction::Phone(navbridge_common::PhoneAction::PlayPause)
+        );
+        // A car button acts as its key: the knob press opens the chosen tile.
+        let (tx, _rx) = mpsc::channel();
+        let mut state = UiState::default();
+        handle_key_event(&mut state, Select.into(), true, false, &tx);
+        assert_eq!(state.screen, Screen::Phone);
+        // The keyboard acts while there is no I-Bus, as on a PC, and not
+        // while the core reads it.
+        assert!(keyboard_active(&state));
+        state.core_connected = true;
+        assert!(keyboard_active(&state));
+        state.snapshot.vehicle.interface = true;
+        assert!(!keyboard_active(&state));
     }
 
     #[test]

@@ -20,6 +20,33 @@ enabled = true
 # The carrier board's ATmega32U4, which passes on each I-Bus frame it hears.
 # Its by-id name stays the same whichever ttyACM number it gets.
 device = "/dev/serial/by-id/usb-Arduino_LLC_Arduino_Micro_HIDPC-if00"
+# Shut the Pi down when the cluster reports the ignition off: at once, or after
+# shutdown_delay_s seconds unless it comes back on first (an engine restart,
+# say). The board passes the ignition-off message on whatever the screen shows.
+shutdown = true
+shutdown_delay_s = 0
+
+# What each of the car's buttons does, named as keyboard.toml names the
+# actions; a button left out does nothing. Buttons: preset_1 to preset_6,
+# next, previous, am, fm, mode, tone, menu, radio_menu, telephone, knob_press,
+# knob_left, knob_right, select, info, wheel_next, wheel_previous,
+# wheel_send_end, wheel_rt. These are the keys the firmware types.
+[ibus.buttons]
+preset_1 = "phone_home"
+preset_2 = "back"
+preset_3 = "play_pause"
+preset_4 = "open_media"
+preset_5 = "up"
+preset_6 = "down"
+next = "next_track"
+previous = "previous_track"
+knob_press = "select"
+knob_left = "left"
+knob_right = "right"
+wheel_next = "next_track"
+wheel_previous = "previous_track"
+wheel_send_end = "voice_assistant"
+wheel_rt = "answer_call"
 
 [audio]
 enabled = true

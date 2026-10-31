@@ -161,13 +161,26 @@ The I-Bus service reads the carrier board's ATmega32U4 on its own thread: one
 line per frame the board hears, which the service checks (length, XOR
 checksum) and decodes when the instrument cluster sends it: ignition (`11`),
 road and engine speed (`18`), outside and coolant temperature (`19`) and
-odometer (`17`). It opens the port read-only, raw and exclusive, so GPSD cannot
+odometer (`17`). It opens the port raw and exclusive, so GPSD cannot
 probe it, and never at 1200 baud, which would restart the board into its
 bootloader. It waits for bytes in `poll()`, at most 500 ms so that it can stop,
 and reopens the port every 2 seconds while it is missing. Each reading keeps
 when it was heard: speeds expire after 10 seconds, and every reading once the
 bus has been quiet for 10 seconds or the board is gone. The `vehicle` part of
 the snapshot carries the readings, the link's status and its frame counts.
+
+The service also decodes the board monitor's buttons (`48`, its soft keys
+`47` and knob `49`, from `F0`) and the steering wheel's (`3B` from `50`),
+pressed, held or released, and maps them through `[ibus.buttons]` to the UI's
+actions. Each press becomes a tap for the UI (holds and releases are not used
+yet), sent through an event channel that wakes the main loop, which passes it on as
+`ServerEvent::Input`; the UI handles it as a key, and ignores the keyboard
+while the I-Bus is read. The port is opened for writing too, only to send the
+board `KEYS OFF`. The board passes frames on only while NavBridge's screen
+shows, except the cluster's ignition off: from that, the state keeps when the
+ignition went off, through the bus falling quiet, and the main loop shuts the
+Pi down through logind's `PowerOff` at its next snapshot, or once the ignition
+has stayed off for `shutdown_delay_s`.
 
 ## Keyboard
 

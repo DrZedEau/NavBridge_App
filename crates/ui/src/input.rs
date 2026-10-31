@@ -1,4 +1,4 @@
-use navbridge_common::PhoneAction;
+use navbridge_common::{InputAction, PhoneAction};
 use slint::platform::Key;
 use slint::SharedString;
 
@@ -20,6 +20,35 @@ pub enum KeyAction {
     /// driving restrictions.
     ParkingBrake(bool),
     Phone(PhoneAction),
+}
+
+/// A car button's action, which the core passes on, does what the key of the
+/// same name in keyboard.toml does.
+impl From<InputAction> for KeyAction {
+    fn from(action: InputAction) -> Self {
+        match action {
+            InputAction::Up => Self::Up,
+            InputAction::Down => Self::Down,
+            InputAction::Left => Self::Left,
+            InputAction::Right => Self::Right,
+            InputAction::Select => Self::Select,
+            InputAction::Back => Self::Back,
+            InputAction::Home => Self::Home,
+            InputAction::NormalMode => Self::NightMode(false),
+            InputAction::NightMode => Self::NightMode(true),
+            InputAction::ParkingBrakeOn => Self::ParkingBrake(true),
+            InputAction::ParkingBrakeOff => Self::ParkingBrake(false),
+            InputAction::NextTrack => Self::Phone(PhoneAction::NextTrack),
+            InputAction::PreviousTrack => Self::Phone(PhoneAction::PreviousTrack),
+            InputAction::VoiceAssistant => Self::Phone(PhoneAction::VoiceAssistant),
+            InputAction::AnswerCall => Self::Phone(PhoneAction::AnswerCall),
+            InputAction::EndCall => Self::Phone(PhoneAction::EndCall),
+            InputAction::PhoneHome => Self::Phone(PhoneAction::PhoneHome),
+            InputAction::OpenMaps => Self::Phone(PhoneAction::OpenMaps),
+            InputAction::OpenMedia => Self::Phone(PhoneAction::OpenMedia),
+            InputAction::PlayPause => Self::Phone(PhoneAction::PlayPause),
+        }
+    }
 }
 
 pub struct KeyMap {

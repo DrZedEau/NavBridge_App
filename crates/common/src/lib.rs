@@ -310,6 +310,38 @@ pub enum ServerEvent {
     ProjectionEvent {
         event: ProjectionEvent,
     },
+    /// A car button, from the I-Bus, for the UI to act on as on a key: its
+    /// press, then its release.
+    Input {
+        action: InputAction,
+        pressed: bool,
+    },
+}
+
+/// What a car button does, named as keyboard.toml names the UI's actions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputAction {
+    Up,
+    Down,
+    Left,
+    Right,
+    Select,
+    Back,
+    Home,
+    NormalMode,
+    NightMode,
+    ParkingBrakeOn,
+    ParkingBrakeOff,
+    NextTrack,
+    PreviousTrack,
+    VoiceAssistant,
+    AnswerCall,
+    EndCall,
+    PhoneHome,
+    OpenMaps,
+    OpenMedia,
+    PlayPause,
 }
 
 #[cfg(test)]

@@ -47,7 +47,10 @@ for unit in navbridge-core navbridge-ui; do
   sed -e "s/@USER@/$INSTALL_USER/g" -e "s/@GROUP@/$INSTALL_GROUP/g" \
     "$ROOT/packaging/$unit.service" > "$STAGE/$unit.service"
 done
-sed -e "s/@USER@/$INSTALL_USER/g" "$ROOT/packaging/50-navbridge-wifi.rules" > "$STAGE/50-navbridge-wifi.rules"
+POLKIT_RULES=(50-navbridge-wifi.rules 51-navbridge-power.rules)
+for rule in "${POLKIT_RULES[@]}"; do
+  sed -e "s/@USER@/$INSTALL_USER/g" "$ROOT/packaging/$rule" > "$STAGE/$rule"
+done
 if (( DRY_RUN )); then
   echo "User: $INSTALL_USER; group: $INSTALL_GROUP; home: $INSTALL_HOME"
   echo "Source: $ROOT; binaries: /opt/navbridge/bin; configuration: /opt/navbridge/config"
@@ -55,6 +58,7 @@ if (( DRY_RUN )); then
   echo "Will install runtime dependencies and USB rules; no compilation or Rust installation."
   echo "Will preserve existing config and enable both services."
   echo "Will let $INSTALL_USER switch the Wi-Fi hotspot through NetworkManager (polkit rule)."
+  echo "Will let $INSTALL_USER shut the Pi down when the car's ignition stays off (polkit rule)."
   echo "Will disable getty@tty1 so NavBridge owns the dedicated display. Start now: $START"
   if (( DESKTOP )); then
     echo "This machine runs a desktop: the install stops unless --force is given."
@@ -150,10 +154,11 @@ if [[ ! -e /opt/navbridge/config/display.env ]]; then
   fi
 fi
 
-RULE=/etc/polkit-1/rules.d/50-navbridge-wifi.rules
-if [[ -f $RULE ]]; then cp -a "$RULE" "$BACKUP/"; fi
 install -d -m 0755 /etc/polkit-1/rules.d
-install -m 0644 "$STAGE/50-navbridge-wifi.rules" "$RULE"
+for rule in "${POLKIT_RULES[@]}"; do
+  if [[ -f /etc/polkit-1/rules.d/$rule ]]; then cp -a "/etc/polkit-1/rules.d/$rule" "$BACKUP/"; fi
+  install -m 0644 "$STAGE/$rule" "/etc/polkit-1/rules.d/$rule"
+done
 
 systemd-analyze verify "$STAGE/navbridge-core.service" "$STAGE/navbridge-ui.service"
 install -m 0644 "$STAGE/navbridge-core.service" /etc/systemd/system/navbridge-core.service
