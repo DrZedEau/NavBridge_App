@@ -27,7 +27,9 @@ and odometer from its I-Bus, through the carrier board's ATmega32U4.
   Video uses a generation-aware frame file beside the socket
   (`/run/navbridge/video.rgba`, open only to the services' group) rather than
   JSON. See [architecture](docs/ARCHITECTURE.md).
-- Projection is H.264 at 800x480, downscaled with Lanczos to the 400x240 panel.
+- Projection is H.264 at 800x480, averaged 2:1 (area scaling, with full
+  chroma) to the 400x240 panel. Every picture is decoded, but of those that queue up while decoding
+  lags, only the newest is scaled and shown.
   FFmpeg normalizes full/limited color range. DPI and 30/60 fps are configurable.
   The Pi 4 / CM4's hardware decoder (`h264_v4l2m2m`) is used when present; the
   Pi 5 / CM5 has none and decodes in software.

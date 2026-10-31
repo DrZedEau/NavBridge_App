@@ -102,7 +102,8 @@ where the board has it, else the software h264; a failing hardware decoder
 gives way to software, which starts from the last SPS/PPS and a new keyframe
     |
     v
-libswscale (Lanczos): 800x480 -> 400x240 RGBA
+libswscale (area, 2:1 averaging, full chroma): 800x480 -> 400x240 RGBA, for the newest
+decoded picture only when several queued up
     |
     v
 /run/navbridge/video.rgba: header + pixels, replaced atomically

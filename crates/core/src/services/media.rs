@@ -1,6 +1,7 @@
 use std::ffi::CStr;
 use std::fs::{self, File};
 use std::io::Write;
+use std::iter;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
@@ -176,32 +177,48 @@ impl VideoPipeline {
                 };
 
                 engine.generation = worker_generation;
+                // A failed frame is dropped and the decoder starts afresh, in
+                // software if the hardware one failed; false if even that fails.
+                let recovered = |engine: &mut DecoderEngine, err: String| {
+                    worker_counters.dropped.fetch_add(1, Ordering::Relaxed);
+                    let reset = if engine.on_hardware {
+                        engine.give_up_hardware(&err)
+                    } else {
+                        warn!(%err, "H.264 decode error; resetting decoder");
+                        engine.reset()
+                    };
+                    reset
+                        .inspect_err(|e| error!(%e, "failed to reset the H.264 decoder; it stops"))
+                        .is_ok()
+                };
                 let mut logged = Instant::now();
-                while let Ok(VideoCommand::Data {
-                    generation,
-                    segment,
-                }) = rx.recv()
-                {
-                    if generation != *engine.generation.lock().unwrap() {
-                        continue;
-                    }
-                    if engine.active_generation != generation {
-                        if let Err(err) = engine.reset() {
-                            error!(%err, "failed to reset the H.264 decoder; it stops");
-                            break;
+                'decode: while let Ok(next) = rx.recv() {
+                    // Each picture builds on the one before, so all that wait
+                    // are decoded; only the newest is scaled and shown.
+                    let waiting = iter::once(next).chain(rx.try_iter().take(VIDEO_QUEUE_DEPTH));
+                    for VideoCommand::Data {
+                        generation,
+                        segment,
+                    } in waiting
+                    {
+                        if generation != *engine.generation.lock().unwrap() {
+                            continue;
                         }
-                        engine.active_generation = generation;
+                        if engine.active_generation != generation {
+                            if let Err(err) = engine.reset() {
+                                error!(%err, "failed to reset the H.264 decoder; it stops");
+                                break 'decode;
+                            }
+                            engine.active_generation = generation;
+                        }
+                        if let Err(err) = engine.push(&segment) {
+                            if !recovered(&mut engine, err) {
+                                break 'decode;
+                            }
+                        }
                     }
-                    if let Err(err) = engine.push(&segment) {
-                        worker_counters.dropped.fetch_add(1, Ordering::Relaxed);
-                        let recovered = if engine.on_hardware {
-                            engine.give_up_hardware(&err)
-                        } else {
-                            warn!(%err, "H.264 decode error; resetting decoder");
-                            engine.reset()
-                        };
-                        if let Err(reset_err) = recovered {
-                            error!(%reset_err, "failed to reset the H.264 decoder; it stops");
+                    if let Err(err) = engine.show_newest() {
+                        if !recovered(&mut engine, err) {
                             break;
                         }
                     }
@@ -356,6 +373,8 @@ struct DecoderEngine {
     last_config: Vec<u8>,
     size: FrameSize,
     scaler: Option<Scaler>,
+    /// The last picture decoded, until it is shown or a newer one replaces it.
+    newest: Option<ffmpeg::frame::Video>,
     decoded_count: Arc<AtomicU64>,
     frame_path: PathBuf,
     sequence: u64,
@@ -382,6 +401,7 @@ impl DecoderEngine {
             last_config: Vec::new(),
             size,
             scaler: None,
+            newest: None,
             decoded_count,
             frame_path,
             sequence: 0,
@@ -401,6 +421,7 @@ impl DecoderEngine {
         self.codec_config.clear();
         self.last_config.clear();
         self.scaler = None;
+        self.newest = None;
         let _ = fs::remove_file(&self.frame_path);
         debug!("H.264 decoder reset");
         Ok(())
@@ -441,77 +462,89 @@ impl DecoderEngine {
         self.decoder
             .send_packet(&packet)
             .map_err(|e| format!("send H.264 packet: {e}"))?;
-        self.drain_frames()?;
+        self.drain_frames();
         if self.on_hardware && self.pending_pictures >= HARDWARE_STALL_PICTURES {
             return Err(format!("no frame after {} pictures", self.pending_pictures));
         }
         Ok(())
     }
 
-    fn drain_frames(&mut self) -> Result<(), String> {
+    /// Takes the pictures the decoder has finished, keeping the newest.
+    fn drain_frames(&mut self) {
         let mut decoded = ffmpeg::frame::Video::empty();
         while self.decoder.receive_frame(&mut decoded).is_ok() {
             if decoded.width() == 0 || decoded.height() == 0 || decoded.format() == Pixel::None {
                 continue;
             }
             self.pending_pictures = 0;
+            self.decoded_count.fetch_add(1, Ordering::Relaxed);
+            self.newest = Some(std::mem::replace(
+                &mut decoded,
+                ffmpeg::frame::Video::empty(),
+            ));
+        }
+    }
 
-            normalize_full_range(&mut decoded);
-            let (width, height) = self.size.get();
-            let spec = (
+    /// Scales the newest decoded picture to the UI's size and publishes it,
+    /// if there is one not shown yet.
+    fn show_newest(&mut self) -> Result<(), String> {
+        let Some(mut decoded) = self.newest.take() else {
+            return Ok(());
+        };
+        normalize_full_range(&mut decoded);
+        let (width, height) = self.size.get();
+        let spec = (
+            decoded.format(),
+            decoded.width(),
+            decoded.height(),
+            decoded.color_range(),
+            decoded.color_space(),
+            width,
+            height,
+        );
+        let rebuild = self.scaler.as_ref().map(|s| s.spec != spec).unwrap_or(true);
+        if rebuild {
+            let mut context = ScalingContext::get(
                 decoded.format(),
                 decoded.width(),
                 decoded.height(),
-                decoded.color_range(),
-                decoded.color_space(),
+                Pixel::RGBA,
                 width,
                 height,
+                // 2:1 averaging for the panel, a plain conversion at 800x480.
+                // Full chroma keeps a dark line off saturated colour edges.
+                ScalingFlags::AREA | ScalingFlags::FULL_CHR_H_INT,
+            )
+            .map_err(|e| format!("create software scaler: {e}"))?;
+            configure_colors(&mut context, decoded.color_range(), decoded.color_space())?;
+            self.scaler = Some(Scaler { spec, context });
+            info!(
+                source_width = decoded.width(),
+                source_height = decoded.height(),
+                source_format = ?decoded.format(),
+                source_fps = ?self.decoder.frame_rate(),
+                source_range = ?decoded.color_range(),
+                source_colorspace = ?decoded.color_space(),
+                output = %format!("{width}x{height} RGBA"),
+                "projection video format established"
             );
-            let rebuild = self.scaler.as_ref().map(|s| s.spec != spec).unwrap_or(true);
-            if rebuild {
-                let mut context = ScalingContext::get(
-                    decoded.format(),
-                    decoded.width(),
-                    decoded.height(),
-                    Pixel::RGBA,
-                    width,
-                    height,
-                    ScalingFlags::LANCZOS
-                        | ScalingFlags::ACCURATE_RND
-                        | ScalingFlags::FULL_CHR_H_INT,
-                )
-                .map_err(|e| format!("create software scaler: {e}"))?;
-                configure_colors(&mut context, decoded.color_range(), decoded.color_space())?;
-                self.scaler = Some(Scaler { spec, context });
-                info!(
-                    source_width = decoded.width(),
-                    source_height = decoded.height(),
-                    source_format = ?decoded.format(),
-                    source_fps = ?self.decoder.frame_rate(),
-                    source_range = ?decoded.color_range(),
-                    source_colorspace = ?decoded.color_space(),
-                    output = %format!("{width}x{height} RGBA"),
-                    "projection video format established"
-                );
-            }
-
-            let mut rgba = ffmpeg::frame::Video::new(Pixel::RGBA, width, height);
-            self.scaler
-                .as_mut()
-                .expect("scaler was initialized")
-                .context
-                .run(&decoded, &mut rgba)
-                .map_err(|e| format!("scale projection frame: {e}"))?;
-
-            self.sequence = self.sequence.wrapping_add(1);
-            let generation = self.generation.lock().unwrap();
-            if *generation != self.active_generation {
-                continue;
-            }
-            publish_frame(&self.frame_path, self.sequence, &rgba)
-                .map_err(|e| format!("publish projection frame: {e}"))?;
-            self.decoded_count.fetch_add(1, Ordering::Relaxed);
         }
+
+        let mut rgba = ffmpeg::frame::Video::new(Pixel::RGBA, width, height);
+        self.scaler
+            .as_mut()
+            .expect("scaler was initialized")
+            .context
+            .run(&decoded, &mut rgba)
+            .map_err(|e| format!("scale projection frame: {e}"))?;
+
+        self.sequence = self.sequence.wrapping_add(1);
+        let generation = self.generation.lock().unwrap();
+        if *generation != self.active_generation {
+            return Ok(());
+        }
+        publish_frame(&self.frame_path, self.sequence, &rgba)
+            .map_err(|e| format!("publish projection frame: {e}"))?;
         Ok(())
     }
 }
@@ -793,7 +826,7 @@ mod tests {
                 Pixel::RGBA,
                 UI_WIDTH,
                 UI_HEIGHT,
-                ScalingFlags::LANCZOS,
+                ScalingFlags::AREA | ScalingFlags::FULL_CHR_H_INT,
             )
             .unwrap();
             configure_colors(&mut scaler, input.color_range(), input.color_space()).unwrap();
@@ -855,11 +888,13 @@ mod tests {
         };
         let mut units = access_units().into_iter();
         engine.push(units.next().unwrap()).unwrap();
+        engine.show_newest().unwrap();
         assert_eq!(header(&path), (400, 240, 400 * 240 * 4));
         // Twice as large, mid-stream: Android Auto's own 800x480.
         assert!(size.set(800, 480));
         assert!(!size.set(800, 480), "unchanged");
         engine.push(units.next().unwrap()).unwrap();
+        engine.show_newest().unwrap();
         assert_eq!(header(&path), (800, 480, 800 * 480 * 4));
         let _ = fs::remove_file(&path);
     }
@@ -987,10 +1022,38 @@ mod tests {
                 index as u64 + 1,
                 "access unit {index} was held back"
             );
+            engine.show_newest().unwrap();
+            assert_eq!(sequence(&path), index as u64 + 1);
         }
         let frame = fs::read(&path).unwrap();
         let _ = fs::remove_file(&path);
         assert_eq!(frame.len(), VIDEO_FRAME_HEADER_SIZE + FRAME_BYTES);
+    }
+
+    /// The sequence number in a published frame's header.
+    fn sequence(path: &Path) -> u64 {
+        let frame = fs::read(path).unwrap();
+        u64::from_le_bytes(frame[12..20].try_into().unwrap())
+    }
+
+    #[test]
+    fn of_the_pictures_that_queued_up_only_the_newest_is_shown() {
+        let count = Arc::new(AtomicU64::new(0));
+        let path =
+            std::env::temp_dir().join(format!("navbridge-newest-test-{}.rgba", std::process::id()));
+        let mut engine = software_engine(path.clone(), Arc::clone(&count));
+        // All of them decoded, as each builds on the one before...
+        for unit in access_units() {
+            engine.push(unit).unwrap();
+        }
+        assert_eq!(count.load(Ordering::Relaxed), 24);
+        assert!(!path.exists(), "nothing shown yet");
+        // ...and one scaled and published.
+        engine.show_newest().unwrap();
+        assert_eq!(sequence(&path), 1);
+        engine.show_newest().unwrap();
+        assert_eq!(sequence(&path), 1, "shown once");
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
@@ -1105,12 +1168,14 @@ mod tests {
         for unit in access_units() {
             engine.push(unit).unwrap();
         }
+        engine.show_newest().unwrap();
         assert!(!path.exists());
         engine.reset().unwrap();
         engine.active_generation = 1;
         for unit in access_units() {
             engine.push(unit).unwrap();
         }
+        engine.show_newest().unwrap();
         assert!(path.exists());
         fs::remove_file(path).unwrap();
     }
