@@ -35,7 +35,7 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use transport::Transport;
 #[derive(Clone)]
 struct State {
@@ -53,6 +53,8 @@ struct State {
     speedometer: bool,
     /// The car's speed in km/h, while the I-Bus reports it.
     speed: Option<u16>,
+    /// Why the worker stopped, if it could not go on.
+    failure: Option<String>,
 }
 enum Command {
     Hide,
@@ -72,6 +74,7 @@ const SERVER_RETRY: Duration = Duration::from_secs(5);
 /// How often listening on the hotspot's address is tried again after failing,
 /// such as while another program holds the port.
 const LISTEN_RETRY: Duration = Duration::from_secs(2);
+const DECODER_STOPPED: &str = "the H.264 decoder stopped";
 /// Work for the session thread. Commands, USB transfers and microphone blocks
 /// each signal `wake` once queued, so the thread sleeps on `woken` instead of
 /// polling, and a key press reaches the phone without waiting for a timer.
@@ -114,6 +117,7 @@ impl ProjectionService {
             gnss: false,
             speedometer: false,
             speed: None,
+            failure: None,
         }));
         let (tx, commands) = mpsc::sync_channel(128);
         // One pending wakeup covers everything queued before the thread runs.
@@ -130,10 +134,11 @@ impl ProjectionService {
         let video_size = frame_size.clone();
         let worker = thread::spawn(move || {
             if let Err(e) = runner(config, audio, video_size, s.clone(), inbox, event_tx, end) {
-                warn!(%e,"wired AA service stopped");
+                error!(%e, "Android Auto stopped");
                 let mut state = s.write().unwrap();
                 state.projection.phase = ProjectionPhase::Error;
-                state.projection.status = e;
+                state.projection.status = e.clone();
+                state.failure = Some(e);
             }
         });
         Ok(Self {
@@ -260,6 +265,15 @@ impl ProjectionService {
     }
     pub fn snapshot(&self) -> ProjectionSnapshot {
         self.state.read().unwrap().projection.clone()
+    }
+    /// Why Android Auto stopped for good, as when its video decoder or its
+    /// USB access failed: the core then exits, for systemd to start it again.
+    pub fn failure(&self) -> Option<String> {
+        let stopped = self.worker.as_ref().is_some_and(JoinHandle::is_finished);
+        stopped.then(|| {
+            let failure = self.state.read().unwrap().failure.clone();
+            failure.unwrap_or_else(|| "the Android Auto worker stopped".into())
+        })
     }
     pub fn take_events(&self) -> Vec<ProjectionEvent> {
         self.events.take()
@@ -561,6 +575,9 @@ fn runner(
                     }
                 }
                 session.tick()?;
+                if video.stopped() {
+                    return Err(DECODER_STOPPED.into());
+                }
                 if video.decoder_changed() {
                     state.write().unwrap().projection.decoder = video.decoder();
                 }
@@ -589,11 +606,15 @@ fn runner(
                             let _ = events.send(ProjectionEvent::PhoneConnected);
                         }
                         Action::Video(data) => {
-                            if video.push_h264(&data) == PushResult::NeedKeyframe {
-                                warn!(
-                                    "video decoding fell behind; asking the phone for a keyframe"
-                                );
-                                session.request_keyframe()?;
+                            match video.push_h264(&data) {
+                                PushResult::NeedKeyframe => {
+                                    warn!(
+                                        "video decoding fell behind; asking the phone for a keyframe"
+                                    );
+                                    session.request_keyframe()?;
+                                }
+                                PushResult::Stopped => return Err(DECODER_STOPPED.into()),
+                                PushResult::Accepted | PushResult::Dropped => {}
                             }
                             // The state changes once per session, not per frame.
                             if !shown {
@@ -636,6 +657,11 @@ fn runner(
                 s.usb.error = Some(e.clone());
             }
             s.projection.status = e;
+        }
+        // Video would stay black from now on: Android Auto stops, and the
+        // core with it.
+        if video.stopped() {
+            return Err(DECODER_STOPPED.into());
         }
         thread::sleep(Duration::from_millis(500));
     }

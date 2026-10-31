@@ -15,7 +15,7 @@ use ffmpeg_next as ffmpeg;
 use navbridge_common::{
     MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH, VIDEO_FRAME_HEADER_SIZE, VIDEO_FRAME_MAGIC,
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 const RGBA_BYTES_PER_PIXEL: usize = 4;
 #[cfg(test)]
@@ -37,6 +37,8 @@ pub enum PushResult {
     Accepted,
     Dropped,
     NeedKeyframe,
+    /// The decoder thread has stopped: no frame can be decoded any more.
+    Stopped,
 }
 
 enum VideoCommand {
@@ -185,7 +187,7 @@ impl VideoPipeline {
                     }
                     if engine.active_generation != generation {
                         if let Err(err) = engine.reset() {
-                            warn!(%err, "failed to reset the H.264 decoder");
+                            error!(%err, "failed to reset the H.264 decoder; it stops");
                             break;
                         }
                         engine.active_generation = generation;
@@ -199,7 +201,7 @@ impl VideoPipeline {
                             engine.reset()
                         };
                         if let Err(reset_err) = recovered {
-                            warn!(%reset_err, "failed to reset the H.264 decoder");
+                            error!(%reset_err, "failed to reset the H.264 decoder; it stops");
                             break;
                         }
                     }
@@ -242,6 +244,12 @@ impl VideoPipeline {
             generation,
             decoder,
         })
+    }
+
+    /// The decoder thread has stopped, as when its decoder could not be
+    /// reset: video stays black until a new pipeline starts.
+    pub fn stopped(&self) -> bool {
+        self.worker.as_ref().is_some_and(JoinHandle::is_finished)
     }
 
     /// The H.264 decoder in use, such as "FFmpeg 7.1.5 h264 (software)".
@@ -305,7 +313,7 @@ impl VideoPipeline {
             }
             Err(TrySendError::Disconnected(_)) => {
                 self.counters.dropped.fetch_add(1, Ordering::Relaxed);
-                PushResult::Dropped
+                PushResult::Stopped
             }
         }
     }
@@ -1036,6 +1044,32 @@ mod tests {
         }
         assert_eq!(pipeline.push_h264(&[]), PushResult::Dropped);
         assert_eq!((counters.decoded(), counters.dropped()), (24, 1));
+        assert!(!pipeline.stopped());
+    }
+
+    #[test]
+    fn a_decoder_thread_that_gave_up_is_reported() {
+        let path = std::env::temp_dir().join(format!(
+            "navbridge-stopped-test-{}.rgba",
+            std::process::id()
+        ));
+        // A decoder thread that has stopped, as after a failed reset.
+        let (tx, rx) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || drop(rx));
+        while !worker.is_finished() {
+            thread::sleep(Duration::from_millis(1));
+        }
+        let pipeline = VideoPipeline {
+            tx: Some(tx),
+            worker: Some(worker),
+            counters: VideoCounters::default(),
+            wait_for_idr: Arc::new(AtomicBool::new(false)),
+            frame_path: path,
+            generation: Arc::new(Mutex::new(0)),
+            decoder: DecoderInfo::default(),
+        };
+        assert!(pipeline.stopped());
+        assert_eq!(pipeline.push_h264(&[0, 0, 0, 1, 0x65]), PushResult::Stopped);
     }
 
     #[test]

@@ -25,3 +25,6 @@ lto = "thin"
 codegen-units = 1
 opt-level = 3
 strip = true
+# A panic in any thread ends the process, for systemd to start it again,
+# instead of leaving it running without the thread that died.
+panic = "abort"

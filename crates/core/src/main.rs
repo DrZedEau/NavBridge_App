@@ -178,6 +178,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if (&stop).read(&mut [0]).is_ok() {
             break;
         }
+        // Rather than run on without video or phones: exit with an error, and
+        // systemd starts the core again.
+        if let Some(reason) = projection.failure() {
+            return Err(format!("Android Auto stopped: {reason}").into());
+        }
         // Sleep until a client, the phone, a stop request or the next snapshot
         // needs attention, so a command is forwarded the moment it arrives.
         server.wait(

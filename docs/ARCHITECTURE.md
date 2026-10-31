@@ -15,6 +15,10 @@
 7. Audio stays in the core.
 8. The UI has no pointer or touch input.
 9. Restarting the UI does not end the phone's session.
+10. The core does not run on with a broken part: when the Android Auto worker
+    or the video decoder thread stops for good, the core exits with an error,
+    and a panic in any thread aborts it (release builds). systemd then starts
+    it again after 2 seconds (`Restart=on-failure`).
 
 ## Processes
 
