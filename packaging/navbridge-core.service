@@ -18,7 +18,12 @@ StateDirectory=navbridge
 ExecStartPre=+/usr/bin/rm -f -- /dev/shm/navbridge-video.rgba
 ExecStart=/opt/navbridge/bin/navbridge-core --config /opt/navbridge/config/core.toml
 Restart=on-failure
+# The core exits when a part of it fails for good. Restarts come after 2 s,
+# then wait longer each time, up to 30 s: 2, 4, 8, 15, 30 s. The count starts
+# again at each boot (systemd 254 or later; older ones ignore the steps).
 RestartSec=2
+RestartSteps=4
+RestartMaxDelaySec=30
 Environment=RUST_LOG=info
 UMask=0007
 

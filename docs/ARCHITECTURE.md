@@ -18,7 +18,9 @@
 10. The core does not run on with a broken part: when the Android Auto worker
     or the video decoder thread stops for good, the core exits with an error,
     and a panic in any thread aborts it (release builds). systemd then starts
-    it again after 2 seconds (`Restart=on-failure`).
+    it again (`Restart=on-failure`): after 2 seconds, then waiting longer each
+    time it fails again, up to 30 seconds, so a failure that does not clear
+    does not restart it every 2 seconds.
 
 ## Processes
 
