@@ -89,10 +89,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 ClientCommand::RequestSnapshot => next_snapshot = Instant::now(),
                 ClientCommand::SetNightMode { enabled } => projection.set_night_mode(enabled),
-                ClientCommand::SetParkingBrake { engaged } => {
-                    info!(engaged, "parking brake");
-                    projection.set_parking_brake(engaged);
-                }
+                ClientCommand::SetParkingBrake { engaged } => projection.set_parking_brake(engaged),
                 ClientCommand::HideProjection => projection.hide_session(),
                 ClientCommand::ResumeProjection => projection.resume_session(),
                 ClientCommand::NavigationInput { key, pressed } => {
@@ -154,7 +151,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let session = phone.phone_connected || phone.streaming;
             bluetooth.update(wireless.enabled, wireless.hotspot, session);
             let vehicle = ibus.snapshot();
-            projection.set_vehicle(vehicle.interface, vehicle.speed_kmh);
+            projection.set_vehicle(vehicle.interface, vehicle.speed_kmh, vehicle.handbrake);
             // The ignition off (for long enough): the Pi shuts down, which
             // stops this core first.
             if !powering_off && ibus.shutdown_due() {

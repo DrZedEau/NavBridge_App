@@ -2184,6 +2184,7 @@ mod vehicle_tests {
             coolant_c: Some(90),
             outside_c: Some(-4),
             odometer_km: Some(123_456),
+            handbrake: Some(true),
         };
         assert_eq!(
             vehicle_status(&vehicle, true),
@@ -2296,6 +2297,7 @@ mod preview {
             coolant_c: Some(90),
             outside_c: Some(14),
             odometer_km: Some(187_654),
+            handbrake: Some(false),
         };
         for (name, screen, page) in [
             // Each Phone page follows another screen, so that its switch is

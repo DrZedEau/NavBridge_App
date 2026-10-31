@@ -81,8 +81,8 @@ mod sensor_type {
     pub const NIGHT: u32 = 10;
     pub const DRIVING_STATUS: u32 = 13;
 }
-/// Android Auto's driving restrictions: none while stopped or parked, all of
-/// them (video, keyboard, voice, setup, long messages) otherwise.
+/// Android Auto's driving restrictions: none while parked and standing still,
+/// all of them (video, keyboard, voice, setup, long messages) otherwise.
 const UNRESTRICTED: i32 = 0;
 const FULLY_RESTRICTED: i32 = 31;
 /// How old the last fix may be to answer the phone's request for location.
@@ -700,8 +700,8 @@ impl Session {
         }
         Ok(())
     }
-    /// The parking brake, and with it the driving restrictions while the car's
-    /// speed is unknown: none while it is on, all of them while it is off.
+    /// The parking brake, and with it the driving restrictions: none while it
+    /// is on and the car stands still, all of them while it is off.
     pub fn parking_brake(&mut self, engaged: bool) -> Result<(), String> {
         self.parked = engaged;
         self.send_parking_brake()?;
@@ -715,9 +715,8 @@ impl Session {
         self
     }
     /// The car's speed in km/h, or None once the I-Bus no longer reports it.
-    /// While known, it decides the driving restrictions: none while the car
-    /// stands, all of them while it moves; the parking brake decides again
-    /// once it is not.
+    /// While known, a moving car is restricted whatever the parking brake
+    /// says; standing still, the parking brake decides.
     pub fn vehicle_speed(&mut self, kmh: Option<u16>) -> Result<(), String> {
         let was = self.restricted();
         self.speed = kmh;
@@ -728,11 +727,11 @@ impl Session {
         }
         Ok(())
     }
+    /// Restricted unless parked and, while the speed is known, standing
+    /// still: the I-Bus's 0 km/h alone is anything under 2 km/h, such as
+    /// creeping in traffic.
     fn restricted(&self) -> bool {
-        match self.speed {
-            Some(kmh) => kmh > 0,
-            None => !self.parked,
-        }
+        !self.parked || self.speed.is_some_and(|kmh| kmh > 0)
     }
     fn send_speed(&mut self) -> Result<(), String> {
         let Some(kmh) = self.speed else {
@@ -1232,20 +1231,29 @@ mod tests {
         let sent_now = events(&mut s, &mut peer);
         assert_eq!(sent_now.len(), 1);
         assert_eq!(speed(&sent_now[0]), Some(8_333));
-        // Stopped: none, whatever the parking brake says.
+        // 0 km/h is anything under 2: without the parking brake, still all.
         s.vehicle_speed(Some(0)).unwrap();
         let sent_now = events(&mut s, &mut peer);
-        assert_eq!(
-            (speed(&sent_now[0]), status(&sent_now[1])),
-            (Some(0), Some(UNRESTRICTED))
-        );
-        // No speed any more, as with the ignition off: the brake decides again.
-        s.vehicle_speed(None).unwrap();
-        let sent_now = events(&mut s, &mut peer);
-        assert_eq!(status(&sent_now[0]), Some(FULLY_RESTRICTED));
+        assert_eq!(sent_now.len(), 1);
+        assert_eq!(speed(&sent_now[0]), Some(0));
+        // Standing with the parking brake on: none.
         s.parking_brake(true).unwrap();
         let sent_now = events(&mut s, &mut peer);
         assert_eq!(status(&sent_now[0]), Some(UNRESTRICTED));
+        // Moving off with the brake still on: all of them again.
+        s.vehicle_speed(Some(2)).unwrap();
+        let sent_now = events(&mut s, &mut peer);
+        assert_eq!(
+            (speed(&sent_now[0]), status(&sent_now[1])),
+            (Some(556), Some(FULLY_RESTRICTED))
+        );
+        // No speed any more, as with the ignition off: the brake alone decides.
+        s.vehicle_speed(None).unwrap();
+        let sent_now = events(&mut s, &mut peer);
+        assert_eq!(status(&sent_now[0]), Some(UNRESTRICTED));
+        s.parking_brake(false).unwrap();
+        let sent_now = events(&mut s, &mut peer);
+        assert_eq!(status(&sent_now[0]), Some(FULLY_RESTRICTED));
         // Without the I-Bus as the phone connected, a start for speed is refused.
         let (tls, mut peer) = super::super::tls::tests::pair();
         let mut plain = connected_session();

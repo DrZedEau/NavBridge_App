@@ -181,7 +181,7 @@ buttons).
 | M / S | Open the navigation app / media in Android Auto |
 | P | Pause or resume music (the phone knows which) |
 | Page Up / Page Down | Day / night mode from any page |
-| Ctrl / Alt | Parking brake on / off from any page: Android Auto's driving restrictions off / on while the I-Bus gives no speed |
+| Ctrl / Alt | Parking brake on / off from any page: Android Auto's driving restrictions off / on |
 | Q | Quit |
 
 In Android Auto, Up/Down switch focus sections; Left/Right step through items
@@ -190,13 +190,14 @@ using rotary input. Enter selects and Backspace goes back.
 There are no touchscreen controls. Night mode starts in day mode and survives
 phone reconnects until the core restarts.
 
-Android Auto gets the parking brake and a driving status. While the I-Bus
-reports the car's speed, that speed decides: standing still, no driving
-restrictions, so the keyboard, long lists and settings work; moving, all of
-them. Without a speed (no I-Bus board, the ignition off), the parking brake
-decides: with it on, none; with it off, all of them. Until the first Ctrl or
-Alt after the core starts, the car then counts as moving, as the phone
-otherwise assumes. The state survives phone
+Android Auto gets the parking brake and a driving status: no driving
+restrictions while the parking brake is on, so the keyboard, long lists and
+settings work; all of them while it is off. While the I-Bus is read, the
+parking brake is the car's handbrake, and a speed above 0 km/h restricts
+whatever the handbrake says; the I-Bus's 0 km/h alone is anything under 2 km/h,
+such as creeping in traffic, so it never unlocks by itself. Until the first
+Ctrl or Alt after the core starts, or until the cluster first reports the
+handbrake, the car counts as moving, as the phone otherwise assumes. The state survives phone
 reconnects like night mode. The board should tap the key (press and release)
 when the brake changes, and once more when it powers up, rather than hold it:
 held, Ctrl and Alt together with Backspace would quit the UI. The phone can
@@ -314,7 +315,13 @@ traffic, as the car is then asleep.
 
 Android Auto gets the speed too: a phone connecting while the I-Bus is read is
 offered a speed sensor, which then gets every reading (each snapshot, twice a
-second), and the speed sets the driving restrictions (see Keyboard). The core
+second). The driving restrictions lift only while the car stands still with the
+handbrake on (see Keyboard), which the cluster reports in its sensor status
+(`13`, the first data byte's lowest bit) whenever it changes; the core logs
+`handbrake` with each change. Until the cluster has reported it since the core
+started, the handbrake counts as off, so pull or release it once if Android
+Auto stays restricted. While the I-Bus is read, the parking brake keys and
+buttons do nothing. The core
 logs `Android Auto uses the car's speed from its I-Bus` when the phone takes
 it. The line below the readings shows the link
 and how many frames it carried; damaged frames point to a wiring or interference problem.

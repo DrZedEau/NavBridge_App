@@ -42,12 +42,14 @@ struct State {
     projection: ProjectionSnapshot,
     usb: UsbSnapshot,
     night: bool,
-    /// The parking brake is on: the phone lifts its driving restrictions.
+    /// The parking brake is on: the phone lifts its driving restrictions,
+    /// unless the I-Bus reports the car moving.
     parked: bool,
     /// A GNSS receiver is connected: a phone connecting now is offered the
     /// car's location.
     gnss: bool,
-    /// The I-Bus is read: a phone connecting now is offered the car's speed.
+    /// The I-Bus is read: a phone connecting now is offered the car's speed,
+    /// and the cluster's handbrake is the parking brake.
     speedometer: bool,
     /// The car's speed in km/h, while the I-Bus reports it.
     speed: Option<u16>,
@@ -186,9 +188,21 @@ impl ProjectionService {
         self.state.write().unwrap().night = night;
         self.command(Command::Night(night));
     }
-    /// Kept for the next phone too, as night mode is.
+    /// Kept for the next phone too, as night mode is. While the I-Bus is
+    /// read, the car's handbrake is the parking brake instead.
     pub fn set_parking_brake(&self, engaged: bool) {
-        self.state.write().unwrap().parked = engaged;
+        {
+            let mut s = self.state.write().unwrap();
+            if s.speedometer {
+                debug!(
+                    engaged,
+                    "parking brake ignored: the I-Bus reports the handbrake"
+                );
+                return;
+            }
+            s.parked = engaged;
+        }
+        info!(engaged, "parking brake");
         self.command(Command::ParkingBrake(engaged));
     }
     /// For the GNSS service: whether a receiver is connected, and its fixes.
@@ -204,17 +218,31 @@ impl ProjectionService {
         }
     }
     /// The car's I-Bus, at each snapshot: whether it is read, so a phone
-    /// connecting later is offered the speed, and the speed in km/h, which a
-    /// connected phone gets every time, as from a speedometer.
-    pub fn set_vehicle(&self, read: bool, speed: Option<u16>) {
-        let send = {
+    /// connecting later is offered the speed; the speed in km/h, which a
+    /// connected phone gets every time, as from a speedometer; and the
+    /// handbrake, which while the I-Bus is read is the parking brake, off
+    /// until the cluster has reported it.
+    pub fn set_vehicle(&self, read: bool, speed: Option<u16>, handbrake: Option<bool>) {
+        let (send_speed, brake) = {
             let mut s = self.state.write().unwrap();
             let changed = s.speed != speed;
             s.speedometer = read;
             s.speed = speed;
-            s.projection.phone_connected && (changed || speed.is_some())
+            let engaged = handbrake == Some(true);
+            let brake = (read && s.parked != engaged).then(|| {
+                s.parked = engaged;
+                engaged
+            });
+            (
+                s.projection.phone_connected && (changed || speed.is_some()),
+                brake,
+            )
         };
-        if send {
+        if let Some(engaged) = brake {
+            info!(engaged, "handbrake");
+            self.command(Command::ParkingBrake(engaged));
+        }
+        if send_speed {
             self.command(Command::Speed(speed));
         }
     }

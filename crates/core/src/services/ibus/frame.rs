@@ -37,6 +37,8 @@ pub enum Reading {
     Odometer {
         km: u32,
     },
+    /// The handbrake is pulled, from the cluster's sensor status.
+    Handbrake(bool),
 }
 
 /// The frame on one of the microcontroller's lines. Lines that are not
@@ -112,6 +114,9 @@ pub fn decode(frame: &Frame) -> Option<Reading> {
         [0x17, low, middle, high, ..] => Some(Reading::Odometer {
             km: u32::from_le_bytes([low, middle, high, 0]),
         }),
+        // Its first byte's lowest bit; the others are warnings, such as worn
+        // brake pads, and the next byte says whether the engine runs.
+        [0x13, sensors, ..] => Some(Reading::Handbrake(sensors & 0x01 != 0)),
         _ => None,
     }
 }
@@ -402,6 +407,15 @@ mod tests {
         assert_eq!(
             read("IBUS1 RX 3 800ABF1740E2010000000081"),
             Some(Reading::Odometer { km: 123_456 })
+        );
+        // Handbrake on, brake pads worn, engine running.
+        assert_eq!(
+            read("IBUS1 RX 4 800ABF1305010000000086A4"),
+            Some(Reading::Handbrake(true))
+        );
+        assert_eq!(
+            read("IBUS1 RX 5 800ABF1304010000000086A5"),
+            Some(Reading::Handbrake(false))
         );
         assert_eq!(ignition(0x00), Ignition::Off);
         assert_eq!(ignition(0x01), Ignition::Accessory);

@@ -74,8 +74,10 @@ each one.
   opens the input, sensor (night mode, parking brake and driving status, and
   location while a GNSS receiver is connected), video, three audio and
   microphone channels. The driving status has no restrictions while the parking
-  brake is on and all of them otherwise, the brake counting as off until the UI
-  first reports it. The GNSS service passes
+  brake is on and the car stands still, and all of them otherwise, the brake
+  counting as off until first reported. While the I-Bus is read, the parking
+  brake is the cluster's handbrake and any speed above 0 km/h restricts; the
+  UI's parking brake is ignored. The GNSS service passes
   each GPSD fix straight to the session thread.
 - On SIGTERM or SIGINT the core asks the phone to end the session and waits up to
   one second for its reply before exiting.
@@ -160,8 +162,8 @@ Both services require a paired phone over an encrypted link.
 The I-Bus service reads the carrier board's ATmega32U4 on its own thread: one
 line per frame the board hears, which the service checks (length, XOR
 checksum) and decodes when the instrument cluster sends it: ignition (`11`),
-road and engine speed (`18`), outside and coolant temperature (`19`) and
-odometer (`17`). It opens the port raw and exclusive, so GPSD cannot
+road and engine speed (`18`), outside and coolant temperature (`19`),
+odometer (`17`) and the handbrake (`13`, sensor status). It opens the port raw and exclusive, so GPSD cannot
 probe it, and never at 1200 baud, which would restart the board into its
 bootloader. It waits for bytes in `poll()`, at most 500 ms so that it can stop,
 and reopens the port every 2 seconds while it is missing. Each reading keeps

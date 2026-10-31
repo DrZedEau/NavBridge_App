@@ -199,6 +199,9 @@ pub struct VehicleSnapshot {
     pub coolant_c: Option<i8>,
     pub outside_c: Option<i8>,
     pub odometer_km: Option<u32>,
+    /// The handbrake is pulled, as the cluster last reported it.
+    #[serde(default)]
+    pub handbrake: Option<bool>,
 }
 
 /// The ignition key's position, as the instrument cluster reports it.

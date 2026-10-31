@@ -12,8 +12,8 @@ quit = ["Q"]
 normal_mode = ["PageUp"]
 night_mode = ["PageDown"]
 # The parking brake, which lifts Android Auto's driving restrictions while on
-# (from any page). Until the first press after the core starts, the car counts
-# as moving.
+# (from any page), unless the I-Bus is read: its handbrake decides then. Until
+# the first press after the core starts, the car counts as moving.
 parking_brake_on = ["Control", "ControlR"]
 parking_brake_off = ["Alt"]
 
