@@ -24,8 +24,9 @@ and odometer from its I-Bus, through the carrier board's ATmega32U4.
   back to the car, so the phone pauses its video; returning to Phone
   restores it while retaining the phone session and audio.
 - Bounded JSON-lines IPC carries commands and snapshots through a Unix socket.
-  Video uses a generation-aware `/dev/shm/navbridge-video.rgba` frame exchange
-  rather than JSON. See [architecture](docs/ARCHITECTURE.md).
+  Video uses a generation-aware frame file beside the socket
+  (`/run/navbridge/video.rgba`, open only to the services' group) rather than
+  JSON. See [architecture](docs/ARCHITECTURE.md).
 - Projection is H.264 at 800x480, downscaled with Lanczos to the 400x240 panel.
   FFmpeg normalizes full/limited color range. DPI and 30/60 fps are configurable.
   The Pi 4 / CM4's hardware decoder (`h264_v4l2m2m`) is used when present; the
@@ -129,7 +130,7 @@ System's Video box shows it.
 The default configuration requests 60 fps. Frame-rate wire values are 60=1 and
 30=2, verified on the Pixel/CM5 during live comparison. Older AASDK definitions
 reverse these values. The frontend loads each frame as soon as the core
-publishes it (inotify on `/dev/shm`) and shows it at the panel's next refresh.
+publishes it (inotify on `/run/navbridge`) and shows it at the panel's next refresh.
 Measured animation rates can be below the requested maximum, especially when
 the phone reduces updates for static screens. For a frontend update-rate log
 every 5 seconds, start with `NAVBRIDGE_FRAME_STATS=1 ./scripts/run_kms.sh`.

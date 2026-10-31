@@ -1,5 +1,7 @@
 pub mod ipc_output;
 
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 
 /// Physical/logical dimensions of the NavBridge shell UI.
@@ -11,8 +13,12 @@ pub const MEDIA_WIDTH: u32 = 800;
 pub const MEDIA_HEIGHT: u32 = 480;
 pub const MEDIA_DPI: u32 = 160;
 
-/// Cross-process software-decoder frame exchange. This is a tmpfs file on Linux.
-pub const VIDEO_FRAME_PATH: &str = "/dev/shm/navbridge-video.rgba";
+/// The projection frame, which the core decodes and the UI shows: a file
+/// beside the IPC socket, in a tmpfs directory open only to NavBridge:
+/// /run/navbridge for the services, a private one for the run scripts.
+pub fn video_frame_path(socket_path: impl AsRef<Path>) -> PathBuf {
+    socket_path.as_ref().with_file_name("video.rgba")
+}
 pub const VIDEO_FRAME_MAGIC: [u8; 4] = *b"NBRG";
 pub const VIDEO_FRAME_HEADER_SIZE: usize = 20;
 
@@ -350,6 +356,18 @@ pub enum InputAction {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_video_frame_sits_beside_the_socket() {
+        assert_eq!(
+            video_frame_path(DEFAULT_SOCKET_PATH),
+            Path::new("/run/navbridge/video.rgba")
+        );
+        assert_eq!(
+            video_frame_path("/run/user/1000/navbridge-run.x/core.sock"),
+            Path::new("/run/user/1000/navbridge-run.x/video.rgba")
+        );
+    }
 
     #[test]
     fn display_and_media_geometry_are_intentionally_different() {

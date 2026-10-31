@@ -47,7 +47,9 @@ if (( DETACH )); then
   done
   exit 0
 fi
-RUN_DIR=$(mktemp -d /tmp/navbridge-run.XXXXXX)
+# The socket and the projection frames: private, and in tmpfs, as frames are
+# written many times a second.
+RUN_DIR=$(mktemp -d /run/navbridge-run.XXXXXX)
 CORE_PID= UI_PID=
 cleanup() {
   trap - EXIT INT TERM

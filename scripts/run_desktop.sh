@@ -18,14 +18,8 @@ for app in navbridge-core navbridge-ui; do
   [[ -x $ROOT/target/release/$app ]] || { echo 'Run ./scripts/build_kms.sh first.' >&2; exit 1; }
   if pgrep -x "$app" >/dev/null; then echo "Stop the existing $app first." >&2; exit 1; fi
 done
-# A sudo run (run_kms.sh) leaves the projection frame owned by root, which
-# this account cannot replace.
-FRAME=/dev/shm/navbridge-video.rgba
-if [[ -e $FRAME && ! -O $FRAME ]]; then
-  echo "Remove the frame an earlier run left: sudo rm $FRAME" >&2
-  exit 1
-fi
-RUN_DIR=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/navbridge-run.XXXXXX")
+# The socket and the projection frames, private to this account.
+RUN_DIR=$(mktemp -d "${XDG_RUNTIME_DIR:-/dev/shm}/navbridge-run.XXXXXX")
 CORE_PID= UI_PID=
 cleanup() {
   trap - EXIT INT TERM

@@ -34,12 +34,15 @@ projection view                       ALSA playback and microphone
        ^                              GPSD client, system metrics
        |                              Wi-Fi hotspot, BlueZ (wireless)
        |                              I-Bus (ATmega32U4 serial)
-       | /dev/shm RGBA frames
+       | /run/navbridge RGBA frames
        +----------------------------------------------
 ```
 
-The socket defaults to `/run/navbridge/core.sock`; the development runner uses a
-temporary directory.
+The socket defaults to `/run/navbridge/core.sock`, and the projection frames go
+beside it, in `video.rgba`. systemd keeps that directory in tmpfs, open only to
+the services' group (`RuntimeDirectoryMode=0770`), and keeps it while the core
+restarts, so the UI's inotify watch on it holds. The run scripts use a private
+temporary directory in tmpfs instead.
 
 - UI to core: `hello`, `request_snapshot`, `set_night_mode`, `set_parking_brake`,
   `hide_projection`, `resume_projection`, `navigation_input`, `phone_action`,
@@ -102,7 +105,7 @@ gives way to software, which starts from the last SPS/PPS and a new keyframe
 libswscale (Lanczos): 800x480 -> 400x240 RGBA
     |
     v
-/dev/shm/navbridge-video.rgba: header + pixels, replaced atomically
+/run/navbridge/video.rgba: header + pixels, replaced atomically
     |
     v
 Slint image, loaded as soon as inotify reports the new file

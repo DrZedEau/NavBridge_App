@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use config::CoreConfig;
 use ipc::IpcServer;
-use navbridge_common::{AppSnapshot, ClientCommand, ServerEvent};
+use navbridge_common::{video_frame_path, AppSnapshot, ClientCommand, ServerEvent};
 use services::android_auto::ProjectionService;
 use services::codec::Gain;
 use services::system::SystemService;
@@ -57,6 +57,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let projection = ProjectionService::start(
         config.android_auto.clone(),
         config.audio.clone(),
+        video_frame_path(&config.socket_path),
         settings.clone(),
     )?;
     // While a receiver is connected, the phone gets the car's position.

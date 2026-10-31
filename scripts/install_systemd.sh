@@ -172,8 +172,6 @@ if (( START )); then
     echo "Stop the manually launched NavBridge app, then rerun this installer to finish startup." >&2
     exit 1
   fi
-  # A previous sudo developer run may have left a root-owned frame in sticky tmpfs.
-  rm -f /dev/shm/navbridge-video.rgba
   systemctl start navbridge-core.service navbridge-ui.service
   sleep 3
   for unit in navbridge-core navbridge-ui; do

@@ -21,12 +21,13 @@ use crate::services::{
 use crate::settings::Settings;
 use navbridge_common::{
     NavigationKey, PhoneAction, ProjectionEvent, ProjectionPhase, ProjectionSnapshot, TouchKind,
-    UsbSnapshot, VIDEO_FRAME_PATH,
+    UsbSnapshot,
 };
 use std::{
     io,
     net::{SocketAddr, TcpListener},
     os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, SyncSender},
@@ -98,10 +99,11 @@ pub struct ProjectionService {
 }
 impl ProjectionService {
     /// The DPI and frame rate chosen in Settings, kept in `settings`, replace
-    /// core.toml's.
+    /// core.toml's. Decoded video goes to `frame_path`, for the UI.
     pub fn start(
         config: AndroidAutoConfig,
         audio: AudioConfig,
+        frame_path: PathBuf,
         settings: Arc<Settings>,
     ) -> io::Result<Self> {
         let saved = settings.load();
@@ -133,7 +135,8 @@ impl ProjectionService {
         let frame_size = FrameSize::default();
         let video_size = frame_size.clone();
         let worker = thread::spawn(move || {
-            if let Err(e) = runner(config, audio, video_size, s.clone(), inbox, event_tx, end) {
+            let frame = (frame_path, video_size);
+            if let Err(e) = runner(config, audio, frame, s.clone(), inbox, event_tx, end) {
                 error!(%e, "Android Auto stopped");
                 let mut state = s.write().unwrap();
                 state.projection.phase = ProjectionPhase::Error;
@@ -459,7 +462,7 @@ fn listen_before_address(address: SocketAddr) -> io::Result<TcpListener> {
 fn runner(
     config: AndroidAutoConfig,
     audio: AudioConfig,
-    frame_size: FrameSize,
+    (frame_path, frame_size): (PathBuf, FrameSize),
     state: Arc<RwLock<State>>,
     inbox: Inbox,
     events: EventSender,
@@ -477,7 +480,7 @@ fn runner(
         thread::sleep(Duration::from_secs(1));
     }
     let video = VideoPipeline::start(
-        VIDEO_FRAME_PATH,
+        frame_path,
         config.decoder == DecoderChoice::Auto,
         frame_size,
     )?;

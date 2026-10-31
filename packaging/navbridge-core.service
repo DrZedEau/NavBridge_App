@@ -10,12 +10,13 @@ User=@USER@
 Group=@GROUP@
 SupplementaryGroups=plugdev audio dialout
 WorkingDirectory=/opt/navbridge
+# The IPC socket and the projection frames, for the service's group only.
+# Kept while the core stops or restarts, so the UI's watch on it holds.
 RuntimeDirectory=navbridge
 RuntimeDirectoryMode=0770
+RuntimeDirectoryPreserve=yes
 # Keeps settings that survive a restart, such as wireless mode.
 StateDirectory=navbridge
-# Clear the disposable frame left by a sudo KMS development run.
-ExecStartPre=+/usr/bin/rm -f -- /dev/shm/navbridge-video.rgba
 ExecStart=/opt/navbridge/bin/navbridge-core --config /opt/navbridge/config/core.toml
 Restart=on-failure
 # The core exits when a part of it fails for good. Restarts come after 2 s,

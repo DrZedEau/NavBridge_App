@@ -6,7 +6,7 @@ mod ipc;
 use std::cell::RefCell;
 use std::env;
 use std::io::{self, Read};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -14,9 +14,9 @@ use config::{KeyboardConfig, UiConfig};
 use input::{KeyAction, KeyMap};
 use ipc::IpcEvent;
 use navbridge_common::{
-    AppSnapshot, ClientCommand, Ignition, NavigationKey, ProjectionEvent, ServerEvent,
-    StreamFormat, TouchKind, VehicleSnapshot, MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH,
-    VIDEO_FRAME_HEADER_SIZE, VIDEO_FRAME_MAGIC, VIDEO_FRAME_PATH,
+    video_frame_path, AppSnapshot, ClientCommand, Ignition, NavigationKey, ProjectionEvent,
+    ServerEvent, StreamFormat, TouchKind, VehicleSnapshot, DEFAULT_SOCKET_PATH, MEDIA_HEIGHT,
+    MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH, VIDEO_FRAME_HEADER_SIZE, VIDEO_FRAME_MAGIC,
 };
 use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer};
 use tracing_subscriber::EnvFilter;
@@ -83,6 +83,8 @@ struct UiState {
     /// The size projection frames come in: the panel's 400x240, or 800x480
     /// for a UI drawn twice as large.
     frame_size: (u32, u32),
+    /// The core's projection frames, beside its socket.
+    frame_path: PathBuf,
     /// Where a finger or the mouse holds the projection, in Android Auto's
     /// pixels, and when it last moved there.
     touch: Option<(u32, u32)>,
@@ -104,6 +106,7 @@ impl Default for UiState {
             held_navigation: None,
             video_sequence: std::cell::Cell::new(None),
             frame_size: (UI_WIDTH, UI_HEIGHT),
+            frame_path: video_frame_path(DEFAULT_SOCKET_PATH),
             touch: None,
             touch_moved_at: None,
         }
@@ -157,8 +160,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     ui.window().set_fullscreen(ui_config.fullscreen);
     ui.set_double_size(ui_config.scale > 1);
 
+    let frame_path = video_frame_path(&ui_config.socket_path);
     let state = Rc::new(RefCell::new(UiState {
         frame_size,
+        frame_path: frame_path.clone(),
         ..UiState::default()
     }));
     render_state(&ui, &state.borrow());
@@ -383,7 +388,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
     let weak = ui.as_weak();
-    frame_watch::spawn(Path::new(VIDEO_FRAME_PATH), move || {
+    frame_watch::spawn(&frame_path, move || {
         let _ = weak.upgrade_in_event_loop(|ui| ui.invoke_frame_ready());
     })?;
 
@@ -706,7 +711,7 @@ fn render_state(ui: &AppWindow, state: &UiState) {
         ui.set_video_active(false);
         ui.set_projection_frame(Image::default());
         let baseline = if state.screen == Screen::Phone {
-            std::fs::File::open(VIDEO_FRAME_PATH)
+            std::fs::File::open(&state.frame_path)
                 .ok()
                 .and_then(|mut file| read_frame_header(&mut file, state.frame_size).ok())
         } else {
@@ -811,7 +816,7 @@ fn refresh_projection(ui: &AppWindow, state: &UiState) -> bool {
     let previous = state.video_sequence.get();
     // Open once: atomic replacement cannot mix a header from one frame
     // with pixels from another. Unchanged frames cost only 20 bytes.
-    let result = std::fs::File::open(VIDEO_FRAME_PATH)
+    let result = std::fs::File::open(&state.frame_path)
         .and_then(|mut file| read_projection(&mut file, previous, state.frame_size));
     match result {
         Ok(Some((sequence, pixels))) => {
