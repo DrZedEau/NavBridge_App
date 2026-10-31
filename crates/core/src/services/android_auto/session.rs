@@ -76,12 +76,13 @@ const FOCUS_NATIVE: u32 = 2;
 /// Sensors the car can offer the phone.
 mod sensor_type {
     pub const LOCATION: u32 = 1;
+    pub const SPEED: u32 = 3;
     pub const PARKING_BRAKE: u32 = 7;
     pub const NIGHT: u32 = 10;
     pub const DRIVING_STATUS: u32 = 13;
 }
-/// Android Auto's driving restrictions: none while parked, all of them
-/// (video, keyboard, voice, setup, long messages) otherwise.
+/// Android Auto's driving restrictions: none while stopped or parked, all of
+/// them (video, keyboard, voice, setup, long messages) otherwise.
 const UNRESTRICTED: i32 = 0;
 const FULLY_RESTRICTED: i32 = 31;
 /// How old the last fix may be to answer the phone's request for location.
@@ -154,6 +155,12 @@ pub struct Session {
     /// is offered the car's location.
     gnss: bool,
     location_sensor: bool,
+    /// The I-Bus was being read when the session started, so the phone is
+    /// offered the car's speed.
+    speedometer: bool,
+    speed_sensor: bool,
+    /// The car's speedometer, in km/h, while the I-Bus reports it.
+    speed: Option<u16>,
     last_fix: Option<(Fix, Instant)>,
     mic: bool,
     mic_window: u32,
@@ -166,7 +173,7 @@ pub struct Session {
 fn parse<M: Message>(data: &[u8]) -> Result<M, String> {
     M::parse_from_bytes(data).map_err(|e| e.to_string())
 }
-pub fn discovery(config: &AndroidAutoConfig, gnss: bool) -> p::Discovery {
+pub fn discovery(config: &AndroidAutoConfig, gnss: bool, speedometer: bool) -> p::Discovery {
     let mut d = p::Discovery::new();
     d.set_head_unit_name("NavBridge".into());
     d.set_car_model("BMW".into());
@@ -192,21 +199,18 @@ pub fn discovery(config: &AndroidAutoConfig, gnss: bool) -> p::Discovery {
     let mut sensor = p::Channel::new();
     sensor.set_channel_id(SENSOR as u32);
     let mut sc = p::SensorChannel::new();
-    let offered: &[u32] = if gnss {
-        &[
-            sensor_type::NIGHT,
-            sensor_type::PARKING_BRAKE,
-            sensor_type::DRIVING_STATUS,
-            sensor_type::LOCATION,
-        ]
-    } else {
-        &[
-            sensor_type::NIGHT,
-            sensor_type::PARKING_BRAKE,
-            sensor_type::DRIVING_STATUS,
-        ]
-    };
-    for &kind in offered {
+    let mut offered = vec![
+        sensor_type::NIGHT,
+        sensor_type::PARKING_BRAKE,
+        sensor_type::DRIVING_STATUS,
+    ];
+    if gnss {
+        offered.push(sensor_type::LOCATION);
+    }
+    if speedometer {
+        offered.push(sensor_type::SPEED);
+    }
+    for kind in offered {
         let mut s = p::Sensor::new();
         s.set_type(kind);
         sc.sensors.push(s);
@@ -304,6 +308,9 @@ impl Session {
             driving_status_sensor: false,
             gnss,
             location_sensor: false,
+            speedometer: false,
+            speed_sensor: false,
+            speed: None,
             last_fix: None,
             mic: false,
             mic_window: 1,
@@ -429,7 +436,7 @@ impl Session {
                     self.send(
                         0,
                         msg::control::SERVICE_DISCOVERY_RESPONSE,
-                        &discovery(&self.config, self.gnss),
+                        &discovery(&self.config, self.gnss, self.speedometer),
                     )?;
                     self.discovered = true;
                     actions.push(Action::Connected(request.device_name().into()));
@@ -539,6 +546,12 @@ impl Session {
                             self.driving_status_sensor = true;
                             self.status(SENSOR, msg::sensor::START_RESPONSE, true)?;
                             self.send_driving_status()?;
+                        }
+                        sensor_type::SPEED if self.speedometer => {
+                            self.speed_sensor = true;
+                            self.status(SENSOR, msg::sensor::START_RESPONSE, true)?;
+                            tracing::info!("Android Auto uses the car's speed from its I-Bus");
+                            self.send_speed()?;
                         }
                         sensor_type::LOCATION if self.gnss => {
                             self.location_sensor = true;
@@ -687,12 +700,52 @@ impl Session {
         }
         Ok(())
     }
-    /// The parking brake, and with it the driving restrictions: none while it
-    /// is on, all of them while it is off.
+    /// The parking brake, and with it the driving restrictions while the car's
+    /// speed is unknown: none while it is on, all of them while it is off.
     pub fn parking_brake(&mut self, engaged: bool) -> Result<(), String> {
         self.parked = engaged;
         self.send_parking_brake()?;
         self.send_driving_status()
+    }
+    /// The car's speedometer from its I-Bus: `offered` when the I-Bus is read
+    /// as the phone connects, and the speed then, in km/h.
+    pub fn with_speedometer(mut self, offered: bool, kmh: Option<u16>) -> Self {
+        self.speedometer = offered;
+        self.speed = kmh;
+        self
+    }
+    /// The car's speed in km/h, or None once the I-Bus no longer reports it.
+    /// While known, it decides the driving restrictions: none while the car
+    /// stands, all of them while it moves; the parking brake decides again
+    /// once it is not.
+    pub fn vehicle_speed(&mut self, kmh: Option<u16>) -> Result<(), String> {
+        let was = self.restricted();
+        self.speed = kmh;
+        self.send_speed()?;
+        if self.restricted() != was {
+            tracing::debug!(?kmh, restricted = !was, "Android Auto driving restrictions");
+            self.send_driving_status()?;
+        }
+        Ok(())
+    }
+    fn restricted(&self) -> bool {
+        match self.speed {
+            Some(kmh) => kmh > 0,
+            None => !self.parked,
+        }
+    }
+    fn send_speed(&mut self) -> Result<(), String> {
+        let Some(kmh) = self.speed else {
+            return Ok(());
+        };
+        if !(self.speed_sensor && self.opened[SENSOR as usize]) {
+            return Ok(());
+        }
+        let mut speed = p::Speed::new();
+        speed.set_speed((f64::from(kmh) * 1e3 / 3.6).round() as i32);
+        let mut e = p::SensorEvent::new();
+        e.speed.push(speed);
+        self.send(SENSOR, msg::sensor::EVENT, &e)
     }
     fn send_parking_brake(&mut self) -> Result<(), String> {
         if !(self.parking_brake_sensor && self.opened[SENSOR as usize]) {
@@ -709,10 +762,10 @@ impl Session {
             return Ok(());
         }
         let mut status = p::DrivingStatus::new();
-        status.set_status(if self.parked {
-            UNRESTRICTED
-        } else {
+        status.set_status(if self.restricted() {
             FULLY_RESTRICTED
+        } else {
+            UNRESTRICTED
         });
         let mut e = p::SensorEvent::new();
         e.driving_status.push(status);
@@ -1114,7 +1167,7 @@ mod tests {
                 fps,
                 ..Default::default()
             };
-            let bytes = discovery(&config, false).write_to_bytes().unwrap();
+            let bytes = discovery(&config, false, false).write_to_bytes().unwrap();
             let decoded = p::Discovery::parse_from_bytes(&bytes).unwrap();
             let video = &decoded.channels[VIDEO as usize - 1]
                 .av_channel
@@ -1125,10 +1178,16 @@ mod tests {
         }
     }
     #[test]
-    fn location_is_offered_only_while_a_receiver_is_connected() {
-        // Night, parking brake and driving status always; location with a receiver.
-        for (gnss, sensors) in [(false, vec![10, 7, 13]), (true, vec![10, 7, 13, 1])] {
-            let bytes = discovery(&AndroidAutoConfig::default(), gnss)
+    fn location_and_speed_are_offered_only_with_their_source() {
+        // Night, parking brake and driving status always; location with a
+        // receiver, speed while the I-Bus is read.
+        for (gnss, speedometer, sensors) in [
+            (false, false, vec![10, 7, 13]),
+            (true, false, vec![10, 7, 13, 1]),
+            (false, true, vec![10, 7, 13, 3]),
+            (true, true, vec![10, 7, 13, 1, 3]),
+        ] {
+            let bytes = discovery(&AndroidAutoConfig::default(), gnss, speedometer)
                 .write_to_bytes()
                 .unwrap();
             let decoded = p::Discovery::parse_from_bytes(&bytes).unwrap();
@@ -1140,6 +1199,63 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(offered, sensors);
         }
+    }
+    #[test]
+    fn the_cars_speed_reaches_the_phone_and_decides_the_restrictions() {
+        let (tls, mut peer) = super::super::tls::tests::pair();
+        // Moving at 88 km/h as the phone connects, with the I-Bus read.
+        let mut s = connected_session().with_speedometer(true, Some(88));
+        s.tls = tls;
+        s.opened[SENSOR as usize] = true;
+        let start = |kind: u32| {
+            let mut r = p::SensorStart::new();
+            r.set_sensor_type(kind);
+            r.write_to_bytes().unwrap()
+        };
+        let events = |s: &mut Session, peer: &mut _| {
+            sent(s, peer)
+                .into_iter()
+                .filter(|(id, _)| *id == 0x8003)
+                .map(|(_, body)| parse::<p::SensorEvent>(&body).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let speed = |e: &p::SensorEvent| e.speed.first().map(|v| v.speed());
+        let status = |e: &p::SensorEvent| e.driving_status.first().map(|v| v.status());
+        // Both start; the speed answers at once, in mm/s, and moving restricts.
+        s.message(SENSOR, 0x8001, &start(3)).unwrap();
+        s.message(SENSOR, 0x8001, &start(13)).unwrap();
+        let sent_now = events(&mut s, &mut peer);
+        assert_eq!(speed(&sent_now[0]), Some(24_444));
+        assert_eq!(status(&sent_now[1]), Some(FULLY_RESTRICTED));
+        // Each reading goes out; only a change of state sends the restrictions.
+        s.vehicle_speed(Some(30)).unwrap();
+        let sent_now = events(&mut s, &mut peer);
+        assert_eq!(sent_now.len(), 1);
+        assert_eq!(speed(&sent_now[0]), Some(8_333));
+        // Stopped: none, whatever the parking brake says.
+        s.vehicle_speed(Some(0)).unwrap();
+        let sent_now = events(&mut s, &mut peer);
+        assert_eq!(
+            (speed(&sent_now[0]), status(&sent_now[1])),
+            (Some(0), Some(UNRESTRICTED))
+        );
+        // No speed any more, as with the ignition off: the brake decides again.
+        s.vehicle_speed(None).unwrap();
+        let sent_now = events(&mut s, &mut peer);
+        assert_eq!(status(&sent_now[0]), Some(FULLY_RESTRICTED));
+        s.parking_brake(true).unwrap();
+        let sent_now = events(&mut s, &mut peer);
+        assert_eq!(status(&sent_now[0]), Some(UNRESTRICTED));
+        // Without the I-Bus as the phone connected, a start for speed is refused.
+        let (tls, mut peer) = super::super::tls::tests::pair();
+        let mut plain = connected_session();
+        plain.tls = tls;
+        plain.opened[SENSOR as usize] = true;
+        plain.message(SENSOR, 0x8001, &start(3)).unwrap();
+        let replies = sent(&mut plain, &mut peer);
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].0, 0x8002);
+        assert_ne!(parse::<p::Status>(&replies[0].1).unwrap().status(), 0);
     }
     #[test]
     fn fixes_reach_the_phone_once_it_starts_the_location_sensor() {
@@ -1246,7 +1362,7 @@ mod tests {
     }
     #[test]
     fn discovery_has_wired_channels_and_consistent_pcm_formats() {
-        let d = discovery(&AndroidAutoConfig::default(), false);
+        let d = discovery(&AndroidAutoConfig::default(), false, false);
         let bytes = d.write_to_bytes().unwrap();
         let parsed = parse::<p::Discovery>(&bytes).unwrap();
         assert_eq!(parsed.channels.len(), 7);

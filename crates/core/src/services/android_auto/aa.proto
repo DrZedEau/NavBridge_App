@@ -53,10 +53,12 @@ message Location {
  optional int32 speed = 6; optional int32 bearing = 7;
 }
 message ParkingBrake { required bool parking_brake = 1; }
+// The car's own speed, in mm/s.
+message Speed { required int32 speed = 1; }
 // Restrictions as bits: 0 none (parked), 31 all of them (driving).
 message DrivingStatus { required int32 status = 1; }
 message SensorEvent {
- repeated Location location = 1; repeated ParkingBrake parking_brake = 7;
+ repeated Location location = 1; repeated Speed speed = 3; repeated ParkingBrake parking_brake = 7;
  repeated Night night_mode = 10; repeated DrivingStatus driving_status = 13;
 }
 // Wireless setup over Bluetooth RFCOMM, before the phone joins the head unit's

@@ -146,6 +146,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let wireless = wifi.snapshot();
             let session = phone.phone_connected || phone.streaming;
             bluetooth.update(wireless.enabled, wireless.hotspot, session);
+            let vehicle = ibus.snapshot();
+            projection.set_vehicle(vehicle.interface, vehicle.speed_kmh);
             let snapshot = AppSnapshot {
                 gnss: gnss.snapshot(),
                 usb: projection.usb_snapshot(),
@@ -153,7 +155,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 system: system.snapshot(),
                 wireless,
                 bluetooth: bluetooth.snapshot(),
-                vehicle: ibus.snapshot(),
+                vehicle,
             };
             server.broadcast_snapshot(snapshot);
 

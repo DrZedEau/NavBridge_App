@@ -49,6 +49,10 @@ struct State {
     /// A GNSS receiver is connected: a phone connecting now is offered the
     /// car's location.
     gnss: bool,
+    /// The I-Bus is read: a phone connecting now is offered the car's speed.
+    speedometer: bool,
+    /// The car's speed in km/h, while the I-Bus reports it.
+    speed: Option<u16>,
 }
 enum Command {
     Hide,
@@ -59,6 +63,7 @@ enum Command {
     Night(bool),
     ParkingBrake(bool),
     Location(Fix),
+    Speed(Option<u16>),
 }
 /// Upper bound on the session thread's sleep, so pings and timeouts stay on time.
 const SESSION_TICK: Duration = Duration::from_millis(100);
@@ -143,6 +148,8 @@ impl ProjectionService {
             night: false,
             parked: false,
             gnss: false,
+            speedometer: false,
+            speed: None,
         }));
         let (tx, commands) = mpsc::sync_channel(128);
         // One pending wakeup covers everything queued before the thread runs.
@@ -232,6 +239,21 @@ impl ProjectionService {
                     let _ = wake.try_send(());
                 }
             }
+        }
+    }
+    /// The car's I-Bus, at each snapshot: whether it is read, so a phone
+    /// connecting later is offered the speed, and the speed in km/h, which a
+    /// connected phone gets every time, as from a speedometer.
+    pub fn set_vehicle(&self, read: bool, speed: Option<u16>) {
+        let send = {
+            let mut s = self.state.write().unwrap();
+            let changed = s.speed != speed;
+            s.speedometer = read;
+            s.speed = speed;
+            s.projection.phone_connected && (changed || speed.is_some())
+        };
+        if send {
+            self.command(Command::Speed(speed));
         }
     }
     pub fn navigation_input(&self, k: NavigationKey, p: bool) {
@@ -504,7 +526,7 @@ fn runner(
         }
         video.reset();
         audio.reset();
-        let (night, parked, gnss, dpi, fps) = {
+        let (night, parked, gnss, speedometer, speed, dpi, fps) = {
             let mut s = state.write().unwrap();
             s.usb.selected = transport.usb().cloned();
             s.usb.error = None;
@@ -514,6 +536,8 @@ fn runner(
                 s.night,
                 s.parked,
                 s.gnss,
+                s.speedometer,
+                s.speed,
                 s.projection.dpi,
                 s.projection.fps,
             )
@@ -524,7 +548,8 @@ fn runner(
                 fps,
                 ..config.clone()
             };
-            let mut session = session::Session::new(config, night, parked, gnss)?;
+            let mut session = session::Session::new(config, night, parked, gnss)?
+                .with_speedometer(speedometer, speed);
             let clock = Instant::now();
             let mut shown = false;
             while !stop.load(Ordering::Relaxed) {
@@ -542,6 +567,7 @@ fn runner(
                         Command::Night(n) => session.night(n)?,
                         Command::ParkingBrake(engaged) => session.parking_brake(engaged)?,
                         Command::Location(fix) => session.location(fix)?,
+                        Command::Speed(kmh) => session.vehicle_speed(kmh)?,
                     }
                 }
                 session.tick()?;
