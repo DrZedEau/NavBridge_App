@@ -8,12 +8,14 @@
    phone.
 3. Control and state travel over a Unix domain socket as newline-delimited JSON.
 4. Projection frames travel through tmpfs, never through the JSON socket.
-5. The NavBridge UI is fixed at **400x240**. Android Auto runs at **800x480**;
-   its DPI is configurable (default 160).
+5. The NavBridge UI is laid out at **400x240**, the panel's size; in a PC
+   window, frontend.toml's `scale = 2` draws it at 800x480. Android Auto runs
+   at **800x480**; its DPI is configurable (default 160).
 6. H.264 is decoded with FFmpeg: on the board's hardware decoder where there is
    one (Pi 4 / CM4), in software otherwise (Pi 5 / CM5).
 7. Audio stays in the core.
-8. The UI has no pointer or touch input.
+8. Touch works alongside the keyboard: a touchscreen panel (libinput on the
+   Pi), or the left mouse button in a PC window.
 9. Restarting the UI does not end the phone's session.
 10. The core does not run on with a broken part: when the Android Auto worker
     or the video decoder thread stops for good, the core exits with an error,
@@ -28,7 +30,7 @@
 navbridge-ui                          navbridge-core
 ------------                          --------------
 Slint 400x240 (KMS)                   USB discovery and AOA switch
-keyboard mapping        JSON IPC      Android Auto session (TLS, channels)
+keys and touch          JSON IPC      Android Auto session (TLS, channels)
 menu, Settings, System <--------->    H.264 decode and scale (FFmpeg)
 projection view                       ALSA playback and microphone
        ^                              GPSD client, system metrics
@@ -44,18 +46,19 @@ the services' group (`RuntimeDirectoryMode=0770`), and keeps it while the core
 restarts, so the UI's inotify watch on it holds. The run scripts use a private
 temporary directory in tmpfs instead.
 
-- UI to core: `hello`, `request_snapshot`, `set_night_mode`, `set_parking_brake`,
-  `hide_projection`, `resume_projection`, `navigation_input`, `phone_action`,
-  `set_wireless`, `set_dpi`, `set_volume`, `set_microphone`, `set_theme`,
-  `start_pairing` and `confirm_pairing`. Settings' choices (wireless mode, DPI,
-  the codec's levels, the UI's theme) are kept in `/var/lib/navbridge/settings.toml`, which each service changes
-  without touching the others' keys. Hiding and resuming
-  move the phone's video focus, so the phone stops sending video while the
-  NavBridge menu is shown.
+- UI to core: `hello`, `set_frame_size` (the size the UI shows projection
+  frames at), `request_snapshot`, `set_night_mode`, `set_parking_brake`,
+  `hide_projection`, `resume_projection`, `navigation_input`, `touch`,
+  `phone_action`, `set_wireless`, `set_dpi`, `set_volume`, `set_microphone`,
+  `set_theme`, `start_pairing`, `stop_pairing` and `confirm_pairing`.
+  Settings' choices (wireless mode, DPI, the codec's levels, the UI's theme)
+  are kept in `/var/lib/navbridge/settings.toml`, which each service changes
+  without touching the others' keys. Hiding and resuming move the phone's video
+  focus, so the phone stops sending video while the NavBridge menu is shown.
 - Core to UI: `hello` (geometry check, and the DPI requested from the phone),
-  `snapshot` (every 500 ms or on request)
-  and `projection_event` (phone connected or disconnected, streaming started,
-  phone asked for the NavBridge menu).
+  `snapshot` (every 500 ms or on request), `projection_event` (phone connected
+  or disconnected, streaming started, phone asked for the NavBridge menu) and
+  `input` (a car button, for the UI to act on as on its key).
 
 The core's main loop sleeps in `poll()` on the listening socket, its clients and
 two internal sockets that signal projection events and stop requests, so a

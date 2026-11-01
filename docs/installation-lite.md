@@ -40,6 +40,7 @@ release.info
 README.md
 THIRD_PARTY_NOTICES.md
 LICENSE
+LICENSE-LGPL-3.0
 ```
 
 Publish the complete archive. It contains the binaries, config and installation assets; users do not need source code, Cargo, Rust or development headers. Separate builds are required for Bookworm and Trixie because their FFmpeg/glibc versions differ. The installer checks the release's OS label, ARM64 ELF headers and available dynamic libraries. Existing unpacked bundles are moved aside on repeat builds.

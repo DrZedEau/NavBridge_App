@@ -191,10 +191,10 @@ buttons).
 In Android Auto, Up/Down switch focus sections; Left/Right step through items
 using rotary input. Enter selects and Backspace goes back.
 
-There are no touchscreen controls. Night mode starts in day mode and survives
-phone reconnects until the core restarts. While the I-Bus is read, it follows
-the headlights: night when the low beam comes on, day when it goes off. The
-keys or a car button still switch it until the low beam next changes.
+Night mode starts in day mode and survives phone reconnects until the core
+restarts. While the I-Bus is read, it follows the headlights: night when the
+low beam comes on, day when it goes off. The keys or a car button still switch
+it until the low beam next changes.
 
 Android Auto gets the parking brake and a driving status: no driving
 restrictions while the parking brake is on, so the keyboard, long lists and

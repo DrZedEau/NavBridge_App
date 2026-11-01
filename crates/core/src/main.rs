@@ -60,11 +60,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let gnss = services::gnss::GnssService::start(projection.gnss_input());
     let ibus = services::ibus::IbusService::start(config.ibus.clone());
 
+    // The DPI as Settings left it, else core.toml's. The UI's size is logged
+    // if it asks for frames at another size than the panel's.
     info!(
-        ui = "400x240",
         media = "800x480",
-        dpi = config.android_auto.dpi,
-        transport = "Android USB AOA",
+        dpi = projection.snapshot().dpi,
         "NavBridge core started"
     );
     if let Some(address) = config.android_auto.head_unit_server {
