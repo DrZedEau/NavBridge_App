@@ -78,9 +78,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let interval = Duration::from_millis(config.snapshot_interval_ms.clamp(100, 5_000));
     let mut next_snapshot = Instant::now();
     let mut powering_off = false;
-    // The low beam as last reported, so that only its changes set night mode,
-    // and the keys can still switch it in between.
-    let mut low_beam = None;
     loop {
         server.accept_pending();
 
@@ -155,14 +152,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let session = phone.phone_connected || phone.streaming;
             bluetooth.update(wireless.enabled, wireless.hotspot, session);
             let vehicle = ibus.snapshot();
-            projection.set_vehicle(vehicle.interface, vehicle.speed_kmh, vehicle.handbrake);
-            // Headlights on: night mode; off: day mode.
-            if let Some(on) = vehicle.low_beam {
-                if low_beam.replace(on) != Some(on) {
-                    info!(low_beam = on, "night mode follows the headlights");
-                    projection.set_night_mode(on);
-                }
-            }
+            projection.set_vehicle(&vehicle);
             // The ignition off (for long enough): the Pi shuts down, which
             // stops this core first.
             if !powering_off && ibus.shutdown_due() {

@@ -21,7 +21,7 @@ use crate::services::{
 use crate::settings::Settings;
 use navbridge_common::{
     NavigationKey, PhoneAction, ProjectionEvent, ProjectionPhase, ProjectionSnapshot, TouchKind,
-    UsbSnapshot,
+    UsbSnapshot, VehicleSnapshot,
 };
 use std::{
     io,
@@ -54,6 +54,9 @@ struct State {
     speedometer: bool,
     /// The car's speed in km/h, while the I-Bus reports it.
     speed: Option<u16>,
+    /// The low beam as the I-Bus last reported it: only its changes set night
+    /// mode, so the keys can still switch it in between.
+    low_beam: Option<bool>,
     /// Why the worker stopped, if it could not go on.
     failure: Option<String>,
 }
@@ -119,6 +122,7 @@ impl ProjectionService {
             gnss: false,
             speedometer: false,
             speed: None,
+            low_beam: None,
             failure: None,
         }));
         let (tx, commands) = mpsc::sync_channel(128);
@@ -227,28 +231,43 @@ impl ProjectionService {
     }
     /// The car's I-Bus, at each snapshot: whether it is read, so a phone
     /// connecting later is offered the speed; the speed in km/h, which a
-    /// connected phone gets every time, as from a speedometer; and the
-    /// handbrake, which while the I-Bus is read is the parking brake, off
-    /// until the cluster has reported it.
-    pub fn set_vehicle(&self, read: bool, speed: Option<u16>, handbrake: Option<bool>) {
-        let (send_speed, brake) = {
+    /// connected phone gets every time, as from a speedometer; the handbrake,
+    /// which while the I-Bus is read is the parking brake, off until the
+    /// cluster has reported it; and the low beam, whose changes set night
+    /// mode: night with the headlights on, day with them off.
+    pub fn set_vehicle(&self, vehicle: &VehicleSnapshot) {
+        let (read, speed) = (vehicle.interface, vehicle.speed_kmh);
+        let (send_speed, brake, night) = {
             let mut s = self.state.write().unwrap();
             let changed = s.speed != speed;
             s.speedometer = read;
             s.speed = speed;
-            let engaged = handbrake == Some(true);
+            let engaged = vehicle.handbrake == Some(true);
             let brake = (read && s.parked != engaged).then(|| {
                 s.parked = engaged;
                 engaged
             });
+            let night = match vehicle.low_beam {
+                Some(on) if s.low_beam != Some(on) => {
+                    s.low_beam = Some(on);
+                    s.night = on;
+                    Some(on)
+                }
+                _ => None,
+            };
             (
                 s.projection.phone_connected && (changed || speed.is_some()),
                 brake,
+                night,
             )
         };
         if let Some(engaged) = brake {
             info!(engaged, "handbrake");
             self.command(Command::ParkingBrake(engaged));
+        }
+        if let Some(on) = night {
+            info!(low_beam = on, "night mode follows the headlights");
+            self.command(Command::Night(on));
         }
         if send_speed {
             self.command(Command::Speed(speed));
