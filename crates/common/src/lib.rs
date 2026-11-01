@@ -207,6 +207,10 @@ pub struct VehicleSnapshot {
     /// The headlights' low beam is on, as the light module last reported it.
     #[serde(default)]
     pub low_beam: Option<bool>,
+    /// An automatic gearbox is in reverse, as the cluster last reported it;
+    /// a manual one always reads as not.
+    #[serde(default)]
+    pub reverse: Option<bool>,
 }
 
 /// The ignition key's position, as the instrument cluster reports it.

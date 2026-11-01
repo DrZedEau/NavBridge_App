@@ -505,6 +505,11 @@ fn pairing_shown(state: &UiState) -> bool {
     state.snapshot.bluetooth.confirm.is_some()
 }
 
+/// The car is in reverse, as the core reports it from the I-Bus.
+fn reversing(state: &UiState) -> bool {
+    state.core_connected && state.snapshot.vehicle.reverse == Some(true)
+}
+
 /// A menu tile: chosen and opened, as Enter does.
 fn tap_tile(state: &mut UiState, index: usize, commands: &Commands) {
     if state.screen != Screen::Menu || pairing_shown(state) {
@@ -608,6 +613,10 @@ fn handle_action(
     if action == KeyAction::Quit {
         release_navigation(state, commands);
         let _ = slint::quit_event_loop();
+        return;
+    }
+    // The reverse camera covers every screen: keys act on none of them.
+    if reversing(state) {
         return;
     }
     // The pairing code shows over any screen and takes Enter and Back.
@@ -810,6 +819,7 @@ fn render_state(ui: &AppWindow, state: &UiState) {
     ui.set_pairing(state.snapshot.bluetooth.pairing);
     let pairing = state.snapshot.bluetooth.confirm.as_ref();
     ui.set_pairing_request(pairing.is_some());
+    ui.set_reversing(reversing(state));
     if let Some(request) = pairing {
         ui.set_pairing_device(request.device.clone().into());
         ui.set_pairing_code(spaced(&request.code).into());
@@ -1926,6 +1936,39 @@ mod navigation_tests {
     }
 
     #[test]
+    fn reverse_gear_covers_every_screen_and_takes_its_keys() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = UiState {
+            screen: Screen::Settings,
+            core_connected: true,
+            ..UiState::default()
+        };
+        state.snapshot.vehicle.reverse = Some(true);
+        assert!(reversing(&state));
+        let press = |state: &mut UiState, action| handle_action(state, action, &tx);
+        // The screen beneath takes no keys...
+        press(&mut state, KeyAction::Right);
+        press(&mut state, KeyAction::Select);
+        press(&mut state, KeyAction::Back);
+        assert_eq!((state.screen, state.settings_index), (Screen::Settings, 0));
+        assert!(rx.try_recv().is_err());
+        // ...while day and night mode still switch from anywhere.
+        press(&mut state, KeyAction::NightMode(true));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientCommand::SetNightMode { enabled: true })
+        ));
+        // Out of reverse, or without the core to say so, the screen is back.
+        state.snapshot.vehicle.reverse = Some(false);
+        assert!(!reversing(&state));
+        press(&mut state, KeyAction::Right);
+        assert_eq!(state.settings_index, 1);
+        state.snapshot.vehicle.reverse = Some(true);
+        state.core_connected = false;
+        assert!(!reversing(&state));
+    }
+
+    #[test]
     fn the_theme_steps_through_amber_blue_and_green_and_outlasts_the_core() {
         use navbridge_common::Theme::{Amber, Blue, Green};
         let (tx, rx) = mpsc::channel();
@@ -2255,6 +2298,7 @@ mod vehicle_tests {
             odometer_km: Some(123_456),
             handbrake: Some(true),
             low_beam: Some(true),
+            reverse: Some(false),
         };
         assert_eq!(
             vehicle_status(&vehicle, true),
@@ -2368,6 +2412,7 @@ mod preview {
             odometer_km: Some(187_654),
             handbrake: Some(false),
             low_beam: Some(false),
+            reverse: Some(false),
         };
         for (name, screen, page) in [
             // Each Phone page follows another screen, so that its switch is
@@ -2387,6 +2432,7 @@ mod preview {
             ("menu-blue", Screen::Menu, 0),
             ("settings-green", Screen::Settings, 0),
             ("menu-green", Screen::Menu, 0),
+            ("reverse", Screen::Phone, 0),
             ("pairing", Screen::Menu, 0),
         ] {
             state.screen = screen;
@@ -2411,6 +2457,8 @@ mod preview {
             // page, pairing open, then not, then the hotspot off.
             state.snapshot.wireless.enabled = !matches!(name, "settings-dpi" | "phone-off");
             state.snapshot.bluetooth.pairing = name == "phone";
+            // The car in reverse, over the Phone page.
+            state.snapshot.vehicle.reverse = Some(name == "reverse");
             state.snapshot.bluetooth.confirm =
                 (name == "pairing").then(|| navbridge_common::PairingRequest {
                     device: "Pixel 10".into(),

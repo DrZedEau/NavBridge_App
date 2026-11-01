@@ -293,6 +293,8 @@ export component AppWindow inherits Window {
     in property <bool> pairing-request: false;
     in property <string> pairing-device: "";
     in property <string> pairing-code: "";
+    // The car is in reverse: the reverse camera shows over every screen.
+    in property <bool> reversing: false;
     in property <string> cpu-usage: "n/a";
     in property <string> ram-usage: "n/a";
     in property <string> cpu-temperature: "n/a";
@@ -761,6 +763,32 @@ export component AppWindow inherits Window {
                     clicked => { root.pairing-answered(answer.accept); }
                 }
             }
+        }
+    }
+
+    // Reverse gear: the reverse camera, until the board that takes one, a
+    // placeholder. Drawn last, over every screen and the pairing code.
+    if root.reversing: Rectangle {
+        x: 0px; y: 0px; width: 400px; height: 240px;
+        background: Palette.background;
+        // Taps reach nothing beneath.
+        TouchArea { }
+        Text {
+            x: 12px; y: 6px; width: 376px; height: 26px;
+            text: "REVERSE";
+            color: Palette.accent; font-size: 20px; font-weight: 700;
+            vertical-alignment: center;
+        }
+        Rectangle {
+            x: 12px; y: 38px; width: 376px; height: 1px;
+            background: Palette.border;
+        }
+        Text {
+            x: 12px; y: 39px; width: 376px; height: 201px;
+            text: "No reverse camera function yet";
+            color: Palette.text; font-size: 17px; font-weight: 700;
+            horizontal-alignment: center; vertical-alignment: center;
+            wrap: word-wrap;
         }
     }
 }

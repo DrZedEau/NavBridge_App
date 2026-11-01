@@ -296,8 +296,9 @@ struct State {
     /// Outside and coolant, in °C.
     temperatures: Option<(i8, i8)>,
     odometer: Option<u32>,
-    /// The cluster says so when it changes: it holds until then.
+    /// The cluster says so when they change: they hold until then.
     handbrake: Option<bool>,
+    reverse: Option<bool>,
     /// The light module says so when it changes: it holds until then.
     low_beam: Option<bool>,
 }
@@ -355,7 +356,14 @@ impl State {
                 self.temperatures.replace((outside, coolant)) != Some((outside, coolant))
             }
             Some(Reading::Odometer { km }) => self.odometer.replace(km) != Some(km),
-            Some(Reading::Handbrake(on)) => self.handbrake.replace(on) != Some(on),
+            Some(Reading::Sensors { handbrake, reverse }) => {
+                let pulled = self.handbrake.replace(handbrake) != Some(handbrake);
+                let shifted = self.reverse.replace(reverse) != Some(reverse);
+                if shifted {
+                    info!(reverse, "reverse gear");
+                }
+                pulled || shifted
+            }
             Some(Reading::LowBeam(on)) => self.low_beam.replace(on) != Some(on),
             None => false,
         }
@@ -393,6 +401,7 @@ impl State {
         }
         vehicle.odometer_km = self.odometer;
         vehicle.handbrake = self.handbrake;
+        vehicle.reverse = self.reverse;
         vehicle.low_beam = self.low_beam;
         vehicle
     }
@@ -563,7 +572,12 @@ mod tests {
         assert!(!state.frame(Some(temperatures), start), "unchanged");
         state.frame(Some(Reading::Odometer { km: 123_456 }), start);
         assert_eq!(state.snapshot(start).handbrake, None, "not reported yet");
-        assert!(state.frame(Some(Reading::Handbrake(true)), start));
+        let in_reverse = Reading::Sensors {
+            handbrake: true,
+            reverse: true,
+        };
+        assert!(state.frame(Some(in_reverse), start));
+        assert!(!state.frame(Some(in_reverse), start), "unchanged");
         assert!(state.frame(Some(Reading::LowBeam(true)), start));
         let v = state.snapshot(at(1));
         assert_eq!(v.status, "Receiving");
@@ -571,9 +585,12 @@ mod tests {
         assert_eq!((v.outside_c, v.coolant_c), (Some(12), Some(85)));
         assert_eq!(
             (v.odometer_km, v.ignition, v.frames),
-            (Some(123_456), None, 6)
+            (Some(123_456), None, 7)
         );
-        assert_eq!((v.handbrake, v.low_beam), (Some(true), Some(true)));
+        assert_eq!(
+            (v.handbrake, v.reverse, v.low_beam),
+            (Some(true), Some(true), Some(true))
+        );
 
         // Other frames keep the bus alive: a speed not sent again goes stale,
         // while temperatures and distance, which change slowly, stay.
@@ -583,7 +600,11 @@ mod tests {
         assert_eq!((v.speed_kmh, v.rpm), (None, None));
         assert_eq!((v.coolant_c, v.odometer_km), (Some(85), Some(123_456)));
         assert_eq!(v.ignition, Some(Ignition::On));
-        assert_eq!(v.handbrake, Some(true), "until the cluster says otherwise");
+        assert_eq!(
+            (v.handbrake, v.reverse),
+            (Some(true), Some(true)),
+            "until the cluster says otherwise"
+        );
         assert_eq!(
             v.low_beam,
             Some(true),
@@ -598,15 +619,15 @@ mod tests {
         // A quiet bus: the car is asleep, and nothing is current.
         let v = state.snapshot(at(24));
         assert_eq!(v.status, "No I-Bus traffic");
-        assert_eq!((v.ignition, v.coolant_c, v.frames), (None, None, 10));
-        assert_eq!((v.handbrake, v.low_beam), (None, None));
+        assert_eq!((v.ignition, v.coolant_c, v.frames), (None, None, 11));
+        assert_eq!((v.handbrake, v.reverse, v.low_beam), (None, None, None));
         assert!(v.interface, "the interface is still open");
         // Losing the interface forgets the car at once, but not the counts.
         state.bad_lines += 1;
         state.closed("Interface not connected".into());
         let v = state.snapshot(at(13));
         assert_eq!(v.status, "Interface not connected");
-        assert_eq!((v.coolant_c, v.frames, v.bad_lines), (None, 10, 1));
+        assert_eq!((v.coolant_c, v.frames, v.bad_lines), (None, 11, 1));
         assert!(!v.interface);
     }
 

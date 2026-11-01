@@ -180,11 +180,13 @@ The I-Bus service reads the carrier board's ATmega32U4 on its own thread: one
 line per frame the board hears, which the service checks (length, XOR
 checksum) and decodes when the instrument cluster sends it: ignition (`11`),
 road and engine speed (`18`), outside and coolant temperature (`19`),
-odometer (`17`) and the handbrake (`13`, sensor status), and when the light
-module sends it: the low beam (`5B`, lamp status). The main loop hands each
-snapshot to the Android Auto service, which takes the speed, the handbrake and
-the low beam from it; the low beam's changes set night mode. It opens the
-port raw and exclusive, so GPSD cannot
+odometer (`17`), and the handbrake and an automatic gearbox's reverse (`13`,
+sensor status), and when the light module sends it: the low beam (`5B`, lamp
+status). The main loop hands each snapshot to the Android Auto service, which
+takes the speed, the handbrake and the low beam from it; the low beam's changes
+set night mode. The UI covers every screen with its reverse page (a
+placeholder until the reverse camera) while the snapshot says reverse. It
+opens the port raw and exclusive, so GPSD cannot
 probe it, and never at 1200 baud, which would restart the board into its
 bootloader. It waits for bytes in `poll()`, at most 500 ms so that it can stop,
 and reopens the port every 2 seconds while it is missing. Each reading keeps

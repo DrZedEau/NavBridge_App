@@ -39,8 +39,12 @@ pub enum Reading {
     Odometer {
         km: u32,
     },
-    /// The handbrake is pulled, from the cluster's sensor status.
-    Handbrake(bool),
+    /// From the cluster's sensor status: the handbrake is pulled, and an
+    /// automatic gearbox is in reverse.
+    Sensors {
+        handbrake: bool,
+        reverse: bool,
+    },
     /// The headlights' low beam is on, from the light module's lamp status.
     LowBeam(bool),
 }
@@ -115,9 +119,14 @@ pub fn decode(frame: &Frame) -> Option<Reading> {
         (CLUSTER, &[0x17, low, middle, high, ..]) => Some(Reading::Odometer {
             km: u32::from_le_bytes([low, middle, high, 0]),
         }),
-        // Its first byte's lowest bit; the others are warnings, such as worn
-        // brake pads, and the next byte says whether the engine runs.
-        (CLUSTER, &[0x13, sensors, ..]) => Some(Reading::Handbrake(sensors & 0x01 != 0)),
+        // The handbrake is its first byte's lowest bit; the others are
+        // warnings, such as worn brake pads. The next byte's high half is an
+        // automatic gearbox's position, 1 in reverse (0 with a manual one),
+        // and its lowest bit whether the engine runs.
+        (CLUSTER, &[0x13, sensors, ref rest @ ..]) => Some(Reading::Sensors {
+            handbrake: sensors & 0x01 != 0,
+            reverse: rest.first().is_some_and(|drive| drive >> 4 == 0x1),
+        }),
         // Sent at each change and every 30 seconds while lamps are on. Its
         // first byte: 0x01 parking lights, 0x02 low beam, 0x04 high beam.
         (LIGHTS, &[0x5B, lamps, ..]) => Some(Reading::LowBeam(lamps & 0x02 != 0)),
@@ -412,14 +421,44 @@ mod tests {
             read("IBUS1 RX 3 800ABF1740E2010000000081"),
             Some(Reading::Odometer { km: 123_456 })
         );
-        // Handbrake on, brake pads worn, engine running.
+        // Handbrake on, brake pads worn, engine running, no gear: a manual
+        // gearbox.
         assert_eq!(
             read("IBUS1 RX 4 800ABF1305010000000086A4"),
-            Some(Reading::Handbrake(true))
+            Some(Reading::Sensors {
+                handbrake: true,
+                reverse: false
+            })
         );
         assert_eq!(
             read("IBUS1 RX 5 800ABF1304010000000086A5"),
-            Some(Reading::Handbrake(false))
+            Some(Reading::Sensors {
+                handbrake: false,
+                reverse: false
+            })
+        );
+        // An automatic one: in reverse with the handbrake on, then in park.
+        assert_eq!(
+            read("IBUS1 RX 6 800ABF130111000000004670"),
+            Some(Reading::Sensors {
+                handbrake: true,
+                reverse: true
+            })
+        );
+        assert_eq!(
+            read("IBUS1 RX 7 800ABF1302B00000000047D3"),
+            Some(Reading::Sensors {
+                handbrake: false,
+                reverse: false
+            })
+        );
+        // The early three-byte status, in neutral.
+        assert_eq!(
+            read("IBUS1 RX 8 8006BF130171005A"),
+            Some(Reading::Sensors {
+                handbrake: true,
+                reverse: false
+            })
         );
         // The light module: parking lights and low beam, parking lights
         // alone, everything off.
