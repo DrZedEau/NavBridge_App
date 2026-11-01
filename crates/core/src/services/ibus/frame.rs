@@ -39,8 +39,8 @@ pub enum Reading {
     Odometer {
         km: u32,
     },
-    /// From the cluster's sensor status: the handbrake is pulled, and an
-    /// automatic gearbox is in reverse.
+    /// From the cluster's sensor status: the handbrake is pulled, and the
+    /// gearbox, manual or automatic, is in reverse.
     Sensors {
         handbrake: bool,
         reverse: bool,
@@ -120,9 +120,9 @@ pub fn decode(frame: &Frame) -> Option<Reading> {
             km: u32::from_le_bytes([low, middle, high, 0]),
         }),
         // The handbrake is its first byte's lowest bit; the others are
-        // warnings, such as worn brake pads. The next byte's high half is an
-        // automatic gearbox's position, 1 in reverse (0 with a manual one),
-        // and its lowest bit whether the engine runs.
+        // warnings, such as worn brake pads. The next byte's high half is the
+        // gearbox's position, 1 in reverse with a manual one too, and its
+        // lowest bit whether the engine runs.
         (CLUSTER, &[0x13, sensors, ref rest @ ..]) => Some(Reading::Sensors {
             handbrake: sensors & 0x01 != 0,
             reverse: rest.first().is_some_and(|drive| drive >> 4 == 0x1),
@@ -422,7 +422,7 @@ mod tests {
             Some(Reading::Odometer { km: 123_456 })
         );
         // Handbrake on, brake pads worn, engine running, no gear: a manual
-        // gearbox.
+        // gearbox out of reverse.
         assert_eq!(
             read("IBUS1 RX 4 800ABF1305010000000086A4"),
             Some(Reading::Sensors {

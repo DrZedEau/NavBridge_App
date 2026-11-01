@@ -334,13 +334,13 @@ the key in position 1 the cluster reports the handbrake as off, so Android Auto
 stays restricted until the ignition is on. While the I-Bus is read, the parking
 brake keys and buttons do nothing.
 
-With an automatic gearbox, the same sensor status gives the gear (the second
-data byte's high half, `1` in reverse). In reverse, a REVERSE page covers every
-screen and takes no keys or taps except day/night and the parking brake; it
-goes when the gearbox leaves reverse. Until the board that takes a reverse
-camera, it only says "No reverse camera function yet". The core logs `reverse
-gear` with each change. A manual gearbox reports no gear, so the page never
-shows there.
+The same sensor status gives reverse gear (the second data byte's high half,
+`1` in reverse), with a manual gearbox as with an automatic one: tested in a
+car with a manual gearbox. In reverse, a REVERSE page covers every screen and
+takes no keys or taps except day/night and the parking brake; it goes when the
+gearbox leaves reverse. Until the board that takes a reverse camera, it only
+says "No reverse camera function yet". The core logs `reverse gear` with each
+change.
 
 The light module (`D0`) reports the lamps (`5B`, the first data byte's `0x02`
 bit is the low beam) at each change and every 30 seconds while they are on,
