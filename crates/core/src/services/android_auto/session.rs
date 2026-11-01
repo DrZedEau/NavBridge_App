@@ -101,7 +101,9 @@ mod keycode {
     pub const MEDIA_PLAY_PAUSE: u32 = 85;
     pub const MEDIA_NEXT: u32 = 87;
     pub const MEDIA_PREVIOUS: u32 = 88;
-    pub const VOICE_ASSIST: u32 = 231;
+    /// The car's voice button, which opens the phone's assistant: head
+    /// units send Android's search key for it, not KEYCODE_VOICE_ASSIST.
+    pub const SEARCH: u32 = 84;
     pub const ROTARY_CONTROLLER: u32 = 65536;
     pub const MEDIA: u32 = 65537;
     pub const NAVIGATION: u32 = 65538;
@@ -120,7 +122,7 @@ pub const KEYS: &[u32] = &[
     keycode::MEDIA_PLAY_PAUSE,
     keycode::MEDIA_NEXT,
     keycode::MEDIA_PREVIOUS,
-    keycode::VOICE_ASSIST,
+    keycode::SEARCH,
     keycode::ROTARY_CONTROLLER,
     keycode::MEDIA,
     keycode::NAVIGATION,
@@ -914,7 +916,7 @@ pub fn phone_key(action: PhoneAction) -> u32 {
     match action {
         PhoneAction::NextTrack => keycode::MEDIA_NEXT,
         PhoneAction::PreviousTrack => keycode::MEDIA_PREVIOUS,
-        PhoneAction::VoiceAssistant => keycode::VOICE_ASSIST,
+        PhoneAction::VoiceAssistant => keycode::SEARCH,
         PhoneAction::AnswerCall => keycode::CALL,
         PhoneAction::EndCall => keycode::ENDCALL,
         PhoneAction::PhoneHome => keycode::HOME,
@@ -1018,7 +1020,7 @@ mod tests {
         assert!(inputs[2].buttons.as_ref().unwrap().events[0].pressed());
         assert!(!inputs[3].buttons.as_ref().unwrap().events[0].pressed());
         assert_eq!(inputs[2].buttons.as_ref().unwrap().events[0].keycode(), 19);
-        assert_eq!(phone_key(PhoneAction::VoiceAssistant), 231);
+        assert_eq!(phone_key(PhoneAction::VoiceAssistant), 84);
     }
     #[test]
     fn select_and_back_send_the_whole_tap_on_press() {
