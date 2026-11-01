@@ -298,11 +298,9 @@ export component AppWindow inherits Window {
     in property <string> cpu-usage: "n/a";
     in property <string> ram-usage: "n/a";
     in property <string> cpu-temperature: "n/a";
-    // System's USB Devices: the phone, the GNSS receiver and the I-Bus
-    // interface; the codec is audio-codec.
-    in property <string> usb-phone: "n/a";
-    in property <string> usb-gnss: "n/a";
-    in property <string> usb-ibus: "n/a";
+    // System's USB Devices: four rows, each the name of a plugged-in device,
+    // or Empty.
+    in property <[string]> usb-devices: ["n/a", "n/a", "n/a", "n/a"];
     in property <int> system-page: 0;
     in property <string> gnss-receiver: "n/a";
     in property <string> gnss-status: "n/a";
@@ -316,7 +314,6 @@ export component AppWindow inherits Window {
     in property <string> ui-resolution: "n/a";
     in property <string> projection-resolution: "n/a";
     in property <string> projection-decoder: "n/a";
-    in property <string> audio-codec: "n/a";
     // The codec's output and input: stereo or mono, and sampling rate.
     in property <string> audio-output-type: "n/a";
     in property <string> audio-output-rate: "n/a";
@@ -530,10 +527,10 @@ export component AppWindow inherits Window {
             x: 8px; y: 124px; width: 384px; height: 108px;
             title: "USB Devices";
             rows: [
-                { label: "Phone", value: root.usb-phone },
-                { label: "GNSS receiver", value: root.usb-gnss },
-                { label: "I-Bus interface", value: root.usb-ibus },
-                { label: "Audio codec", value: root.audio-codec },
+                { label: "USB 1", value: root.usb-devices[0] },
+                { label: "USB 2", value: root.usb-devices[1] },
+                { label: "USB 3", value: root.usb-devices[2] },
+                { label: "USB 4", value: root.usb-devices[3] },
             ];
         }
         // Page 2: video and audio.

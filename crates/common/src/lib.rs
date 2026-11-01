@@ -48,6 +48,10 @@ pub struct SystemSnapshot {
     pub cpu_temp: String,
     #[serde(default)]
     pub audio: AudioSnapshot,
+    /// The USB devices plugged in, by name, in the order of their ports;
+    /// hubs are left out.
+    #[serde(default)]
+    pub usb_devices: Vec<String>,
 }
 
 /// The USB codec that ALSA plays to and records from.

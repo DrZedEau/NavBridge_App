@@ -37,6 +37,8 @@ enum Screen {
 const MENU_ITEMS: usize = 3;
 /// System pages: module and USB, video and audio, GNSS, and the car's I-Bus.
 const SYSTEM_PAGES: usize = 4;
+/// The USB devices System lists, as many as the board has ports.
+const USB_ROWS: usize = 4;
 /// The projection DPIs Settings offers.
 const DPI_CHOICES: [u32; 2] = [160, 140];
 
@@ -767,10 +769,11 @@ fn render_state(ui: &AppWindow, state: &UiState) {
     ui.set_cpu_usage(available(&state.snapshot.system.cpu_usage).into());
     ui.set_ram_usage(available(&state.snapshot.system.memory).into());
     ui.set_cpu_temperature(available(&state.snapshot.system.cpu_temp).into());
-    let (phone, gnss, ibus) = usb_devices(&state.snapshot, state.core_connected);
-    ui.set_usb_phone(phone.into());
-    ui.set_usb_gnss(gnss.into());
-    ui.set_usb_ibus(ibus.into());
+    let devices: Vec<slint::SharedString> = usb_rows(&state.snapshot, state.core_connected)
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    ui.set_usb_devices(slint::ModelRc::new(slint::VecModel::from(devices)));
     // On the panel, the window takes the display mode; until it is shown, the
     // size this UI is designed for.
     let size = ui.window().size();
@@ -783,7 +786,6 @@ fn render_state(ui: &AppWindow, state: &UiState) {
     ui.set_projection_resolution(projection_resolution(state.video).into());
     ui.set_projection_decoder(core(&state.snapshot.projection.decoder));
     let audio = &state.snapshot.system.audio;
-    ui.set_audio_codec(core(&audio.codec));
     let present = state.core_connected && audio.codec != "Not detected";
     let (output_type, output_rate) = stream_text(audio.output, present, state.core_connected);
     ui.set_audio_output_type(output_type.into());
@@ -863,14 +865,6 @@ fn refresh_projection(ui: &AppWindow, state: &UiState) -> bool {
             ui.set_projection_frame(Image::default());
             false
         }
-    }
-}
-
-fn known(value: &str) -> String {
-    if value.trim().is_empty() {
-        "Unknown".into()
-    } else {
-        value.into()
     }
 }
 
@@ -1212,45 +1206,17 @@ fn projection_resolution(video: Option<VideoSettings>) -> String {
     }
 }
 
-/// System's USB Devices rows: the phone, the GNSS receiver and the I-Bus
-/// interface. A phone on Wi-Fi shows too, as it is the connected one.
-fn usb_devices(snapshot: &AppSnapshot, core_connected: bool) -> (String, String, String) {
-    if !core_connected {
-        return (
-            "Unavailable".into(),
-            "Unavailable".into(),
-            "Unavailable".into(),
-        );
-    }
-    let projection = &snapshot.projection;
-    let connected = projection.phone_connected || projection.streaming;
-    let phone = match &snapshot.usb.selected {
-        Some(device) => {
-            let model = if device.product.trim().is_empty() {
-                format!("USB {:04x}:{:04x}", device.vendor_id, device.product_id)
-            } else {
-                device.product.clone()
-            };
-            let state = if connected { "Connected" } else { "Detected" };
-            format!("{model} · {state}")
-        }
-        None if connected => format!("{} · Wireless", known(&projection.phone_name)),
-        None => "Not detected".into(),
-    };
-    let gnss = match snapshot.gnss.receiver.trim() {
-        "" => "Not detected".into(),
-        receiver => receiver.into(),
-    };
-    let vehicle = &snapshot.vehicle;
-    let ibus = if vehicle.interface {
-        "Detected".into()
-    } else if vehicle.status == "Interface not connected" {
-        "Not detected".into()
-    } else {
-        // Why it cannot be read, such as a missing permission.
-        available(&vehicle.status)
-    };
-    (phone, gnss, ibus)
+/// System's USB Devices: the plugged-in devices' names, in the order of their
+/// ports, then Empty for the rest of the rows; Unavailable without the core.
+fn usb_rows(snapshot: &AppSnapshot, core_connected: bool) -> Vec<String> {
+    let devices = &snapshot.system.usb_devices;
+    (0..USB_ROWS)
+        .map(|row| match devices.get(row) {
+            _ if !core_connected => "Unavailable".into(),
+            Some(name) => name.clone(),
+            None => "Empty".into(),
+        })
+        .collect()
 }
 
 /// A frame's sequence number, if it is a projection frame of `size`.
@@ -2198,44 +2164,19 @@ mod disconnect_tests {
     }
 
     #[test]
-    fn usb_devices_list_the_phone_the_gnss_receiver_and_the_ibus_interface() {
+    fn usb_devices_fill_four_rows_by_name() {
         let mut snapshot = AppSnapshot::default();
-        snapshot.vehicle.status = "Interface not connected".into();
-        let not_detected = || {
-            (
-                "Not detected".to_string(),
-                "Not detected".to_string(),
-                "Not detected".to_string(),
-            )
-        };
-        assert_eq!(usb_devices(&snapshot, true), not_detected());
-        assert_eq!(usb_devices(&snapshot, false).0, "Unavailable");
-        // A phone on USB, before and once Android Auto runs on it.
-        snapshot.usb.selected = Some(navbridge_common::UsbDeviceInfo {
-            product: "Pixel 10".into(),
-            ..Default::default()
-        });
-        assert_eq!(usb_devices(&snapshot, true).0, "Pixel 10 · Detected");
-        snapshot.projection.phone_connected = true;
-        assert_eq!(usb_devices(&snapshot, true).0, "Pixel 10 · Connected");
-        // A phone on Wi-Fi is the connected one too.
-        snapshot.usb.selected = None;
-        snapshot.projection.phone_name = "Pixel 10".into();
-        assert_eq!(usb_devices(&snapshot, true).0, "Pixel 10 · Wireless");
-        snapshot.gnss.receiver = "u-blox (ttyACM1)".into();
-        snapshot.vehicle.interface = true;
-        snapshot.vehicle.status = "No I-Bus traffic".into();
-        let (_, gnss, ibus) = usb_devices(&snapshot, true);
+        assert_eq!(usb_rows(&snapshot, true), ["Empty"; 4]);
+        assert_eq!(usb_rows(&snapshot, false), ["Unavailable"; 4]);
+        snapshot.system.usb_devices = vec!["USB audio CODEC".into(), "Arduino Micro".into()];
         assert_eq!(
-            (gnss.as_str(), ibus.as_str()),
-            ("u-blox (ttyACM1)", "Detected")
+            usb_rows(&snapshot, true),
+            ["USB audio CODEC", "Arduino Micro", "Empty", "Empty"]
         );
-        snapshot.vehicle.interface = false;
-        snapshot.vehicle.status = "No permission to read the interface".into();
-        assert_eq!(
-            usb_devices(&snapshot, true).2,
-            "No permission to read the interface"
-        );
+        // More than the rows: the first ones show.
+        snapshot.system.usb_devices = (1..=5).map(|n| format!("Device {n}")).collect();
+        assert_eq!(usb_rows(&snapshot, true).len(), 4);
+        assert_eq!(usb_rows(&snapshot, true)[3], "Device 4");
     }
 }
 
@@ -2384,6 +2325,11 @@ mod preview {
         snapshot.system.memory = "1.2 / 7.9 GB".into();
         snapshot.system.cpu_temp = "52.3 °C".into();
         snapshot.system.audio.codec = "USB audio CODEC (08bb:2902)".into();
+        snapshot.system.usb_devices = vec![
+            "Pixel 10".into(),
+            "u-blox 7 - GPS/GNSS Receiver".into(),
+            "USB audio CODEC".into(),
+        ];
         snapshot.system.audio.output = Some(StreamFormat {
             channels: 2,
             rate: 48000,
