@@ -88,6 +88,8 @@ pub fn status(config: &AudioConfig, chosen: (Option<u8>, Option<u8>)) -> AudioSn
         volume: levels(&output, &input),
         volume_percent: shown(speaker(&output), chosen.0),
         microphone_percent: shown(microphone(&input), chosen.1),
+        // The calls service's, which the core adds.
+        call_volume_db: None,
     }
 }
 

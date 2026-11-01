@@ -3,13 +3,15 @@
 //! runs, the caller plays on the car's speakers and the car's microphone goes
 //! to the phone. bluez-alsa is asked four times a second whether a call's
 //! audio runs, as its D-Bus service only announces its devices, not calls.
+//! The caller plays at the call volume, set in Settings over the codec's.
 use crate::config::AudioConfig;
 use crate::services::audio::{open_buffered_pcm, AudioFormat};
 use alsa::Direction;
+use navbridge_common::CALL_VOLUME_DB;
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicI8, Ordering},
         Arc,
     },
     thread::{self, JoinHandle},
@@ -37,6 +39,9 @@ const WAIT_MS: u32 = 100;
 /// and plays once START of it is queued, so a late block does not cut it.
 const BUFFER: Duration = Duration::from_millis(240);
 const START: Duration = Duration::from_millis(80);
+/// How fast the caller, turned down so as not to clip, comes back up to the
+/// call volume, in dB per 20 ms block: 6 dB in about half a second.
+const RECOVERY_DB: f32 = 0.25;
 
 /// A call's audio, as bluez-alsa runs it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,23 +54,41 @@ struct Call {
 
 pub struct CallService {
     stop: Arc<AtomicBool>,
+    /// The call volume, in dB over the codec's volume.
+    volume: Arc<AtomicI8>,
     worker: Option<JoinHandle<()>>,
 }
 
 impl CallService {
-    /// Calls play on `audio`'s devices: the caller on its playback device, and
-    /// its capture device to the caller.
-    pub fn start(audio: AudioConfig) -> Self {
+    /// Calls play on `audio`'s devices: the caller on its playback device at
+    /// `volume_db` over its volume, and its capture device to the caller.
+    pub fn start(audio: AudioConfig, volume_db: i8) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
-        let stopped = stop.clone();
+        let volume = Arc::new(AtomicI8::new(
+            volume_db.clamp(*CALL_VOLUME_DB.start(), *CALL_VOLUME_DB.end()),
+        ));
+        let (stopped, level) = (stop.clone(), volume.clone());
         let worker = thread::Builder::new()
             .name("calls".into())
-            .spawn(move || run(&audio, &stopped))
+            .spawn(move || run(&audio, &level, &stopped))
             .expect("start the calls thread");
         Self {
             stop,
+            volume,
             worker: Some(worker),
         }
+    }
+
+    pub fn volume(&self) -> i8 {
+        self.volume.load(Ordering::Relaxed)
+    }
+
+    /// Sets the call volume, which a call already playing takes at once, and
+    /// returns it as set, within CALL_VOLUME_DB.
+    pub fn set_volume(&self, db: i8) -> i8 {
+        let db = db.clamp(*CALL_VOLUME_DB.start(), *CALL_VOLUME_DB.end());
+        self.volume.store(db, Ordering::Relaxed);
+        db
     }
 }
 
@@ -78,7 +101,7 @@ impl Drop for CallService {
     }
 }
 
-fn run(audio: &AudioConfig, stop: &AtomicBool) {
+fn run(audio: &AudioConfig, volume: &Arc<AtomicI8>, stop: &AtomicBool) {
     let mut connection = None;
     // Whether bluez-alsa answered last time, so that only changes are logged.
     let mut present = None;
@@ -112,9 +135,10 @@ fn run(audio: &AudioConfig, stop: &AtomicBool) {
                     phone = %call.phone,
                     rate = call.rate,
                     codec = %call.codec,
+                    volume_db = volume.load(Ordering::Relaxed),
                     "a call's audio plays in the car"
                 );
-                let relay = Relay::start(audio, &call);
+                let relay = Relay::start(audio, &call, volume);
                 active = Some((call, relay));
             }
         }
@@ -173,7 +197,7 @@ struct Relay {
 }
 
 impl Relay {
-    fn start(audio: &AudioConfig, call: &Call) -> Self {
+    fn start(audio: &AudioConfig, call: &Call, volume: &Arc<AtomicI8>) -> Self {
         let sco = format!("bluealsa:DEV={},PROFILE=sco", call.phone);
         let format = AudioFormat {
             rate: call.rate,
@@ -181,27 +205,34 @@ impl Relay {
         };
         let stop = Arc::new(AtomicBool::new(false));
         let ways = [
-            // The caller, to the car's speakers.
-            ("call-downlink", sco.clone(), audio.playback_device.clone()),
+            // The caller, to the car's speakers at the call volume.
+            (
+                "call-downlink",
+                sco.clone(),
+                audio.playback_device.clone(),
+                Some(volume.clone()),
+            ),
             // The car's microphone, to the caller.
-            ("call-uplink", audio.capture_device.clone(), sco),
+            ("call-uplink", audio.capture_device.clone(), sco, None),
         ];
         let threads = ways
             .into_iter()
-            .filter_map(|(name, from, to)| {
+            .filter_map(|(name, from, to, volume)| {
                 let stop = stop.clone();
                 thread::Builder::new()
                     .name(name.into())
-                    .spawn(move || match relay(&from, &to, format, &stop) {
-                        Ok(gaps) => info!(
-                            from,
-                            to,
-                            late = gaps.late,
-                            overflowed = gaps.overflowed,
-                            "call audio stopped"
-                        ),
-                        Err(e) => warn!(%e, from, to, "call audio stopped"),
-                    })
+                    .spawn(
+                        move || match relay(&from, &to, format, volume.as_deref(), &stop) {
+                            Ok(gaps) => info!(
+                                from,
+                                to,
+                                late = gaps.late,
+                                overflowed = gaps.overflowed,
+                                "call audio stopped"
+                            ),
+                            Err(e) => warn!(%e, from, to, "call audio stopped"),
+                        },
+                    )
                     .inspect_err(|e| warn!(%e, name, "could not start call audio"))
                     .ok()
             })
@@ -229,11 +260,12 @@ struct Gaps {
 }
 
 /// Copies 20 ms blocks from one device to the other until `stop`, waking at
-/// least every WAIT_MS to check it.
+/// least every WAIT_MS to check it; at `volume`'s dB, if given.
 fn relay(
     from: &str,
     to: &str,
     format: AudioFormat,
+    volume: Option<&AtomicI8>,
     stop: &AtomicBool,
 ) -> Result<Gaps, alsa::Error> {
     let input = open_buffered_pcm(from, Direction::Capture, format, BUFFER, START)?;
@@ -242,6 +274,7 @@ fn relay(
     let mut gaps = Gaps::default();
     let (reader, writer) = (input.io_i16()?, output.io_i16()?);
     let mut block = vec![0i16; (format.rate / 50) as usize];
+    let mut level = Level::default();
     while !stop.load(Ordering::Relaxed) {
         if !input.wait(Some(WAIT_MS))? {
             continue;
@@ -254,6 +287,9 @@ fn relay(
                 continue;
             }
         };
+        if let Some(volume) = volume {
+            level.apply(volume.load(Ordering::Relaxed), &mut block[..read]);
+        }
         // The playback device does not block: when it has no room, the block
         // waits for some, unless the call ends first.
         let mut written = 0;
@@ -271,6 +307,37 @@ fn relay(
         }
     }
     Ok(gaps)
+}
+
+/// A call's audio at the call volume. Turned up, a block that would clip is
+/// turned down just enough at once, then comes back up by RECOVERY_DB a block;
+/// a rise is spread over the block, so that it does not click.
+#[derive(Default)]
+struct Level {
+    /// The last block's gain, once one has played.
+    gain: Option<f32>,
+}
+
+impl Level {
+    fn apply(&mut self, db: i8, block: &mut [i16]) {
+        let target = 10f32.powf(f32::from(db) / 20.0);
+        let peak = block.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+        // The most this block takes without clipping.
+        let ceiling = 32768.0 / f32::from(peak.max(1));
+        let last = self.gain.unwrap_or(target.min(ceiling));
+        let gain = (last * 10f32.powf(RECOVERY_DB / 20.0))
+            .min(target)
+            .min(ceiling);
+        let from = last.min(gain);
+        let samples = block.len() as f32;
+        for (i, sample) in block.iter_mut().enumerate() {
+            let ramped = from + (gain - from) * (i + 1) as f32 / samples;
+            *sample = (f32::from(*sample) * ramped)
+                .round()
+                .clamp(-32768.0, 32767.0) as i16;
+        }
+        self.gain = Some(gain);
+    }
 }
 
 #[cfg(test)]
@@ -309,6 +376,49 @@ mod tests {
         assert_eq!(call(&pcm("HFP-HF", "source", false)), None);
         assert_eq!(call(&pcm("HFP-HF", "sink", true)), None);
         assert_eq!(call(&pcm("A2DP-sink", "source", true)), None);
+    }
+
+    #[test]
+    fn the_caller_plays_at_the_call_volume_without_clipping() {
+        // At 0 dB, as it comes.
+        let mut level = Level::default();
+        let mut block = [1000, -32768, 32767, -5];
+        level.apply(0, &mut block);
+        assert_eq!(block, [1000, -32768, 32767, -5]);
+        // Turned up 6 dB: twice as loud.
+        let mut level = Level::default();
+        let mut block = [1000i16; 320];
+        level.apply(6, &mut block);
+        assert!(block.iter().all(|&s| (1990..=2000).contains(&s)));
+        // A loud block is turned down just enough, then comes back up over
+        // about half a second.
+        let mut block = [20000i16; 320];
+        level.apply(6, &mut block);
+        assert!(block.iter().all(|&s| (32000..=32767).contains(&s)));
+        let mut quiet = [1000i16; 320];
+        level.apply(6, &mut quiet);
+        assert!(quiet[319] < 1700);
+        for _ in 0..30 {
+            quiet = [1000; 320];
+            level.apply(6, &mut quiet);
+        }
+        assert!(quiet.iter().all(|&s| (1990..=2000).contains(&s)));
+        // Turned down: at once.
+        let mut block = [1000i16; 320];
+        level.apply(-6, &mut block);
+        assert!(block.iter().all(|&s| (500..=502).contains(&s)));
+    }
+
+    #[test]
+    fn the_call_volume_stays_within_its_range() {
+        let calls = CallService {
+            stop: Arc::new(AtomicBool::new(false)),
+            volume: Arc::new(AtomicI8::new(0)),
+            worker: None,
+        };
+        assert_eq!(calls.set_volume(40), *CALL_VOLUME_DB.end());
+        assert_eq!(calls.set_volume(-40), *CALL_VOLUME_DB.start());
+        assert_eq!((calls.set_volume(6), calls.volume()), (6, 6));
     }
 
     #[test]

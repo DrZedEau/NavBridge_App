@@ -59,11 +59,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // While a receiver is connected, the phone gets the car's position.
     let gnss = services::gnss::GnssService::start(projection.gnss_input());
     let ibus = services::ibus::IbusService::start(config.ibus.clone());
-    // While bluez-alsa takes a phone's calls, they play in the car.
-    let _calls = config
-        .audio
-        .enabled
-        .then(|| services::calls::CallService::start(config.audio.clone()));
+    // While bluez-alsa takes a phone's calls, they play in the car, at the
+    // call volume Settings last chose.
+    let calls = config.audio.enabled.then(|| {
+        services::calls::CallService::start(config.audio.clone(), settings.load().call_volume_db)
+    });
 
     // The DPI as Settings left it, else core.toml's. The UI's size is logged
     // if it asks for frames at another size than the panel's.
@@ -116,6 +116,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 ClientCommand::SetMicrophone { percent } => {
                     system.set_gain(Gain::Microphone, percent)
                 }
+                ClientCommand::SetCallVolume { db } => {
+                    if let Some(calls) = &calls {
+                        let db = calls.set_volume(db);
+                        info!(db, "call volume");
+                        settings.update(|saved| saved.call_volume_db = db);
+                    }
+                    next_snapshot = Instant::now();
+                }
                 ClientCommand::SetTheme { theme: chosen } => {
                     info!(theme = ?chosen, "UI theme");
                     theme = chosen;
@@ -163,11 +171,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     warn!(%e, "could not shut the Pi down");
                 }
             }
+            let mut status = system.snapshot();
+            status.audio.call_volume_db = calls.as_ref().map(|calls| calls.volume());
             let snapshot = AppSnapshot {
                 gnss: gnss.snapshot(),
                 usb: projection.usb_snapshot(),
                 projection: phone,
-                system: system.snapshot(),
+                system: status,
                 wireless,
                 bluetooth: bluetooth.snapshot(),
                 vehicle,

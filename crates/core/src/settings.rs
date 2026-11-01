@@ -20,6 +20,8 @@ pub struct Saved {
     /// The codec's output volume and microphone gain, in percent of their range.
     pub volume: Option<u8>,
     pub microphone: Option<u8>,
+    /// How much louder than the codec's volume calls play, in dB.
+    pub call_volume_db: i8,
     /// The UI's colours.
     pub theme: Theme,
 }
@@ -89,6 +91,7 @@ mod tests {
         settings.update(|saved| saved.dpi = Some(140));
         settings.update(|saved| saved.volume = Some(70));
         settings.update(|saved| saved.theme = Theme::Blue);
+        settings.update(|saved| saved.call_volume_db = 6);
         assert_eq!(
             settings.load(),
             Saved {
@@ -96,6 +99,7 @@ mod tests {
                 dpi: Some(140),
                 volume: Some(70),
                 microphone: None,
+                call_volume_db: 6,
                 theme: Theme::Blue,
             }
         );
@@ -107,7 +111,10 @@ mod tests {
         fs::write(&path, "wireless_android_auto = true\nfps = 30\n").unwrap();
         let saved = settings.load();
         assert!(saved.wireless_android_auto);
-        assert_eq!((saved.dpi, saved.volume), (None, None));
+        assert_eq!(
+            (saved.dpi, saved.volume, saved.call_volume_db),
+            (None, None, 0)
+        );
         assert_eq!(saved.theme, Theme::Amber);
         fs::remove_dir_all(dir).unwrap();
     }

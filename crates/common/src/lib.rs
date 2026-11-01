@@ -24,6 +24,10 @@ pub const VIDEO_FRAME_HEADER_SIZE: usize = 20;
 
 pub const DEFAULT_SOCKET_PATH: &str = "/run/navbridge/core.sock";
 
+/// How much louder than the speakers' volume calls play, in dB: phones send a
+/// call's audio well below music's loudness.
+pub const CALL_VOLUME_DB: std::ops::RangeInclusive<i8> = -12..=18;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UsbDeviceInfo {
     pub vendor_id: u16,
@@ -71,6 +75,10 @@ pub struct AudioSnapshot {
     pub volume_percent: Option<u8>,
     #[serde(default)]
     pub microphone_percent: Option<u8>,
+    /// The call volume, in dB over the speakers' volume; absent while calls
+    /// do not play in the car.
+    #[serde(default)]
+    pub call_volume_db: Option<i8>,
 }
 
 /// A running stream's channels and sampling rate.
@@ -313,6 +321,7 @@ pub enum ClientCommand {
     SetDpi { dpi: u32 },
     SetVolume { percent: u8 },
     SetMicrophone { percent: u8 },
+    SetCallVolume { db: i8 },
     SetTheme { theme: Theme },
     StartPairing,
     StopPairing,

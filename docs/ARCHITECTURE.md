@@ -50,10 +50,11 @@ temporary directory in tmpfs instead.
   frames at), `request_snapshot`, `set_night_mode`, `set_parking_brake`,
   `hide_projection`, `resume_projection`, `navigation_input`, `touch`,
   `phone_action`, `set_wireless`, `set_dpi`, `set_volume`, `set_microphone`,
-  `set_theme`, `start_pairing`, `stop_pairing` and `confirm_pairing`.
-  Settings' choices (wireless mode, DPI, the codec's levels, the UI's theme)
-  are kept in `/var/lib/navbridge/settings.toml`, which each service changes
-  without touching the others' keys. Hiding and resuming move the phone's video
+  `set_call_volume`, `set_theme`, `start_pairing`, `stop_pairing` and
+  `confirm_pairing`. Settings' choices (wireless mode, DPI, the codec's levels,
+  the call volume, the UI's theme) are kept in
+  `/var/lib/navbridge/settings.toml`, which each service changes without
+  touching the others' keys. Hiding and resuming move the phone's video
   focus, so the phone stops sending video while the NavBridge menu is shown.
 - Core to UI: `hello` (geometry check, and the DPI requested from the phone),
   `snapshot` (every 500 ms or on request), `projection_event` (phone connected
@@ -100,8 +101,10 @@ each one.
   does, a call is on, and two threads copy 20 ms blocks at its rate: the
   caller to the playback device, and the capture device to the caller. Each
   way buffers 240 ms and plays once 80 ms is queued, as Bluetooth delivers call
-  audio unevenly. They stop when the call's audio does, and log how often each
-  way ran dry (`late`) or overflowed.
+  audio unevenly. The caller plays at the call volume, in dB over the codec's
+  volume, which a call takes at once: a block that would clip is turned down
+  just enough, then comes back up by 0.25 dB a block. They stop when the call's
+  audio does, and log how often each way ran dry (`late`) or overflowed.
 - On SIGTERM or SIGINT the core asks the phone to end the session and waits up to
   one second for its reply before exiting.
 

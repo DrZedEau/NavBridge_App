@@ -15,8 +15,8 @@ use input::{KeyAction, KeyMap};
 use ipc::IpcEvent;
 use navbridge_common::{
     video_frame_path, AppSnapshot, ClientCommand, Ignition, NavigationKey, ProjectionEvent,
-    ServerEvent, StreamFormat, TouchKind, VehicleSnapshot, DEFAULT_SOCKET_PATH, MEDIA_HEIGHT,
-    MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH, VIDEO_FRAME_HEADER_SIZE, VIDEO_FRAME_MAGIC,
+    ServerEvent, StreamFormat, TouchKind, VehicleSnapshot, CALL_VOLUME_DB, DEFAULT_SOCKET_PATH,
+    MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH, VIDEO_FRAME_HEADER_SIZE, VIDEO_FRAME_MAGIC,
 };
 use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer};
 use tracing_subscriber::EnvFilter;
@@ -51,13 +51,16 @@ enum Setting {
     Theme,
     Dpi,
     Volume,
+    /// How much louder than the speakers' volume calls play.
+    CallVolume,
     Microphone,
 }
-const SETTINGS: [Setting; 5] = [
+const SETTINGS: [Setting; 6] = [
     Setting::Hotspot,
     Setting::Theme,
     Setting::Dpi,
     Setting::Volume,
+    Setting::CallVolume,
     Setting::Microphone,
 ];
 /// The Settings rows the panel has room for, with their sections' headings:
@@ -576,7 +579,9 @@ fn tap_setting(state: &mut UiState, index: usize, half: i32, commands: &Commands
     }
     match SETTINGS[index] {
         Setting::Hotspot | Setting::Dpi | Setting::Theme => change_setting(state, true, commands),
-        Setting::Volume | Setting::Microphone => state.settings_editing = true,
+        Setting::Volume | Setting::CallVolume | Setting::Microphone => {
+            state.settings_editing = true
+        }
     }
 }
 
@@ -947,7 +952,8 @@ fn settings_shown(index: usize) -> std::ops::Range<usize> {
 }
 
 /// Changes the open row's value, up or down: the hotspot and the DPI switch,
-/// the levels move by 1% and the theme steps to the next or previous one.
+/// the codec's levels move by 1%, the call volume by 1 dB, and the theme steps
+/// to the next or previous one.
 fn change_setting(
     state: &mut UiState,
     up: bool,
@@ -987,6 +993,12 @@ fn change_setting(
                 audio.microphone_percent = Some(percent);
             }
         }
+        Setting::CallVolume => {
+            if let Some(db) = louder(audio.call_volume_db, up) {
+                let _ = commands.send(ClientCommand::SetCallVolume { db });
+                audio.call_volume_db = Some(db);
+            }
+        }
         // The next theme, or the one before; past either end, round again.
         Setting::Theme => {
             let i = THEMES
@@ -1015,6 +1027,18 @@ fn step(percent: u8, up: bool) -> u8 {
     }
 }
 
+/// The call volume's next 1 dB step, unless it has none that way or calls do
+/// not play in the car.
+fn louder(db: Option<i8>, up: bool) -> Option<i8> {
+    let db = db?;
+    let next = if up {
+        db.saturating_add(1)
+    } else {
+        db.saturating_sub(1)
+    };
+    CALL_VOLUME_DB.contains(&next).then_some(next)
+}
+
 /// Held keys repeat while paging through System and changing a level.
 fn repeats(state: &UiState, action: KeyAction) -> bool {
     match state.screen {
@@ -1027,7 +1051,7 @@ fn repeats(state: &UiState, action: KeyAction) -> bool {
                 )
                 && matches!(
                     selected_setting(state),
-                    Setting::Volume | Setting::Microphone
+                    Setting::Volume | Setting::CallVolume | Setting::Microphone
                 )
         }
         _ => false,
@@ -1041,7 +1065,7 @@ fn section(row: Setting) -> &'static str {
         Setting::Dpi => "VIDEO",
         Setting::Volume => "AUDIO",
         Setting::Theme => "UI",
-        Setting::Microphone => "",
+        Setting::CallVolume | Setting::Microphone => "",
     }
 }
 
@@ -1060,6 +1084,14 @@ fn setting_text(state: &UiState, row: Setting) -> (&'static str, String) {
             "Speakers volume",
             percent(snapshot.system.audio.volume_percent),
         ),
+        Setting::CallVolume => (
+            "Call volume",
+            snapshot
+                .system
+                .audio
+                .call_volume_db
+                .map_or_else(|| "n/a".into(), decibels),
+        ),
         Setting::Microphone => (
             "Microphone volume",
             percent(snapshot.system.audio.microphone_percent),
@@ -1073,6 +1105,14 @@ fn setting_text(state: &UiState, row: Setting) -> (&'static str, String) {
             }
             .into(),
         ),
+    }
+}
+
+/// A gain as Settings shows it: "+6 dB", "0 dB", "-3 dB".
+fn decibels(db: i8) -> String {
+    match db {
+        0 => "0 dB".into(),
+        db => format!("{db:+} dB"),
     }
 }
 
@@ -1679,6 +1719,7 @@ mod navigation_tests {
         };
         state.snapshot.projection.dpi = 160;
         state.snapshot.system.audio.volume_percent = Some(14);
+        state.snapshot.system.audio.call_volume_db = Some(0);
         state.snapshot.system.audio.microphone_percent = Some(48);
         let press = |state: &mut UiState, action, repeat| {
             handle_key_event(state, action, true, repeat, &tx);
@@ -1712,6 +1753,20 @@ mod navigation_tests {
                 Ok(ClientCommand::SetVolume { percent }) if percent == expected
             ));
         }
+        // The call volume moves in 1 dB steps.
+        press(&mut state, KeyAction::Select, false);
+        press(&mut state, KeyAction::Right, false);
+        press(&mut state, KeyAction::Select, false);
+        press(&mut state, KeyAction::Right, false);
+        press(&mut state, KeyAction::Right, true);
+        press(&mut state, KeyAction::Left, false);
+        for expected in [1, 2, 1] {
+            assert!(matches!(
+                rx.try_recv(),
+                Ok(ClientCommand::SetCallVolume { db }) if db == expected
+            ));
+        }
+        assert_eq!(setting_text(&state, Setting::CallVolume).1, "+1 dB");
         press(&mut state, KeyAction::Select, false);
         press(&mut state, KeyAction::Right, false);
         press(&mut state, KeyAction::Select, false);
@@ -1730,10 +1785,19 @@ mod navigation_tests {
         press(&mut state, KeyAction::Down, true);
         assert!(rx.try_recv().is_err());
         assert_eq!(moved(Some(100), true), None);
+        assert_eq!(
+            (louder(Some(18), true), louder(Some(-12), false)),
+            (None, None)
+        );
+        assert_eq!((decibels(0), decibels(-3)), ("0 dB".into(), "-3 dB".into()));
         state.snapshot.system.audio.microphone_percent = None;
         press(&mut state, KeyAction::Down, false);
         assert!(rx.try_recv().is_err());
         assert_eq!(setting_text(&state, Setting::Microphone).1, "n/a");
+        // Nor while calls do not play in the car.
+        state.snapshot.system.audio.call_volume_db = None;
+        assert_eq!(louder(None, true), None);
+        assert_eq!(setting_text(&state, Setting::CallVolume).1, "n/a");
         assert_eq!(setting_text(&state, Setting::Dpi).1, "160");
     }
 
@@ -1893,10 +1957,13 @@ mod navigation_tests {
         assert!(!state.settings_editing);
         tap_setting(&mut state, 3, 1, &tx);
         assert!(rx.try_recv().is_err());
-        // The microphone, the last row: the list scrolls by a row to show
+        // The microphone, the last row: the list scrolls by two rows to show
         // it, and taps count the rows shown.
-        assert_eq!((settings_shown(3), settings_shown(4)), (0..4, 1..5));
-        state.settings_index = 4;
+        assert_eq!(
+            (settings_shown(3), settings_shown(4), settings_shown(5)),
+            (0..4, 1..5, 2..6)
+        );
+        state.settings_index = 5;
         tap_setting(&mut state, 3, 0, &tx);
         assert!(state.settings_editing && selected_setting(&state) == Setting::Microphone);
     }
@@ -2340,6 +2407,7 @@ mod preview {
             rate: 16000,
         });
         snapshot.system.audio.volume_percent = Some(75);
+        snapshot.system.audio.call_volume_db = Some(6);
         snapshot.system.audio.microphone_percent = Some(48);
         state.video = Some(VideoSettings {
             width: 800,
@@ -2391,7 +2459,7 @@ mod preview {
                 "settings-dpi" => 2,
                 "settings-theme" => 1,
                 // The last row, with the list scrolled to it.
-                "settings-green" => 4,
+                "settings-green" => 5,
                 _ => 0,
             };
             // The other themes.
