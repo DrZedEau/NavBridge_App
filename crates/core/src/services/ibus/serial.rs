@@ -80,3 +80,14 @@ impl Port {
         }
     }
 }
+
+impl Drop for Port {
+    /// Drops what the board has not read yet, such as "KEYS OFF" to firmware
+    /// that reads nothing: the kernel would otherwise wait up to 30 seconds
+    /// on close for it to drain, holding up the core's stop and the Pi's
+    /// shutdown.
+    fn drop(&mut self) {
+        // SAFETY: the descriptor `file` owns, still open.
+        unsafe { libc::tcflush(self.0.as_raw_fd(), libc::TCOFLUSH) };
+    }
+}
