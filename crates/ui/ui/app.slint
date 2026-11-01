@@ -512,10 +512,11 @@ export component AppWindow inherits Window {
             count: 4;
             current: root.system-page;
         }
-        // Each page fills the screen below its title.
+        // Each page fills the screen below its title. Pages 1 and 2 share a
+        // layout: a box of three rows above one of four, every row 20px.
         // Page 1: the module, and the USB devices NavBridge uses.
         if root.system-page == 0: InfoBox {
-            x: 8px; y: 32px; width: 384px; height: 84px;
+            x: 8px; y: 32px; width: 384px; height: 88px;
             title: "Compute Module";
             rows: [
                 { label: "CPU Usage", value: root.cpu-usage },
@@ -524,7 +525,7 @@ export component AppWindow inherits Window {
             ];
         }
         if root.system-page == 0: InfoBox {
-            x: 8px; y: 122px; width: 384px; height: 110px;
+            x: 8px; y: 124px; width: 384px; height: 108px;
             title: "USB Devices";
             rows: [
                 { label: "Phone", value: root.usb-phone },
@@ -544,7 +545,7 @@ export component AppWindow inherits Window {
             ];
         }
         if root.system-page == 1: InfoBox {
-            x: 8px; y: 126px; width: 384px; height: 106px;
+            x: 8px; y: 124px; width: 384px; height: 108px;
             title: "Audio";
             rows: [
                 { label: "Output type", value: root.audio-output-type },
