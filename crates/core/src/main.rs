@@ -78,6 +78,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let interval = Duration::from_millis(config.snapshot_interval_ms.clamp(100, 5_000));
     let mut next_snapshot = Instant::now();
     let mut powering_off = false;
+    let mut theme = settings.load().theme;
     loop {
         server.accept_pending();
 
@@ -120,6 +121,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 ClientCommand::SetVolume { percent } => system.set_gain(Gain::Speaker, percent),
                 ClientCommand::SetMicrophone { percent } => {
                     system.set_gain(Gain::Microphone, percent)
+                }
+                ClientCommand::SetTheme { theme: chosen } => {
+                    info!(theme = ?chosen, "UI theme");
+                    theme = chosen;
+                    settings.update(|saved| saved.theme = chosen);
+                    next_snapshot = Instant::now();
                 }
                 ClientCommand::StartPairing => {
                     bluetooth.start_pairing();
@@ -170,6 +177,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 wireless,
                 bluetooth: bluetooth.snapshot(),
                 vehicle,
+                theme,
             };
             server.broadcast_snapshot(snapshot);
 

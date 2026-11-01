@@ -1,5 +1,6 @@
 //! Choices made in Settings that survive a restart, kept together in one
 //! file. Each service changes only its own, and the others stay as they were.
+use navbridge_common::Theme;
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
@@ -20,6 +21,8 @@ pub struct Saved {
     /// The codec's output volume and microphone gain, in percent of their range.
     pub volume: Option<u8>,
     pub microphone: Option<u8>,
+    /// The UI's colours.
+    pub theme: Theme,
 }
 
 pub struct Settings {
@@ -87,6 +90,7 @@ mod tests {
         settings.update(|saved| saved.dpi = Some(140));
         settings.update(|saved| saved.fps = Some(30));
         settings.update(|saved| saved.volume = Some(70));
+        settings.update(|saved| saved.theme = Theme::Blue);
         assert_eq!(
             settings.load(),
             Saved {
@@ -95,13 +99,18 @@ mod tests {
                 fps: Some(30),
                 volume: Some(70),
                 microphone: None,
+                theme: Theme::Blue,
             }
         );
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("theme = \"blue\""));
         // A file from before, with wireless mode only, still reads.
         fs::write(&path, "wireless_android_auto = true\n").unwrap();
         let saved = settings.load();
         assert!(saved.wireless_android_auto);
         assert_eq!((saved.dpi, saved.volume), (None, None));
+        assert_eq!(saved.theme, Theme::Amber);
         fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -50,13 +50,25 @@ enum Setting {
     Fps,
     Volume,
     Microphone,
+    /// The UI's colours.
+    Theme,
 }
-const SETTINGS: [Setting; 5] = [
+const SETTINGS: [Setting; 6] = [
     Setting::Hotspot,
     Setting::Dpi,
     Setting::Fps,
     Setting::Volume,
     Setting::Microphone,
+    Setting::Theme,
+];
+/// The Settings rows the panel has room for, with their sections' headings:
+/// the list scrolls to keep the chosen row in view.
+const SETTINGS_SHOWN: usize = 5;
+/// The themes Settings offers, in the order it steps through them.
+const THEMES: [navbridge_common::Theme; 3] = [
+    navbridge_common::Theme::Amber,
+    navbridge_common::Theme::Blue,
+    navbridge_common::Theme::Green,
 ];
 
 /// The projection video's size, which the core asks the phone for, from its
@@ -117,7 +129,11 @@ impl UiState {
     fn disconnect_projection(&mut self) {
         self.core_connected = false;
         self.held_navigation = None;
-        self.snapshot = AppSnapshot::default();
+        // The theme stays, so the colours do not change while the core restarts.
+        self.snapshot = AppSnapshot {
+            theme: self.snapshot.theme,
+            ..AppSnapshot::default()
+        };
         self.video = None;
         self.projection_hidden_by_phone = false;
         self.video_sequence.set(None);
@@ -533,14 +549,16 @@ fn answer_pairing(state: &mut UiState, accept: bool, commands: &Commands) {
     }
 }
 
-/// A Settings row tapped: the hotspot, the DPI and the frame rate change at
-/// once; a level opens, then its value's halves (`half` -1 and 1) step it
-/// down and up, and a tap on its label closes it.
+/// A Settings row tapped, `index` counting the rows shown: the hotspot, the
+/// DPI, the frame rate and the theme change at once; a level opens, then its
+/// value's halves (`half` -1 and 1) step it down and up, and a tap on its
+/// label closes it.
 fn tap_setting(state: &mut UiState, index: usize, half: i32, commands: &Commands) {
     if state.screen != Screen::Settings || pairing_shown(state) {
         return;
     }
-    let index = index.min(SETTINGS.len() - 1);
+    let first = settings_shown(settings_index(state)).start;
+    let index = (first + index).min(SETTINGS.len() - 1);
     let open = state.settings_editing && settings_index(state) == index;
     if half != 0 {
         if open {
@@ -554,7 +572,9 @@ fn tap_setting(state: &mut UiState, index: usize, half: i32, commands: &Commands
         return;
     }
     match SETTINGS[index] {
-        Setting::Hotspot | Setting::Dpi | Setting::Fps => change_setting(state, true, commands),
+        Setting::Hotspot | Setting::Dpi | Setting::Fps | Setting::Theme => {
+            change_setting(state, true, commands)
+        }
         Setting::Volume | Setting::Microphone => state.settings_editing = true,
     }
 }
@@ -768,9 +788,11 @@ fn render_state(ui: &AppWindow, state: &UiState) {
     let (input_type, input_rate) = stream_text(audio.input, present, state.core_connected);
     ui.set_audio_input_type(input_type.into());
     ui.set_audio_input_rate(input_rate.into());
-    let rows: Vec<SettingsRow> = SETTINGS
-        .into_iter()
-        .map(|row| {
+    let index = settings_index(state);
+    let shown = settings_shown(index);
+    let rows: Vec<SettingsRow> = SETTINGS[shown.clone()]
+        .iter()
+        .map(|&row| {
             let (label, value) = setting_text(state, row);
             SettingsRow {
                 section: section(row).into(),
@@ -782,7 +804,13 @@ fn render_state(ui: &AppWindow, state: &UiState) {
         })
         .collect();
     ui.set_settings_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
-    ui.set_settings_index(settings_index(state) as i32);
+    ui.set_settings_index((index - shown.start) as i32);
+    ui.global::<Palette>()
+        .set_theme(match state.snapshot.theme {
+            navbridge_common::Theme::Amber => Theme::Amber,
+            navbridge_common::Theme::Blue => Theme::Blue,
+            navbridge_common::Theme::Green => Theme::Green,
+        });
     ui.set_settings_editing(state.settings_editing);
     ui.set_pair_option(pair_option(state));
     ui.set_pairing(state.snapshot.bluetooth.pairing);
@@ -913,6 +941,13 @@ fn selected_setting(state: &UiState) -> Setting {
     SETTINGS[settings_index(state)]
 }
 
+/// The rows Settings shows with the chosen one: the first ones, until it is
+/// further down.
+fn settings_shown(index: usize) -> std::ops::Range<usize> {
+    let first = (index + 1).saturating_sub(SETTINGS_SHOWN);
+    first..(first + SETTINGS_SHOWN).min(SETTINGS.len())
+}
+
 /// Changes the open row's value, up or down: the hotspot, the DPI and the
 /// frame rate switch, the levels move by 1%.
 fn change_setting(
@@ -962,6 +997,16 @@ fn change_setting(
                 audio.microphone_percent = Some(percent);
             }
         }
+        // The next theme, or the one before; past either end, round again.
+        Setting::Theme => {
+            let i = THEMES
+                .iter()
+                .position(|&t| t == snapshot.theme)
+                .unwrap_or(0);
+            let theme = THEMES[if up { i + 1 } else { i + THEMES.len() - 1 } % THEMES.len()];
+            let _ = commands.send(ClientCommand::SetTheme { theme });
+            snapshot.theme = theme;
+        }
     }
 }
 
@@ -1005,6 +1050,7 @@ fn section(row: Setting) -> &'static str {
         Setting::Hotspot => "WIRELESS",
         Setting::Dpi => "VIDEO",
         Setting::Volume => "AUDIO",
+        Setting::Theme => "UI",
         Setting::Fps | Setting::Microphone => "",
     }
 }
@@ -1028,6 +1074,15 @@ fn setting_text(state: &UiState, row: Setting) -> (&'static str, String) {
         Setting::Microphone => (
             "Microphone volume",
             percent(snapshot.system.audio.microphone_percent),
+        ),
+        Setting::Theme => (
+            "Theme",
+            match snapshot.theme {
+                navbridge_common::Theme::Amber => "Amber",
+                navbridge_common::Theme::Blue => "Blue",
+                navbridge_common::Theme::Green => "Green",
+            }
+            .into(),
         ),
     }
 }
@@ -1606,7 +1661,7 @@ mod navigation_tests {
         assert_eq!(selected_setting(&state), Setting::Dpi);
         press(&mut state, KeyAction::Left, false);
         press(&mut state, KeyAction::Left, false);
-        assert_eq!(selected_setting(&state), Setting::Microphone);
+        assert_eq!(selected_setting(&state), Setting::Theme);
         press(&mut state, KeyAction::Right, false);
         assert_eq!(selected_setting(&state), Setting::Hotspot);
         assert!(rx.try_recv().is_err(), "choosing a row changed it");
@@ -1895,6 +1950,45 @@ mod navigation_tests {
         assert!(!state.settings_editing);
         tap_setting(&mut state, 3, 1, &tx);
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn the_theme_steps_through_amber_blue_and_green_and_outlasts_the_core() {
+        use navbridge_common::Theme::{Amber, Blue, Green};
+        let (tx, rx) = mpsc::channel();
+        let mut state = UiState {
+            screen: Screen::Settings,
+            core_connected: true,
+            ..UiState::default()
+        };
+        // The last row, in its own section: the list scrolls by a row to
+        // show it, and taps count the rows shown.
+        assert_eq!(section(Setting::Theme), "UI");
+        assert_eq!((settings_shown(4), settings_shown(5)), (0..5, 1..6));
+        state.settings_index = 5;
+        assert_eq!(setting_text(&state, Setting::Theme).1, "Amber");
+        tap_setting(&mut state, 4, 0, &tx);
+        assert_eq!(selected_setting(&state), Setting::Theme);
+        assert!(!state.settings_editing, "a tap changes it at once");
+        // Enter opens it; then Right steps on and Left back, round the ends.
+        let press = |state: &mut UiState, action| handle_key_event(state, action, true, false, &tx);
+        press(&mut state, KeyAction::Select);
+        assert!(state.settings_editing);
+        press(&mut state, KeyAction::Right);
+        press(&mut state, KeyAction::Right);
+        press(&mut state, KeyAction::Left);
+        let chosen: Vec<_> = rx
+            .try_iter()
+            .map(|command| match command {
+                ClientCommand::SetTheme { theme } => theme,
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(chosen, [Blue, Green, Amber, Green]);
+        assert_eq!(setting_text(&state, Setting::Theme).1, "Green");
+        // The colours stay while the core is away.
+        state.disconnect_projection();
+        assert_eq!(state.snapshot.theme, Green);
     }
 
     #[test]
@@ -2320,6 +2414,10 @@ mod preview {
             ("system-video", Screen::System, 1),
             ("system-gnss", Screen::System, 2),
             ("system-ibus", Screen::System, 3),
+            ("settings-theme", Screen::Settings, 0),
+            ("menu-blue", Screen::Menu, 0),
+            ("settings-green", Screen::Settings, 0),
+            ("menu-green", Screen::Menu, 0),
             ("pairing", Screen::Menu, 0),
         ] {
             state.screen = screen;
@@ -2329,7 +2427,14 @@ mod preview {
             state.settings_index = match name {
                 "settings-open" => 3,
                 "settings-fps" => 2,
+                "settings-theme" => 5,
                 _ => 0,
+            };
+            // The other themes, and the list scrolled to the theme's row.
+            state.snapshot.theme = match name {
+                "settings-theme" | "menu-blue" => navbridge_common::Theme::Blue,
+                "settings-green" | "menu-green" => navbridge_common::Theme::Green,
+                _ => navbridge_common::Theme::Amber,
             };
             // And the hotspot's switch off, on an unchosen row; on the Phone
             // page, pairing open, then not, then the hotspot off.

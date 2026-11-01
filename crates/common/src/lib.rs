@@ -238,6 +238,19 @@ pub struct AppSnapshot {
     pub bluetooth: BluetoothSnapshot,
     #[serde(default)]
     pub vehicle: VehicleSnapshot,
+    /// The UI's colours, as chosen in Settings.
+    #[serde(default)]
+    pub theme: Theme,
+}
+
+/// The UI's colours: amber, blue or green on black.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Theme {
+    #[default]
+    Amber,
+    Blue,
+    Green,
 }
 
 /// A finger or the mouse on the projection: x and y are in Android Auto's
@@ -297,6 +310,7 @@ pub enum ClientCommand {
     SetFps { fps: u32 },
     SetVolume { percent: u8 },
     SetMicrophone { percent: u8 },
+    SetTheme { theme: Theme },
     StartPairing,
     StopPairing,
     ConfirmPairing { accept: bool },

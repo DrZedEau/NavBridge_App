@@ -46,9 +46,9 @@ temporary directory in tmpfs instead.
 
 - UI to core: `hello`, `request_snapshot`, `set_night_mode`, `set_parking_brake`,
   `hide_projection`, `resume_projection`, `navigation_input`, `phone_action`,
-  `set_wireless`, `set_dpi`, `set_volume`, `set_microphone`, `start_pairing` and
-  `confirm_pairing`. Settings' choices (wireless mode, DPI, the codec's levels)
-  are kept in `/var/lib/navbridge/settings.toml`, which each service changes
+  `set_wireless`, `set_dpi`, `set_volume`, `set_microphone`, `set_theme`,
+  `start_pairing` and `confirm_pairing`. Settings' choices (wireless mode, DPI,
+  the codec's levels, the UI's theme) are kept in `/var/lib/navbridge/settings.toml`, which each service changes
   without touching the others' keys. Hiding and resuming
   move the phone's video focus, so the phone stops sending video while the
   NavBridge menu is shown.

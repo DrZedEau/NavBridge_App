@@ -1,14 +1,60 @@
-// Warm amber on black, matching the NavBridge splash artwork.
-export global AmberPalette {
+// The themes Settings offers, each on black. Amber, the first, matches the
+// NavBridge splash artwork.
+export enum Theme { amber, blue, green }
+
+struct Colours {
+    surface: color,
+    selected-surface: color,
+    accent: color,
+    text: color,
+    muted: color,
+    border: color,
+    selected-text: color,
+    // The menu's icons are drawn in amber; other themes draw them in this.
+    icon: color,
+}
+
+// The UI's colours, in the theme chosen in Settings.
+export global Palette {
+    in property <Theme> theme;
+    property <Colours> colours: theme == Theme.blue ? {
+        surface: #030a12,
+        selected-surface: #061a30,
+        accent: #2a8cff,
+        text: #9cd2ff,
+        muted: #4f8fc8,
+        border: #0a3c72,
+        selected-text: #00050c,
+        icon: #5aa8ff,
+    } : theme == Theme.green ? {
+        surface: #031007,
+        selected-surface: #062a12,
+        accent: #28d96a,
+        text: #a8f5bf,
+        muted: #4fae6c,
+        border: #0b6430,
+        selected-text: #000a03,
+        icon: #5fe68a,
+    } : {
+        surface: #100a03,
+        selected-surface: #2a1804,
+        accent: #ff6600,
+        text: #ffc65c,
+        muted: #c48a40,
+        border: #704000,
+        selected-text: #080400,
+        icon: transparent,
+    };
     out property <color> background: #000000;
-    out property <color> surface: #100a03;
-    out property <color> selected-surface: #2a1804;
-    out property <color> amber: #ff6600;
-    out property <color> text: #ffc65c;
-    out property <color> muted: #c48a40;
-    out property <color> border: #704000;
-    out property <color> selected-text: #080400;
-    // Status lights.
+    out property <color> surface: colours.surface;
+    out property <color> selected-surface: colours.selected-surface;
+    out property <color> accent: colours.accent;
+    out property <color> text: colours.text;
+    out property <color> muted: colours.muted;
+    out property <color> border: colours.border;
+    out property <color> selected-text: colours.selected-text;
+    out property <color> icon: colours.icon;
+    // Status lights, the same in every theme.
     out property <color> led-on: #3ddc4a;
     out property <color> led-waiting: #ff9f0a;
     out property <color> led-off: #ff3b30;
@@ -30,7 +76,7 @@ export struct SettingsRow {
 }
 
 // An on/off switch without text: on, its track is filled and its knob is
-// right. `inverse` draws it on the chosen row's amber fill.
+// right. `inverse` draws it on the chosen row's accent fill.
 component Switch inherits Rectangle {
     in property <bool> on;
     in property <bool> inverse;
@@ -38,18 +84,18 @@ component Switch inherits Rectangle {
     height: 18px;
     border-radius: 9px;
     border-width: 1px;
-    border-color: root.inverse ? AmberPalette.selected-text
-        : root.on ? AmberPalette.amber : AmberPalette.muted;
+    border-color: root.inverse ? Palette.selected-text
+        : root.on ? Palette.accent : Palette.muted;
     background: !root.on ? transparent
-        : root.inverse ? AmberPalette.selected-text : AmberPalette.amber;
+        : root.inverse ? Palette.selected-text : Palette.accent;
     Rectangle {
         x: root.on ? root.width - self.width - 3px : 3px;
         y: 3px;
         width: 12px;
         height: 12px;
         border-radius: 6px;
-        background: root.inverse ? (root.on ? AmberPalette.amber : AmberPalette.selected-text)
-            : root.on ? AmberPalette.selected-text : AmberPalette.muted;
+        background: root.inverse ? (root.on ? Palette.accent : Palette.selected-text)
+            : root.on ? Palette.selected-text : Palette.muted;
         animate x { duration: 120ms; }
     }
 }
@@ -62,13 +108,13 @@ component PairSwitch inherits Rectangle {
     callback tapped();
     height: 34px;
     border-radius: 7px;
-    background: root.enabled ? AmberPalette.amber : AmberPalette.surface;
+    background: root.enabled ? Palette.accent : Palette.surface;
     border-width: root.enabled ? 0px : 1px;
-    border-color: AmberPalette.border;
+    border-color: Palette.border;
     Text {
         x: 14px; width: parent.width - 28px; height: parent.height;
         text: "Enable pairing";
-        color: root.enabled ? AmberPalette.selected-text : AmberPalette.muted;
+        color: root.enabled ? Palette.selected-text : Palette.muted;
         font-size: 15px;
         vertical-alignment: center;
     }
@@ -90,7 +136,7 @@ component BackTitle inherits Rectangle {
     Text {
         x: 0px; width: parent.width; height: parent.height;
         text: "‹  " + root.text;
-        color: AmberPalette.text; font-size: 17px; font-weight: 700;
+        color: Palette.text; font-size: 17px; font-weight: 700;
         vertical-alignment: center;
     }
     TouchArea {
@@ -103,8 +149,8 @@ component Led inherits Rectangle {
     width: 10px;
     height: 10px;
     border-radius: 5px;
-    background: root.level == LedState.on ? AmberPalette.led-on
-        : root.level == LedState.waiting ? AmberPalette.led-waiting : AmberPalette.led-off;
+    background: root.level == LedState.on ? Palette.led-on
+        : root.level == LedState.waiting ? Palette.led-waiting : Palette.led-off;
 }
 
 // Which of `count` pages is shown: a row of lights, the current one lit.
@@ -118,7 +164,7 @@ component PageLeds inherits HorizontalLayout {
             width: 10px;
             height: 10px;
             border-radius: 5px;
-            background: page == root.current ? AmberPalette.amber : AmberPalette.border;
+            background: page == root.current ? Palette.accent : Palette.border;
         }
     }
 }
@@ -136,26 +182,26 @@ component InfoBox inherits Rectangle {
     in property <length> label-width: 140px;
     property <length> row-height: (self.height - 28px) / max(1, self.rows.length);
     border-radius: 4px;
-    background: AmberPalette.surface;
+    background: Palette.surface;
     border-width: 1px;
-    border-color: AmberPalette.border;
+    border-color: Palette.border;
     Text {
         x: 8px; y: 4px; width: parent.width - 16px; height: 18px;
-        text: root.title; color: AmberPalette.amber; font-size: 14px; font-weight: 700;
+        text: root.title; color: Palette.accent; font-size: 14px; font-weight: 700;
     }
     for row[index] in root.rows: Rectangle {
         x: 8px; y: 24px + index * root.row-height;
         width: parent.width - 16px; height: root.row-height;
         Text {
             x: 0px; width: root.label-width; height: parent.height;
-            text: row.label; color: AmberPalette.muted; font-size: 11px;
+            text: row.label; color: Palette.muted; font-size: 11px;
             vertical-alignment: center;
             wrap: no-wrap; overflow: elide;
         }
         Text {
             x: root.label-width + 8px; width: parent.width - root.label-width - 8px;
             height: parent.height;
-            text: row.value; color: AmberPalette.text; font-size: 12px;
+            text: row.value; color: Palette.text; font-size: 12px;
             horizontal-alignment: right; vertical-alignment: center;
             wrap: no-wrap; overflow: elide;
         }
@@ -169,7 +215,7 @@ component Indicator inherits HorizontalLayout {
     spacing: 5px;
     Text {
         text: root.label;
-        color: AmberPalette.muted;
+        color: Palette.muted;
         font-size: 11px;
         font-weight: 700;
         vertical-alignment: center;
@@ -188,20 +234,21 @@ component MenuTile inherits Rectangle {
     width: 112px;
     height: 124px;
     border-radius: 8px;
-    background: root.selected ? AmberPalette.selected-surface : AmberPalette.surface;
+    background: root.selected ? Palette.selected-surface : Palette.surface;
     border-width: root.selected ? 2px : 1px;
-    border-color: root.selected ? AmberPalette.amber : AmberPalette.border;
+    border-color: root.selected ? Palette.accent : Palette.border;
     Image {
         x: (root.width - 64px) / 2;
         y: 16px;
         width: 64px;
         height: 64px;
         source: root.icon;
+        colorize: Palette.icon;
     }
     Text {
         x: 0px; y: 88px; width: root.width; height: 26px;
         text: root.label;
-        color: root.selected ? AmberPalette.amber : AmberPalette.text;
+        color: root.selected ? Palette.accent : Palette.text;
         font-size: 13px;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -215,7 +262,7 @@ export component AppWindow inherits Window {
     width: 400px;
     height: 240px;
     title: "NavBridge";
-    background: AmberPalette.background;
+    background: Palette.background;
 
     // 0 menu, 1 Phone, 2 System, 3 Settings
     in property <int> screen: 0;
@@ -319,12 +366,12 @@ export component AppWindow inherits Window {
 
     if root.screen == 0: Rectangle {
         x: 0px; y: 0px; width: 400px; height: 240px;
-        background: AmberPalette.background;
+        background: Palette.background;
 
         Text {
             x: 12px; y: 6px; width: 200px; height: 26px;
             text: "NavBridge";
-            color: AmberPalette.amber;
+            color: Palette.accent;
             font-size: 20px;
             font-weight: 700;
             vertical-alignment: center;
@@ -339,7 +386,7 @@ export component AppWindow inherits Window {
         }
         Rectangle {
             x: 12px; y: 38px; width: 376px; height: 1px;
-            background: AmberPalette.border;
+            background: Palette.border;
         }
 
         for tile[index] in [
@@ -357,7 +404,7 @@ export component AppWindow inherits Window {
 
         Rectangle {
             x: 12px; y: 202px; width: 376px; height: 1px;
-            background: AmberPalette.border;
+            background: Palette.border;
         }
         HorizontalLayout {
             x: 12px; y: 208px; width: 260px; height: 26px;
@@ -370,7 +417,7 @@ export component AppWindow inherits Window {
         Text {
             x: 288px; y: 208px; width: 100px; height: 26px;
             text: root.clock;
-            color: AmberPalette.text;
+            color: Palette.text;
             font-size: 15px;
             font-weight: 700;
             horizontal-alignment: right;
@@ -384,7 +431,7 @@ export component AppWindow inherits Window {
         // Wired Android Auto is negotiated at 800x480 with configurable DPI. The backend performs
         // software H.264 decode and publishes this exact 400x240 presentation.
         x: 0px; y: 0px; width: 400px; height: 240px;
-        background: AmberPalette.background;
+        background: Palette.background;
 
         if root.video-active: Image {
             x: 0px; y: 0px; width: 400px; height: 240px;
@@ -406,7 +453,7 @@ export component AppWindow inherits Window {
 
         if !root.video-active: Rectangle {
             x: 0px; y: 0px; width: 400px; height: 240px;
-            background: AmberPalette.background;
+            background: Palette.background;
             BackTitle {
                 x: 12px; y: 2px; width: 100px; height: 29px;
                 text: "Phone";
@@ -415,7 +462,7 @@ export component AppWindow inherits Window {
             Text {
                 x: 100px; y: 5px; width: 288px; height: 23px;
                 text: "Android Auto · CarPlay is not in this build yet";
-                color: AmberPalette.muted; font-size: 11px;
+                color: Palette.muted; font-size: 11px;
                 horizontal-alignment: right; vertical-alignment: center;
                 wrap: no-wrap; overflow: elide;
             }
@@ -429,7 +476,7 @@ export component AppWindow inherits Window {
             Text {
                 x: 12px; y: 84px; width: 376px; height: 72px;
                 text: root.phone-message;
-                color: AmberPalette.text;
+                color: Palette.text;
                 font-size: 16px;
                 horizontal-alignment: center;
                 vertical-alignment: center;
@@ -440,7 +487,7 @@ export component AppWindow inherits Window {
 
     if root.screen == 2: Rectangle {
         x: 0px; y: 0px; width: 400px; height: 240px;
-        background: AmberPalette.background;
+        background: Palette.background;
         BackTitle {
             x: 12px; y: 2px; width: 120px; height: 29px;
             text: "System";
@@ -529,7 +576,7 @@ export component AppWindow inherits Window {
             Text {
                 x: 12px; y: 212px; width: 376px; height: 20px;
                 text: "IBUS · " + root.vehicle-status;
-                color: AmberPalette.muted; font-size: 11px;
+                color: Palette.muted; font-size: 11px;
                 horizontal-alignment: center; vertical-alignment: center;
                 wrap: no-wrap; overflow: elide;
             }
@@ -546,21 +593,21 @@ export component AppWindow inherits Window {
                 y: 32px + (index < 2 ? 0px : index < 4 ? 60px : 120px);
                 width: 188px; height: 56px;
                 border-radius: 4px;
-                background: AmberPalette.surface;
-                border-width: 1px; border-color: AmberPalette.border;
+                background: Palette.surface;
+                border-width: 1px; border-color: Palette.border;
                 Text {
                     x: 8px; y: 4px; width: 172px; height: 16px;
-                    text: tile.label; color: AmberPalette.amber; font-size: 11px; font-weight: 700;
+                    text: tile.label; color: Palette.accent; font-size: 11px; font-weight: 700;
                 }
                 Text {
                     x: 8px; y: 20px; width: 172px; height: 32px;
-                    text: tile.value; color: AmberPalette.text; font-size: 22px; font-weight: 700;
+                    text: tile.value; color: Palette.text; font-size: 22px; font-weight: 700;
                     vertical-alignment: center;
                     wrap: no-wrap; overflow: elide;
                 }
                 Text {
                     x: 96px; y: 4px; width: 84px; height: 16px;
-                    text: tile.note; color: AmberPalette.muted; font-size: 10px;
+                    text: tile.note; color: Palette.muted; font-size: 10px;
                     horizontal-alignment: right;
                     wrap: no-wrap; overflow: elide;
                 }
@@ -570,7 +617,7 @@ export component AppWindow inherits Window {
 
     if root.screen == 3: Rectangle {
         x: 0px; y: 0px; width: 400px; height: 240px;
-        background: AmberPalette.background;
+        background: Palette.background;
         BackTitle {
             x: 12px; y: 2px; width: 130px; height: 29px;
             text: "Settings";
@@ -590,7 +637,7 @@ export component AppWindow inherits Window {
                 if row.section != "": Text {
                     height: 15px;
                     text: row.section;
-                    color: AmberPalette.amber;
+                    color: Palette.accent;
                     font-size: 10px;
                     font-weight: 700;
                     vertical-alignment: bottom;
@@ -598,14 +645,14 @@ export component AppWindow inherits Window {
                 line := Rectangle {
                     property <bool> chosen: index == root.settings-index;
                     property <bool> open: self.chosen && root.settings-editing;
-                    property <color> ink: self.open ? AmberPalette.amber
-                        : self.chosen ? AmberPalette.selected-text : AmberPalette.text;
+                    property <color> ink: self.open ? Palette.accent
+                        : self.chosen ? Palette.selected-text : Palette.text;
                     height: 24px;
                     border-radius: 5px;
-                    background: self.open ? AmberPalette.selected-surface
-                        : self.chosen ? AmberPalette.amber : AmberPalette.surface;
+                    background: self.open ? Palette.selected-surface
+                        : self.chosen ? Palette.accent : Palette.surface;
                     border-width: self.open ? 2px : 1px;
-                    border-color: self.chosen ? AmberPalette.amber : AmberPalette.border;
+                    border-color: self.chosen ? Palette.accent : Palette.border;
                     Text {
                         x: 10px; width: 200px; height: parent.height;
                         text: row.label;
@@ -668,29 +715,29 @@ export component AppWindow inherits Window {
 
     if root.pairing-request: Rectangle {
         x: 0px; y: 0px; width: 400px; height: 240px;
-        background: AmberPalette.background;
+        background: Palette.background;
         // Taps reach its two answers only, never the page beneath.
         TouchArea { }
         Rectangle {
             x: 12px; y: 12px; width: 376px; height: 216px;
             border-radius: 8px;
-            background: AmberPalette.surface;
-            border-width: 2px; border-color: AmberPalette.amber;
+            background: Palette.surface;
+            border-width: 2px; border-color: Palette.accent;
             Text {
                 x: 16px; y: 12px; width: 344px; height: 24px;
                 text: "BLUETOOTH PAIRING";
-                color: AmberPalette.amber; font-size: 18px; font-weight: 700;
+                color: Palette.accent; font-size: 18px; font-weight: 700;
             }
             Text {
                 x: 16px; y: 42px; width: 344px; height: 36px;
                 text: root.pairing-device + " asks to pair. Pair only if the phone shows this code:";
-                color: AmberPalette.text; font-size: 12px;
+                color: Palette.text; font-size: 12px;
                 wrap: word-wrap;
             }
             Text {
                 x: 16px; y: 82px; width: 344px; height: 76px;
                 text: root.pairing-code;
-                color: AmberPalette.amber; font-size: 48px; font-weight: 700;
+                color: Palette.accent; font-size: 48px; font-weight: 700;
                 horizontal-alignment: center; vertical-alignment: center;
             }
             // Enter or Back, or a tap on either.
@@ -700,12 +747,12 @@ export component AppWindow inherits Window {
             ]: Rectangle {
                 x: 16px + index * 180px; y: 168px; width: 164px; height: 32px;
                 border-radius: 6px;
-                background: answer.accept ? AmberPalette.amber : transparent;
+                background: answer.accept ? Palette.accent : transparent;
                 border-width: 1px;
-                border-color: AmberPalette.amber;
+                border-color: Palette.accent;
                 Text {
                     text: answer.label;
-                    color: answer.accept ? AmberPalette.selected-text : AmberPalette.amber;
+                    color: answer.accept ? Palette.selected-text : Palette.accent;
                     font-size: 14px; font-weight: 700;
                     horizontal-alignment: center; vertical-alignment: center;
                 }

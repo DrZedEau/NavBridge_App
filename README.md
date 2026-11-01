@@ -19,7 +19,7 @@ and odometer from its I-Bus, through the carrier board's ATmega32U4.
   TLS 1.2 peer verification, protobuf channel negotiation, keyboard input, night
   sensor, audio/video focus, H.264 decoding, ALSA audio, GPSD, the I-Bus and
   system metrics.
-- `navbridge-ui`: amber Slint menu with status lights and a clock, Settings,
+- `navbridge-ui`: Slint menu (amber, blue or green) with status lights and a clock, Settings,
   four System pages, keyboard and touch navigation and the projection view. Escape/Home returns to the menu and gives video focus
   back to the car, so the phone pauses its video; returning to Phone
   restores it while retaining the phone session and audio.
@@ -219,7 +219,7 @@ PC window works alongside the keyboard:
 - **Phone**: a tap switches Enable pairing. Android Auto's screen takes one
   finger's taps and drags, as the core declares an 800x480 touchscreen to the
   phone; Exit in Android Auto's launcher returns to the menu.
-- **Settings**: a tap switches Hotspot, DPI and FPS. A tap opens a volume row;
+- **Settings**: a tap switches Hotspot, DPI, FPS and Theme. A tap opens a volume row;
   then a tap on the left or right half of its value steps it by 1%, repeating
   while held, and a tap on its label closes it.
 - **System**: a swipe turns the page its way; a tap turns it towards its side.
@@ -238,7 +238,8 @@ returns:
   the hotspot off, "Waiting for paired phone" with it on, or while pairing is
   open, the name to pair with and the time left.
 - **Settings**: the hotspot for wireless Android Auto, the projection's DPI and
-  frame rate, and the codec's speaker volume and microphone gain (see below).
+  frame rate, the codec's speaker volume and microphone gain, and the UI's
+  theme (see below).
 - **System**: the System pages.
 
 Lights are green when on and red when off. CORE: the UI is connected to the
@@ -248,7 +249,8 @@ The time is the Pi's local time. The tiles' icons are in `crates/ui/ui/icons`.
 
 ## Settings
 
-One page, in three sections. Left/Right (or Up/Down) choose a row. Enter flips
+One page, in four sections, which scrolls by a row to show the last one.
+Left/Right (or Up/Down) choose a row. Enter flips
 the Hotspot switch at once; on the other rows, it opens the row: it is outlined
 and its value takes arrows. Left/Right then change the value, which takes effect
 at once, and Enter or Back close the row again.
@@ -260,6 +262,7 @@ at once, and Enter or Back close the row again.
 | | FPS | 60 / 30 | The phone gets it when it next connects |
 | Audio | Speakers volume | 0-100%, 1% steps | The codec's `Speaker` level; held keys repeat |
 | | Microphone volume | 0-100%, 1% steps | The codec's `Mic` capture gain; held keys repeat |
+| UI | Theme | Amber / Blue / Green | The UI's colours, on black; at once |
 
 The video choices apply when a phone next connects. The codec has fewer steps than 1%
 (`Speaker` 0-76, `Mic` 0-42), so a press does not always change what is heard.
