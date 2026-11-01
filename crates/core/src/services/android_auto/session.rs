@@ -95,7 +95,9 @@ mod sensor_type {
 /// all of them (video, keyboard, voice, setup, long messages) otherwise.
 const UNRESTRICTED: i32 = 0;
 const FULLY_RESTRICTED: i32 = 31;
-/// How old the last fix may be to answer the phone's request for location.
+/// How old the last fix may be to answer the phone's request for location,
+/// and its speed to stand for the car's: older, as when the receiver loses its
+/// fix, the I-Bus's speed goes out instead.
 const FRESH_FIX: Duration = Duration::from_secs(2);
 /// How much microphone audio, in microseconds, waits while the phone's window
 /// is full: ten 20 ms blocks. Older audio is dropped, as it would only delay
@@ -174,14 +176,18 @@ pub struct Session {
     /// is offered the car's location.
     gnss: bool,
     location_sensor: bool,
-    /// The I-Bus was being read when the session started, so the phone is
-    /// offered the car's speed.
+    /// The I-Bus was being read when the session started. With it or a GNSS
+    /// receiver, the phone is offered the car's speed.
     speedometer: bool,
     speed_sensor: bool,
     /// The car's Bluetooth address, offered for calls.
     bluetooth: Option<String>,
     /// The car's speedometer, in km/h, while the I-Bus reports it.
     speed: Option<u16>,
+    /// The latest fix's speed in m/s, and when it came.
+    gnss_speed: Option<(f64, Instant)>,
+    /// Where the speed the phone last got came from, to log each change.
+    speed_source: Option<SpeedSource>,
     last_fix: Option<(Fix, Instant)>,
     mic: bool,
     mic_window: u32,
@@ -195,6 +201,14 @@ pub struct Session {
     last_ping: Instant,
     pong: Option<(i64, Instant)>,
     clock: Instant,
+}
+/// Where the speed the phone gets comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpeedSource {
+    /// The GNSS receiver's fixes, while they carry a speed.
+    Gnss,
+    /// The cluster's speedometer, without them.
+    Ibus,
 }
 fn parse<M: Message>(data: &[u8]) -> Result<M, String> {
     M::parse_from_bytes(data).map_err(|e| e.to_string())
@@ -238,7 +252,7 @@ pub fn discovery(
     if gnss {
         offered.push(sensor_type::LOCATION);
     }
-    if speedometer {
+    if gnss || speedometer {
         offered.push(sensor_type::SPEED);
     }
     for kind in offered {
@@ -351,6 +365,8 @@ impl Session {
             speedometer: false,
             speed_sensor: false,
             speed: None,
+            gnss_speed: None,
+            speed_source: None,
             bluetooth: None,
             last_fix: None,
             mic: false,
@@ -598,11 +614,15 @@ impl Session {
                             self.status(SENSOR, msg::sensor::START_RESPONSE, true)?;
                             self.send_driving_status()?;
                         }
-                        sensor_type::SPEED if self.speedometer => {
+                        sensor_type::SPEED if self.gnss || self.speedometer => {
                             self.speed_sensor = true;
                             self.status(SENSOR, msg::sensor::START_RESPONSE, true)?;
-                            tracing::info!("Android Auto uses the car's speed from its I-Bus");
-                            self.send_speed()?;
+                            tracing::info!(
+                                gnss = self.gnss,
+                                ibus = self.speedometer,
+                                "Android Auto uses the car's speed"
+                            );
+                            self.send_speed(None)?;
                         }
                         sensor_type::LOCATION if self.gnss => {
                             self.location_sensor = true;
@@ -805,13 +825,14 @@ impl Session {
         r.set_already_paired(paired);
         self.send(BLUETOOTH, msg::bluetooth::PAIRING_RESPONSE, &r)
     }
-    /// The car's speed in km/h, or None once the I-Bus no longer reports it.
-    /// While known, a moving car is restricted whatever the parking brake
-    /// says; standing still, the parking brake decides.
+    /// The car's speed in km/h, or None once the I-Bus no longer reports it;
+    /// the phone gets it while no fresh fix carries a speed. While known, a
+    /// moving car is restricted whatever the parking brake says; standing
+    /// still, the parking brake decides.
     pub fn vehicle_speed(&mut self, kmh: Option<u16>) -> Result<(), String> {
         let was = self.restricted();
         self.speed = kmh;
-        self.send_speed()?;
+        self.send_speed(Some(SpeedSource::Ibus))?;
         if self.restricted() != was {
             tracing::debug!(?kmh, restricted = !was, "Android Auto driving restrictions");
             self.send_driving_status()?;
@@ -820,19 +841,44 @@ impl Session {
     }
     /// Restricted unless parked and, while the speed is known, standing
     /// still: the I-Bus's 0 km/h alone is anything under 2 km/h, such as
-    /// creeping in traffic.
+    /// creeping in traffic. Not from fixes, whose speed wanders standing still.
     fn restricted(&self) -> bool {
         !self.parked || self.speed.is_some_and(|kmh| kmh > 0)
     }
-    fn send_speed(&mut self) -> Result<(), String> {
-        let Some(kmh) = self.speed else {
+    /// The speed the phone gets, in mm/s, and where it comes from: the latest
+    /// fix's while fresh, else the I-Bus's.
+    fn current_speed(&self) -> Option<(i32, SpeedSource)> {
+        match self.gnss_speed {
+            Some((mps, at)) if at.elapsed() < FRESH_FIX => {
+                Some(((mps * 1e3).round() as i32, SpeedSource::Gnss))
+            }
+            _ => self.speed.map(|kmh| {
+                (
+                    (f64::from(kmh) * 1e3 / 3.6).round() as i32,
+                    SpeedSource::Ibus,
+                )
+            }),
+        }
+    }
+    /// Sends the current speed once the phone has started the speed sensor:
+    /// whichever it is for `None`, else only when it comes `from` there.
+    fn send_speed(&mut self, from: Option<SpeedSource>) -> Result<(), String> {
+        let Some((mm_s, source)) = self.current_speed() else {
             return Ok(());
         };
-        if !(self.speed_sensor && self.opened[SENSOR as usize]) {
+        if from.is_some_and(|from| from != source)
+            || !(self.speed_sensor && self.opened[SENSOR as usize])
+        {
             return Ok(());
         }
+        if self.speed_source.replace(source) != Some(source) {
+            match source {
+                SpeedSource::Gnss => tracing::info!("Android Auto's speed comes from GNSS fixes"),
+                SpeedSource::Ibus => tracing::info!("Android Auto's speed comes from the I-Bus"),
+            }
+        }
         let mut speed = p::Speed::new();
-        speed.set_speed((f64::from(kmh) * 1e3 / 3.6).round() as i32);
+        speed.set_speed(mm_s);
         let mut e = p::SensorEvent::new();
         e.speed.push(speed);
         self.send(SENSOR, msg::sensor::EVENT, &e)
@@ -862,8 +908,13 @@ impl Session {
         self.send(SENSOR, msg::sensor::EVENT, &e)
     }
     /// Passes the receiver's fix to the phone once it has started the
-    /// location sensor, and keeps the latest one to answer that start.
+    /// location sensor, and keeps the latest one to answer that start; its
+    /// speed, if any, goes to the speed sensor.
     pub fn location(&mut self, fix: Fix) -> Result<(), String> {
+        if let Some(mps) = fix.speed {
+            self.gnss_speed = Some((mps, Instant::now()));
+            self.send_speed(Some(SpeedSource::Gnss))?;
+        }
         if !(self.location_sensor && self.opened[SENSOR as usize]) {
             self.last_fix = Some((fix, Instant::now()));
             return Ok(());
@@ -1405,10 +1456,10 @@ mod tests {
     #[test]
     fn location_and_speed_are_offered_only_with_their_source() {
         // Night, parking brake and driving status always; location with a
-        // receiver, speed while the I-Bus is read.
+        // receiver, speed with a receiver or while the I-Bus is read.
         for (gnss, speedometer, sensors) in [
             (false, false, vec![10, 7, 13]),
-            (true, false, vec![10, 7, 13, 1]),
+            (true, false, vec![10, 7, 13, 1, 3]),
             (false, true, vec![10, 7, 13, 3]),
             (true, true, vec![10, 7, 13, 1, 3]),
         ] {
@@ -1480,7 +1531,8 @@ mod tests {
         s.parking_brake(false).unwrap();
         let sent_now = events(&mut s, &mut peer);
         assert_eq!(status(&sent_now[0]), Some(FULLY_RESTRICTED));
-        // Without the I-Bus as the phone connected, a start for speed is refused.
+        // With neither the I-Bus nor a receiver as the phone connected, a
+        // start for speed is refused.
         let (tls, mut peer) = super::super::tls::tests::pair();
         let mut plain = connected_session();
         plain.tls = tls;
@@ -1490,6 +1542,66 @@ mod tests {
         assert_eq!(replies.len(), 1);
         assert_eq!(replies[0].0, 0x8002);
         assert_ne!(parse::<p::Status>(&replies[0].1).unwrap().status(), 0);
+    }
+    #[test]
+    fn fixes_give_the_speed_and_the_i_bus_stands_in_without_them() {
+        let (tls, mut peer) = super::super::tls::tests::pair();
+        // Moving at 88 km/h as the phone connects, with the I-Bus read and a
+        // receiver connected.
+        let mut s = connected_session().with_speedometer(true, Some(88));
+        s.tls = tls;
+        s.gnss = true;
+        s.opened[SENSOR as usize] = true;
+        let mut start = p::SensorStart::new();
+        start.set_sensor_type(3);
+        let speeds = |s: &mut Session, peer: &mut _| {
+            sent(s, peer)
+                .into_iter()
+                .filter(|(id, _)| *id == 0x8003)
+                .filter_map(|(_, body)| {
+                    let e = parse::<p::SensorEvent>(&body).unwrap();
+                    e.speed.first().map(|v| v.speed())
+                })
+                .collect::<Vec<_>>()
+        };
+        let fix = |speed| Fix {
+            latitude: 48.5,
+            longitude: -2.25,
+            accuracy: None,
+            altitude: None,
+            speed,
+            bearing: None,
+        };
+        // Before any fix, the I-Bus's.
+        s.message(SENSOR, 0x8001, &start.write_to_bytes().unwrap())
+            .unwrap();
+        assert_eq!(speeds(&mut s, &mut peer), [24_444]);
+        // A fix's speed goes out, and the I-Bus's waits while it is fresh.
+        s.location(fix(Some(24.0))).unwrap();
+        s.vehicle_speed(Some(86)).unwrap();
+        assert_eq!(speeds(&mut s, &mut peer), [24_000]);
+        // A fix without one changes nothing.
+        s.location(fix(None)).unwrap();
+        assert!(speeds(&mut s, &mut peer).is_empty());
+        // Once fixes stop, the I-Bus's again.
+        let stale = Instant::now().checked_sub(FRESH_FIX).unwrap();
+        s.gnss_speed = Some((24.0, stale));
+        s.vehicle_speed(Some(84)).unwrap();
+        assert_eq!(speeds(&mut s, &mut peer), [23_333]);
+
+        // With a receiver alone, the speed sensor starts and takes fixes.
+        let (tls, mut peer) = super::super::tls::tests::pair();
+        let mut s = connected_session();
+        s.tls = tls;
+        s.gnss = true;
+        s.opened[SENSOR as usize] = true;
+        s.message(SENSOR, 0x8001, &start.write_to_bytes().unwrap())
+            .unwrap();
+        let replies = sent(&mut s, &mut peer);
+        assert_eq!(replies.len(), 1);
+        assert_eq!(parse::<p::Status>(&replies[0].1).unwrap().status(), 0);
+        s.location(fix(Some(0.4))).unwrap();
+        assert_eq!(speeds(&mut s, &mut peer), [400]);
     }
     #[test]
     fn fixes_reach_the_phone_once_it_starts_the_location_sensor() {

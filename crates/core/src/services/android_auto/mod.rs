@@ -47,10 +47,11 @@ struct State {
     /// unless the I-Bus reports the car moving.
     parked: bool,
     /// A GNSS receiver is connected: a phone connecting now is offered the
-    /// car's location.
+    /// car's location, and its speed from the fixes.
     gnss: bool,
     /// The I-Bus is read: a phone connecting now is offered the car's speed,
-    /// and the cluster's handbrake is the parking brake.
+    /// which stands in while no fix gives one, and the cluster's handbrake is
+    /// the parking brake.
     speedometer: bool,
     /// The car's speed in km/h, while the I-Bus reports it.
     speed: Option<u16>,
@@ -224,10 +225,10 @@ impl ProjectionService {
     }
     /// The car's I-Bus, at each snapshot: whether it is read, so a phone
     /// connecting later is offered the speed; the speed in km/h, which a
-    /// connected phone gets every time, as from a speedometer; the handbrake,
-    /// which while the I-Bus is read is the parking brake, off until the
-    /// cluster has reported it; and the low beam, whose changes set night
-    /// mode: night with the headlights on, day with them off.
+    /// connected phone gets every time while no fresh fix gives one; the
+    /// handbrake, which while the I-Bus is read is the parking brake, off
+    /// until the cluster has reported it; and the low beam, whose changes set
+    /// night mode: night with the headlights on, day with them off.
     pub fn set_vehicle(&self, vehicle: &VehicleSnapshot) {
         let (read, speed) = (vehicle.interface, vehicle.speed_kmh);
         let (send_speed, brake, night) = {

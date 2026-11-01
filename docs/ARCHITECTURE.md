@@ -84,9 +84,10 @@ each one.
   hotspot, then the head unit server; one phone at a time.
 - The session exchanges versions, runs TLS 1.2 (the phone's certificate chain is
   checked against the Google Automotive Link CA), answers service discovery and
-  opens the input, sensor (night mode, parking brake and driving status, and
-  location while a GNSS receiver is connected), video, three audio and
-  microphone channels. The driving status has no restrictions while the parking
+  opens the input, sensor (night mode, parking brake and driving status;
+  location while a GNSS receiver is connected; and speed with a receiver or the
+  I-Bus: the fixes' while one under 2 seconds old gives it, else the I-Bus's),
+  video, three audio and microphone channels. The driving status has no restrictions while the parking
   brake is on and the car stands still, and all of them otherwise, the brake
   counting as off until first reported. While the I-Bus is read, the parking
   brake is the cluster's handbrake and any speed above 0 km/h restricts; the

@@ -298,8 +298,9 @@ Arduino.
 
 If GPSD reports a receiver when the phone connects, Android Auto is offered the
 car's location and gets every fix (usually once a second): position, accuracy,
-altitude, speed, and heading while moving. The core logs `Android Auto uses the
-car's GNSS position` when the phone takes it. Without a receiver at connection,
+altitude, speed, and heading while moving. Its speed sensor gets each fix's
+speed too, the I-Bus's standing in without one (see I-Bus). The core logs
+`Android Auto uses the car's GNSS position` when the phone takes it. Without a receiver at connection,
 the phone uses its own GPS; a receiver plugged in later counts from the next
 connection.
 
@@ -327,15 +328,21 @@ Speed and engine speed go back to n/a after 10 seconds without an update, or
 when the ignition is off; everything does after 10 seconds without any I-Bus
 traffic, as the car is then asleep.
 
-Android Auto gets the speed too: a phone connecting while the I-Bus is read is
-offered a speed sensor, which then gets every reading (each snapshot, twice a
-second). The driving restrictions lift only while the car stands still with the
-handbrake on (see Keyboard), which the cluster reports in its sensor status
-(`13`, the first data byte's lowest bit) whenever it changes and every 8
-seconds while the engine runs; the core logs `handbrake` with each change. With
-the key in position 1 the cluster reports the handbrake as off, so Android Auto
-stays restricted until the ignition is on. While the I-Bus is read, the parking
-brake keys and buttons do nothing.
+Android Auto gets the speed too: a phone connecting while the I-Bus is read, or
+a GNSS receiver is connected, is offered a speed sensor. It gets the GNSS fixes'
+speed, and the I-Bus's readings (each snapshot, twice a second) while no fix
+under 2 seconds old gives one, as without a fix or a receiver. The core logs
+`Android Auto uses the car's speed` when the phone takes it, then `Android
+Auto's speed comes from GNSS fixes` or `from the I-Bus` at each change.
+
+The driving restrictions lift only while the car stands still with the
+handbrake on (see Keyboard). Standing still is the I-Bus's 0 km/h, not the
+fixes' speed, which wanders while the car stands. The cluster reports the
+handbrake in its sensor status (`13`, the first data byte's lowest bit)
+whenever it changes and every 8 seconds while the engine runs; the core logs
+`handbrake` with each change. With the key in position 1 the cluster reports
+the handbrake as off, so Android Auto stays restricted until the ignition is
+on. While the I-Bus is read, the parking brake keys and buttons do nothing.
 
 The same sensor status gives reverse gear (the second data byte's high half,
 `1` in reverse), with a manual gearbox as with an automatic one: tested in a
@@ -348,10 +355,9 @@ change.
 The light module (`D0`) reports the lamps (`5B`, the first data byte's `0x02`
 bit is the low beam) at each change and every 30 seconds while they are on,
 and night mode follows the low beam (see Keyboard); the core logs `night mode
-follows the headlights` with each change. The core
-logs `Android Auto uses the car's speed from its I-Bus` when the phone takes
-it. The line below the readings shows the link
-and how many frames it carried; damaged frames point to a wiring or interference problem.
+follows the headlights` with each change. The line below the readings shows
+the link and how many frames it carried; damaged frames point to a wiring or
+interference problem.
 With `RUST_LOG=debug`, the core logs each reading that changes and, once each,
 the kinds of message it does not decode, to find out what else the car sends.
 The systemd service reads the port through the `dialout` group.
