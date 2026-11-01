@@ -37,6 +37,8 @@ const HEADSET_UUID: &str = "00001108-0000-1000-8000-00805f9b34fb";
 /// The phone's side of a headset or hands-free connection.
 const HEADSET_GATEWAY_UUID: &str = "00001112-0000-1000-8000-00805f9b34fb";
 const HANDS_FREE_GATEWAY_UUID: &str = "0000111f-0000-1000-8000-00805f9b34fb";
+/// bluez-alsa's name on the system bus: it takes calls as a hands-free device.
+const HANDS_FREE_SERVICE: &str = "org.bluealsa";
 /// How long phones can find NavBridge and pair once the user opens pairing.
 const PAIRING_TIME: Duration = Duration::from_secs(120);
 /// A code not confirmed by then is refused; phones give up about then too.
@@ -661,6 +663,37 @@ fn call_in_turn<P>(
             Err(e) => debug!(%e, phone = %name, ms, "the phone did not answer"),
         }
     }
+}
+
+/// The adapter's address while bluez-alsa runs to take calls on it, for
+/// Android Auto to send the phone's calls there; none without BlueZ, an
+/// adapter or bluez-alsa.
+pub fn hands_free_address() -> Option<String> {
+    let connection = Connection::system().ok()?;
+    let bus = zbus::blocking::fdo::DBusProxy::new(&connection).ok()?;
+    let name = zbus::names::BusName::try_from(HANDS_FREE_SERVICE).ok()?;
+    if !bus.name_has_owner(name).ok()? {
+        return None;
+    }
+    adapter(&connection).ok()?.address().ok()
+}
+
+/// Whether BlueZ has paired with the phone at `address`, as "64:9D:38:E1:B6:24".
+pub fn paired(address: &str) -> bool {
+    if bluetooth_address(address).is_none() {
+        return false;
+    }
+    let path = format!(
+        "/org/bluez/hci0/dev_{}",
+        address.to_uppercase().replace(':', "_")
+    );
+    let device = Connection::system().and_then(|connection| {
+        Device1ProxyBlocking::builder(&connection)
+            .path(path)?
+            .cache_properties(CacheProperties::No)
+            .build()
+    });
+    device.and_then(|device| device.paired()).unwrap_or(false)
 }
 
 fn adapter(connection: &Connection) -> zbus::Result<Adapter1ProxyBlocking<'static>> {

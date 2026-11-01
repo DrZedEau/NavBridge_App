@@ -91,6 +91,17 @@ each one.
   brake is the cluster's handbrake and any speed above 0 km/h restricts; the
   UI's parking brake is ignored. The GNSS service passes
   each GPSD fix straight to the session thread.
+- While bluez-alsa runs as a hands-free device (`org.bluealsa` on the system
+  bus), the service discovery also offers the car's Bluetooth (channel 8: the
+  adapter's address, pairing by comparing a code), so the phone takes its calls
+  there. The phone asks whether the car has paired with it, and the core answers
+  from BlueZ. The calls service asks bluez-alsa four times a second (every two
+  seconds while it is not running) whether a hands-free source runs; while one
+  does, a call is on, and two threads copy 20 ms blocks at its rate: the
+  caller to the playback device, and the capture device to the caller. Each
+  way buffers 240 ms and plays once 80 ms is queued, as Bluetooth delivers call
+  audio unevenly. They stop when the call's audio does, and log how often each
+  way ran dry (`late`) or overflowed.
 - On SIGTERM or SIGINT the core asks the phone to end the session and waits up to
   one second for its reply before exiting.
 

@@ -13,7 +13,7 @@ pub mod wireless;
 use crate::config::{AndroidAutoConfig, AudioConfig, DecoderChoice};
 use crate::services::{
     audio::AudioPipeline,
-    events,
+    bluetooth, events,
     gnss::{Fix, GnssUpdate},
     media::{FrameSize, PushResult, VideoPipeline},
     wifi::HOTSPOT_IP,
@@ -566,8 +566,14 @@ fn runner(
                 config.dpi = dpi;
                 config
             };
+            // Asked of BlueZ at each phone, as bluez-alsa may have started.
+            let hands_free = bluetooth::hands_free_address();
+            if let Some(address) = &hands_free {
+                info!(%address, "Android Auto is offered the car's Bluetooth for calls");
+            }
             let mut session = session::Session::new(config, night, parked, gnss)?
-                .with_speedometer(speedometer, speed);
+                .with_speedometer(speedometer, speed)
+                .with_bluetooth(hands_free);
             let clock = Instant::now();
             let mut shown = false;
             while !stop.load(Ordering::Relaxed) {
@@ -649,6 +655,11 @@ fn runner(
                         Action::Duck(active) => audio.duck(active),
                         Action::HostUi => {
                             let _ = events.send(ProjectionEvent::RequestHostUi);
+                        }
+                        Action::BluetoothPairing(phone) => {
+                            let paired = bluetooth::paired(&phone);
+                            info!(%phone, paired, "the phone asks whether the car's Bluetooth knows it");
+                            session.bluetooth_paired(paired)?;
                         }
                         Action::Shutdown => {
                             for out in session.outgoing.drain(..) {

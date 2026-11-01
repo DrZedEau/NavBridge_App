@@ -38,7 +38,7 @@ trap 'rm -rf -- "$STAGE"' EXIT
 mkdir -p "$STAGE"/{bin,config,packaging,scripts}
 install -m 0755 target/release/navbridge-core target/release/navbridge-ui "$STAGE/bin/"
 install -m 0644 config/*.toml "$STAGE/config/"
-install -m 0644 packaging/*.service packaging/*.rules "$STAGE/packaging/"
+install -m 0644 packaging/*.service packaging/*.rules packaging/*.conf "$STAGE/packaging/"
 install -m 0755 scripts/install_systemd.sh scripts/install_runtime_deps.sh "$STAGE/scripts/"
 install -m 0644 docs/installation-lite.md "$STAGE/README.md"
 install -m 0644 LICENSE "$STAGE/LICENSE"

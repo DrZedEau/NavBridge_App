@@ -1,6 +1,7 @@
 pub mod android_auto;
 pub mod audio;
 pub mod bluetooth;
+pub mod calls;
 pub mod codec;
 pub mod events;
 pub mod gnss;

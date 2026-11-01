@@ -34,6 +34,7 @@ packaging/70-navbridge-android.rules
 packaging/71-navbridge-ibus.rules
 packaging/50-navbridge-wifi.rules
 packaging/51-navbridge-power.rules
+packaging/bluealsa-navbridge.conf
 scripts/install_systemd.sh
 scripts/install_runtime_deps.sh
 release.info

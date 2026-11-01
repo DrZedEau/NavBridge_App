@@ -59,6 +59,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // While a receiver is connected, the phone gets the car's position.
     let gnss = services::gnss::GnssService::start(projection.gnss_input());
     let ibus = services::ibus::IbusService::start(config.ibus.clone());
+    // While bluez-alsa takes a phone's calls, they play in the car.
+    let _calls = config
+        .audio
+        .enabled
+        .then(|| services::calls::CallService::start(config.audio.clone()));
 
     // The DPI as Settings left it, else core.toml's. The UI's size is logged
     // if it asks for frames at another size than the panel's.

@@ -84,6 +84,24 @@ pub struct AudioPipeline {
 /// Playback does not block, as its thread waits in poll(). Capture blocks, so
 /// each read waits for the rest of its block.
 pub fn open_pcm(device: &str, direction: Direction, fmt: AudioFormat) -> Result<PCM, alsa::Error> {
+    open_buffered_pcm(
+        device,
+        direction,
+        fmt,
+        Duration::from_millis(100),
+        Duration::from_millis(20),
+    )
+}
+
+/// As `open_pcm`, with room for `buffer`, and playback starting once `start`
+/// of it is queued: more of both rides out samples that arrive unevenly.
+pub fn open_buffered_pcm(
+    device: &str,
+    direction: Direction,
+    fmt: AudioFormat,
+    buffer: Duration,
+    start: Duration,
+) -> Result<PCM, alsa::Error> {
     let pcm = PCM::new(device, direction, direction == Direction::Playback)?;
     {
         let hw = HwParams::any(&pcm)?;
@@ -91,12 +109,12 @@ pub fn open_pcm(device: &str, direction: Direction, fmt: AudioFormat) -> Result<
         hw.set_format(Format::s16())?;
         hw.set_channels(fmt.channels)?;
         hw.set_rate(fmt.rate, ValueOr::Nearest)?;
-        hw.set_buffer_time_near(100000, ValueOr::Nearest)?;
+        hw.set_buffer_time_near(buffer.as_micros() as u32, ValueOr::Nearest)?;
         hw.set_period_time_near(20000, ValueOr::Nearest)?;
         pcm.hw_params(&hw)?;
         let sw = pcm.sw_params_current()?;
         sw.set_start_threshold(if direction == Direction::Playback {
-            (fmt.rate / 50) as i64
+            (u128::from(fmt.rate) * start.as_millis() / 1000) as i64
         } else {
             1
         })?;

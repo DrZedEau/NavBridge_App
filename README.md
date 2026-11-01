@@ -5,8 +5,9 @@ with a Rust backend and a separate Slint KMS interface. Connect an Android phone
 directly with a USB data cable, unlock it, and accept Android Auto setup prompts.
 
 Wireless Android Auto works over NavBridge's own 5 GHz hotspot once the phone
-is paired over Bluetooth. This build does not provide iPhone CarPlay or a
-hands-free Bluetooth call-audio path.
+is paired over Bluetooth, and a paired phone's calls play on the car's speakers
+and microphone over Bluetooth hands-free (see Calls). This build does not
+provide iPhone CarPlay.
 Music, navigation/assistant playback and assistant microphone capture use the
 PCM2912A USB codec. An external GNSS receiver shows on the System page and, when
 connected as the phone connects, gives Android Auto the car's position. The
@@ -463,6 +464,28 @@ Android Auto connected over Bluetooth`, `the phone has the hotspot's details`,
 Auto setup failed` gives the reason, such as a phone that could not join the
 hotspot. The call logs how long the phone took to answer (`ms`), and the
 handshake how long it waited for the hotspot (`waited_ms`).
+
+## Calls
+
+Android Auto shows calls, and the phone sends their audio over Bluetooth to a
+hands-free device: bluez-alsa, which the installer runs for the hands-free
+profile only (`/etc/systemd/system/bluealsa.service.d/navbridge.conf`), not for
+the phone's media. While it runs, Android Auto is offered the car's Bluetooth
+for calls, and the core plays each call: the caller on the codec's speakers,
+through the same `dmix` as Android Auto, and the codec's microphone to the
+caller. The core logs `a call's audio plays in the car` with the codec and
+rate, and `the call's audio ended`.
+
+- The phone has to be paired with NavBridge's Bluetooth, as for wireless
+  Android Auto, and allowed *Phone calls* for it (the phone's Bluetooth
+  settings). Pairing a new phone still needs wireless mode on.
+- On a Raspberry Pi's own Bluetooth chip, call audio is sent over its HCI link
+  (a command run before bluez-alsa starts) and LC3-SWB is turned off: the chip
+  loses its packets, so phones use mSBC (16 kHz).
+- The phone cancels the echo itself. If the caller hears themselves, or the car
+  is hard to hear, raise or lower Microphone volume in Settings.
+- Without bluez-alsa, calls stay on the phone, and the core logs `bluez-alsa
+  cannot be asked about calls`.
 
 ## Diagnostics and validation
 

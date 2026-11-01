@@ -48,6 +48,8 @@ for unit in navbridge-core navbridge-ui; do
     "$ROOT/packaging/$unit.service" > "$STAGE/$unit.service"
 done
 POLKIT_RULES=(50-navbridge-wifi.rules 51-navbridge-power.rules)
+# bluez-alsa takes the phone's calls as a hands-free device; the core plays them.
+CALL_PACKAGES=(bluez bluez-alsa-utils libasound2-plugin-bluez)
 for rule in "${POLKIT_RULES[@]}"; do
   sed -e "s/@USER@/$INSTALL_USER/g" "$ROOT/packaging/$rule" > "$STAGE/$rule"
 done
@@ -59,6 +61,7 @@ if (( DRY_RUN )); then
   echo "Will preserve existing config and enable both services."
   echo "Will let $INSTALL_USER switch the Wi-Fi hotspot through NetworkManager (polkit rule)."
   echo "Will let $INSTALL_USER shut the Pi down when the car's ignition stays off (polkit rule)."
+  echo "Will install ${CALL_PACKAGES[*]} and run bluez-alsa as the hands-free device for calls only (no A2DP); bluealsa-aplay off."
   echo "Will disable getty@tty1 so NavBridge owns the dedicated display. Start now: $START"
   if (( DESKTOP )); then
     echo "This machine runs a desktop: the install stops unless --force is given."
@@ -106,6 +109,11 @@ if [[ -f $ROOT/release.info ]]; then
   [[ -z $expected || $expected == "$actual" ]] || { echo "This release is for $expected; this computer is $actual." >&2; exit 1; }
 fi
 "$ROOT/scripts/install_runtime_deps.sh"
+apt-get install -y --no-install-recommends "${CALL_PACKAGES[@]}"
+# Only the hands-free profile, without LC3-SWB where bluez-alsa has it.
+CODECS=""
+if bluealsa --help 2>&1 | grep -q 'LC3-SWB'; then CODECS="-c -LC3-SWB"; fi
+sed -e "s/@CODECS@/$CODECS/" "$ROOT/packaging/bluealsa-navbridge.conf" > "$STAGE/bluealsa-navbridge.conf"
 for app in navbridge-core navbridge-ui; do
   if ! libraries=$(ldd "$BIN_DIR/$app" 2>&1) || [[ $libraries == *'not found'* ]]; then
     printf 'Incompatible or missing runtime libraries for %s:\n%s\n' "$app" "$libraries" >&2
@@ -163,7 +171,12 @@ done
 systemd-analyze verify "$STAGE/navbridge-core.service" "$STAGE/navbridge-ui.service"
 install -m 0644 "$STAGE/navbridge-core.service" /etc/systemd/system/navbridge-core.service
 install -m 0644 "$STAGE/navbridge-ui.service" /etc/systemd/system/navbridge-ui.service
+install -d -m 0755 /etc/systemd/system/bluealsa.service.d
+install -m 0644 "$STAGE/bluealsa-navbridge.conf" /etc/systemd/system/bluealsa.service.d/navbridge.conf
 systemctl daemon-reload
+# The phone's media comes through Android Auto, not bluez-alsa's player.
+systemctl disable --now bluealsa-aplay.service 2>/dev/null || true
+systemctl enable bluealsa.service
 systemctl disable getty@tty1.service
 systemctl enable navbridge-core.service navbridge-ui.service
 if (( START )); then
@@ -172,6 +185,8 @@ if (( START )); then
     echo "Stop the manually launched NavBridge app, then rerun this installer to finish startup." >&2
     exit 1
   fi
+  # Without it, calls stay on the phone; NavBridge works on.
+  systemctl restart bluealsa.service || echo "bluez-alsa did not start: calls stay on the phone." >&2
   systemctl start navbridge-core.service navbridge-ui.service
   sleep 3
   for unit in navbridge-core navbridge-ui; do

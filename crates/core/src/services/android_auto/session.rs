@@ -20,6 +20,8 @@ pub const MEDIA: u8 = 4;
 pub const SPEECH: u8 = 5;
 pub const SYSTEM: u8 = 6;
 pub const MIC: u8 = 7;
+/// The car's Bluetooth, for calls: offered only while something can take them.
+pub const BLUETOOTH: u8 = 8;
 /// Message ids. The same number means different things on different kinds of
 /// channel, so they are grouped by the channel that carries them.
 mod msg {
@@ -70,7 +72,14 @@ mod msg {
         pub const START_RESPONSE: u16 = 0x8002;
         pub const EVENT: u16 = 0x8003;
     }
+    pub mod bluetooth {
+        pub const PAIRING_REQUEST: u16 = 0x8001;
+        pub const PAIRING_RESPONSE: u16 = 0x8002;
+    }
 }
+/// How phones pair with the car's Bluetooth: comparing the code both show,
+/// as NavBridge's own pairing does.
+const PAIRING_NUMERIC_COMPARISON: u32 = 2;
 /// Video focus: the phone's picture, or the car's own screen.
 const FOCUS_PROJECTED: u32 = 1;
 const FOCUS_NATIVE: u32 = 2;
@@ -140,6 +149,9 @@ pub enum Action {
     Microphone(bool),
     Duck(bool),
     HostUi,
+    /// The phone, at this Bluetooth address, asks whether the car has paired
+    /// with it: `bluetooth_paired` answers.
+    BluetoothPairing(String),
     /// The phone ended the session, or acknowledged our request to end it.
     Shutdown,
 }
@@ -149,8 +161,8 @@ pub struct Session {
     assembler: Assembler,
     tls: Tls,
     pub outgoing: Vec<Vec<u8>>,
-    pub opened: [bool; 8],
-    sessions: [Option<i32>; 8],
+    pub opened: [bool; 9],
+    sessions: [Option<i32>; 9],
     pub discovered: bool,
     night: bool,
     night_sensor: bool,
@@ -166,6 +178,8 @@ pub struct Session {
     /// offered the car's speed.
     speedometer: bool,
     speed_sensor: bool,
+    /// The car's Bluetooth address, offered for calls.
+    bluetooth: Option<String>,
     /// The car's speedometer, in km/h, while the I-Bus reports it.
     speed: Option<u16>,
     last_fix: Option<(Fix, Instant)>,
@@ -185,7 +199,12 @@ pub struct Session {
 fn parse<M: Message>(data: &[u8]) -> Result<M, String> {
     M::parse_from_bytes(data).map_err(|e| e.to_string())
 }
-pub fn discovery(config: &AndroidAutoConfig, gnss: bool, speedometer: bool) -> p::Discovery {
+pub fn discovery(
+    config: &AndroidAutoConfig,
+    gnss: bool,
+    speedometer: bool,
+    bluetooth: Option<&str>,
+) -> p::Discovery {
     let mut d = p::Discovery::new();
     d.set_head_unit_name("NavBridge".into());
     d.set_car_model("BMW".into());
@@ -273,6 +292,15 @@ pub fn discovery(config: &AndroidAutoConfig, gnss: bool, speedometer: bool) -> p
     a.audio_config = MessageField::some(fmt);
     c.av_input_channel = MessageField::some(a);
     d.channels.push(c);
+    if let Some(address) = bluetooth {
+        let mut c = p::Channel::new();
+        c.set_channel_id(BLUETOOTH as u32);
+        let mut b = p::BluetoothChannel::new();
+        b.set_adapter_address(address.into());
+        b.supported_pairing_methods = vec![PAIRING_NUMERIC_COMPARISON];
+        c.bluetooth_channel = MessageField::some(b);
+        d.channels.push(c);
+    }
     d
 }
 fn audio_stream(id: u8) -> Option<Stream> {
@@ -310,8 +338,8 @@ impl Session {
             assembler: Assembler::default(),
             tls,
             outgoing: vec![],
-            opened: [false; 8],
-            sessions: [None; 8],
+            opened: [false; 9],
+            sessions: [None; 9],
             discovered: false,
             night,
             night_sensor: false,
@@ -323,6 +351,7 @@ impl Session {
             speedometer: false,
             speed_sensor: false,
             speed: None,
+            bluetooth: None,
             last_fix: None,
             mic: false,
             mic_window: 1,
@@ -450,19 +479,28 @@ impl Session {
                     self.send(
                         0,
                         msg::control::SERVICE_DISCOVERY_RESPONSE,
-                        &discovery(&self.config, self.gnss, self.speedometer),
+                        &discovery(
+                            &self.config,
+                            self.gnss,
+                            self.speedometer,
+                            self.bluetooth.as_deref(),
+                        ),
                     )?;
                     self.discovered = true;
                     actions.push(Action::Connected(request.device_name().into()));
                 }
                 msg::CHANNEL_OPEN_REQUEST => {
                     let r = parse::<p::Open>(body)?;
-                    let target = r.channel_id();
-                    let ok = self.discovered && (1..=7).contains(&target);
-                    let reply_on = if ok { target as u8 } else { 0 };
-                    self.status(reply_on, msg::CHANNEL_OPEN_RESPONSE, ok)?;
-                    if ok {
-                        self.opened[target as usize] = true;
+                    let target = u8::try_from(r.channel_id())
+                        .ok()
+                        .filter(|&channel| self.discovered && self.offers(channel));
+                    self.status(
+                        target.unwrap_or(0),
+                        msg::CHANNEL_OPEN_RESPONSE,
+                        target.is_some(),
+                    )?;
+                    if let Some(channel) = target {
+                        self.opened[channel as usize] = true;
                     }
                 }
                 msg::control::PING_REQUEST => {
@@ -506,7 +544,7 @@ impl Session {
             }
             return Ok(actions);
         }
-        if !(1..=7).contains(&channel) {
+        if !self.offers(channel) {
             return Err("unadvertised AA channel".into());
         }
         if id == msg::CHANNEL_OPEN_REQUEST {
@@ -688,6 +726,15 @@ impl Session {
                 }
                 _ => tracing::debug!(channel, id, "ignored optional AA media message"),
             },
+            BLUETOOTH => match id {
+                msg::bluetooth::PAIRING_REQUEST => {
+                    let r = parse::<p::BluetoothPairingRequest>(body)?;
+                    actions.push(Action::BluetoothPairing(r.phone_address().into()));
+                }
+                // Such as the code a phone sends for a car that compares it
+                // itself: NavBridge shows it on screen instead.
+                _ => tracing::debug!(id, "ignored AA Bluetooth message"),
+            },
             _ => (),
         }
         Ok(actions)
@@ -739,6 +786,24 @@ impl Session {
         self.speedometer = offered;
         self.speed = kmh;
         self
+    }
+    /// The car's Bluetooth address while something can take calls on it, so
+    /// the phone pairs with it and connects its hands-free profile there.
+    pub fn with_bluetooth(mut self, address: Option<String>) -> Self {
+        self.bluetooth = address;
+        self
+    }
+    /// The channels the service discovery offered.
+    fn offers(&self, channel: u8) -> bool {
+        (INPUT..=MIC).contains(&channel) || channel == BLUETOOTH && self.bluetooth.is_some()
+    }
+    /// Answers the phone's pairing request: whether the car has paired with
+    /// it already; if not, the phone pairs over Bluetooth.
+    pub fn bluetooth_paired(&mut self, paired: bool) -> Result<(), String> {
+        let mut r = p::BluetoothPairingResponse::new();
+        r.set_status(0);
+        r.set_already_paired(paired);
+        self.send(BLUETOOTH, msg::bluetooth::PAIRING_RESPONSE, &r)
     }
     /// The car's speed in km/h, or None once the I-Bus no longer reports it.
     /// While known, a moving car is restricted whatever the parking brake
@@ -1266,7 +1331,9 @@ mod tests {
     #[test]
     fn discovery_asks_for_60_frames_a_second() {
         let config = AndroidAutoConfig::default();
-        let bytes = discovery(&config, false, false).write_to_bytes().unwrap();
+        let bytes = discovery(&config, false, false, None)
+            .write_to_bytes()
+            .unwrap();
         let decoded = p::Discovery::parse_from_bytes(&bytes).unwrap();
         let video = &decoded.channels[VIDEO as usize - 1]
             .av_channel
@@ -1274,6 +1341,66 @@ mod tests {
             .unwrap()
             .video_configs[0];
         assert_eq!(video.video_fps(), 1);
+    }
+    #[test]
+    fn the_cars_bluetooth_is_offered_only_with_an_address() {
+        let bluetooth = |address| {
+            let bytes = discovery(&AndroidAutoConfig::default(), false, false, address)
+                .write_to_bytes()
+                .unwrap();
+            p::Discovery::parse_from_bytes(&bytes)
+                .unwrap()
+                .channels
+                .into_iter()
+                .find(|c| c.channel_id() == BLUETOOTH as u32)
+        };
+        assert!(bluetooth(None).is_none());
+        let channel = bluetooth(Some("88:A2:9E:53:85:18")).unwrap();
+        let offered = channel.bluetooth_channel.unwrap();
+        assert_eq!(offered.adapter_address(), "88:A2:9E:53:85:18");
+        assert_eq!(offered.supported_pairing_methods, [2]);
+    }
+    #[test]
+    fn the_phone_learns_whether_the_cars_bluetooth_knows_it() {
+        let (tls, mut peer) = super::super::tls::tests::pair();
+        let mut s = connected_session();
+        s.tls = tls;
+        let mut open = p::Open::new();
+        open.set_channel_id(BLUETOOTH as i32);
+        let open = open.write_to_bytes().unwrap();
+        // Not offered: neither opened nor taken.
+        s.message(0, 7, &open).unwrap();
+        assert!(!s.opened[BLUETOOTH as usize]);
+        assert!(s.message(BLUETOOTH, 0x8001, &[]).is_err());
+        // Offered, it opens, and the phone's request asks the car.
+        s = s.with_bluetooth(Some("88:A2:9E:53:85:18".into()));
+        s.message(0, 7, &open).unwrap();
+        assert!(s.opened[BLUETOOTH as usize]);
+        let mut request = p::BluetoothPairingRequest::new();
+        request.set_phone_address("64:9D:38:E1:B6:24".into());
+        request.set_pairing_method(2);
+        let actions = s
+            .message(BLUETOOTH, 0x8001, &request.write_to_bytes().unwrap())
+            .unwrap();
+        assert!(matches!(
+            actions.as_slice(),
+            [Action::BluetoothPairing(phone)] if phone == "64:9D:38:E1:B6:24"
+        ));
+        sent(&mut s, &mut peer);
+        s.bluetooth_paired(true).unwrap();
+        let replies = sent(&mut s, &mut peer);
+        let [(id, body)] = replies.as_slice() else {
+            panic!("one reply expected, got {}", replies.len());
+        };
+        assert_eq!(*id, 0x8002);
+        let reply = parse::<p::BluetoothPairingResponse>(body).unwrap();
+        assert_eq!((reply.status(), reply.already_paired()), (0, true));
+        // A channel number beyond a byte opens nothing.
+        let mut beyond = p::Open::new();
+        beyond.set_channel_id(256 + BLUETOOTH as i32);
+        s.opened[BLUETOOTH as usize] = false;
+        s.message(0, 7, &beyond.write_to_bytes().unwrap()).unwrap();
+        assert!(!s.opened[BLUETOOTH as usize]);
     }
     #[test]
     fn location_and_speed_are_offered_only_with_their_source() {
@@ -1285,7 +1412,7 @@ mod tests {
             (false, true, vec![10, 7, 13, 3]),
             (true, true, vec![10, 7, 13, 1, 3]),
         ] {
-            let bytes = discovery(&AndroidAutoConfig::default(), gnss, speedometer)
+            let bytes = discovery(&AndroidAutoConfig::default(), gnss, speedometer, None)
                 .write_to_bytes()
                 .unwrap();
             let decoded = p::Discovery::parse_from_bytes(&bytes).unwrap();
@@ -1469,7 +1596,7 @@ mod tests {
     }
     #[test]
     fn discovery_has_wired_channels_and_consistent_pcm_formats() {
-        let d = discovery(&AndroidAutoConfig::default(), false, false);
+        let d = discovery(&AndroidAutoConfig::default(), false, false, None);
         let bytes = d.write_to_bytes().unwrap();
         let parsed = parse::<p::Discovery>(&bytes).unwrap();
         assert_eq!(parsed.channels.len(), 7);
