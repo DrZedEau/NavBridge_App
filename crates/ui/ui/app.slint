@@ -526,6 +526,8 @@ export component AppWindow inherits Window {
         if root.system-page == 0: InfoBox {
             x: 8px; y: 124px; width: 384px; height: 108px;
             title: "USB Devices";
+            // Short labels leave room for lsusb's long names.
+            label-width: 50px;
             rows: [
                 { label: "USB 1", value: root.usb-devices[0] },
                 { label: "USB 2", value: root.usb-devices[1] },

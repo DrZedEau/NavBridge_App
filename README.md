@@ -274,9 +274,10 @@ appears, as a power cut can lose ALSA's own copy.
 ## System pages
 
 1. Compute Module (CM5 or CM4): CPU/RAM usage and temperature. USB Devices:
-   four rows, USB 1 to 4, each the name of a plugged-in device (its own product
-   name, else its maker's, else its IDs) in the order of their ports, hubs left
-   out; Empty for the rest.
+   four rows, USB 1 to 4, each a plugged-in device named as lsusb names it (the
+   maker, then the product, each from udev's hardware database, else as the
+   device gives it), in the order of their ports, hubs left out; Empty for the
+   rest.
 2. Video: UI resolution, projection resolution (Android Auto; CarPlay is not in
    this build) and the H.264 decoder in use: FFmpeg's version, the decoder's
    name, and software or hardware. Audio: the codec's output and input, stereo

@@ -14,8 +14,10 @@ use crate::settings::Settings;
 
 /// How often the module's figures, the codec and the USB devices are read.
 const REFRESH: Duration = Duration::from_secs(1);
-/// Where the kernel lists USB devices.
+/// Where the kernel lists USB devices, and where udev keeps what it looked up
+/// for each, such as its names in the hardware database.
 const USB_DEVICES: &str = "/sys/bus/usb/devices";
+const UDEV_DATA: &str = "/run/udev/data";
 
 pub struct SystemService {
     snapshot: Arc<RwLock<SystemSnapshot>>,
@@ -128,13 +130,14 @@ fn collect(
         memory: read_memory(),
         cpu_temp: read_cpu_temp(),
         audio: codec::status(audio, chosen),
-        usb_devices: usb_devices(Path::new(USB_DEVICES)),
+        usb_devices: usb_devices(Path::new(USB_DEVICES), Path::new(UDEV_DATA)),
     }
 }
 
-/// The USB devices plugged in, hubs left out, in the order of their ports:
-/// each by its own product name, else its maker's, else its IDs.
-fn usb_devices(root: &Path) -> Vec<String> {
+/// The USB devices plugged in, hubs left out, in the order of their ports,
+/// named as lsusb names them: the maker, then the product, each from udev's
+/// hardware database, else as the device gives it; else its IDs.
+fn usb_devices(root: &Path, udev: &Path) -> Vec<String> {
     let Ok(entries) = fs::read_dir(root) else {
         return Vec::new();
     };
@@ -155,9 +158,33 @@ fn usb_devices(root: &Path) -> Vec<String> {
             if read("bDeviceClass").as_deref() == Some("09") {
                 return None;
             }
-            let name = read("product")
-                .or_else(|| read("manufacturer"))
-                .or_else(|| Some(format!("USB {}:{}", read("idVendor")?, read("idProduct")?)))?;
+            // Lines such as "E:ID_VENDOR_FROM_DATABASE=Texas Instruments",
+            // in the file named after the device's numbers ("c189:129").
+            let looked_up = read("dev")
+                .and_then(|numbers| fs::read_to_string(udev.join(format!("c{numbers}"))).ok())
+                .unwrap_or_default();
+            let database = |key: &str| {
+                looked_up
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("E:")?
+                            .strip_prefix(key)?
+                            .strip_prefix('=')
+                    })
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(String::from)
+            };
+            let maker = database("ID_VENDOR_FROM_DATABASE").or_else(|| read("manufacturer"));
+            let product = database("ID_MODEL_FROM_DATABASE").or_else(|| read("product"));
+            let name = match (maker, product) {
+                (None, None) => format!("USB {}:{}", read("idVendor")?, read("idProduct")?),
+                (maker, product) => [maker, product]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            };
             // "2-1.4": bus 2, port 1, then port 4 of a hub there.
             let order = port
                 .split(['-', '.'])
@@ -259,9 +286,25 @@ mod tests {
         assert_eq!(memory_usage("MemTotal: 8388608 kB"), None);
     }
     #[test]
-    fn usb_devices_are_named_in_the_order_of_their_ports_without_hubs() {
+    fn usb_devices_are_named_as_lsusb_does_in_the_order_of_their_ports() {
         let root = std::env::temp_dir().join(format!("navbridge-usb-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+        let udev = root.join("udev");
+        fs::create_dir_all(&udev).unwrap();
+        // What udev found in its hardware database: both names for the
+        // codec, only the maker for the Arduino.
+        fs::write(
+            udev.join("c189:129"),
+            "E:ID_VENDOR=Burr-Brown_from_TI\nE:ID_VENDOR_FROM_DATABASE=Texas Instruments\n\
+             E:ID_MODEL_FROM_DATABASE=PCM2912A Audio Codec\n",
+        )
+        .unwrap();
+        fs::write(
+            udev.join("c189:385"),
+            "E:ID_VENDOR_FROM_DATABASE=Arduino SA\n",
+        )
+        .unwrap();
+        let root = root.join("devices");
         let device = |port: &str, attributes: &[(&str, &str)]| {
             let dir = root.join(port);
             fs::create_dir_all(&dir).unwrap();
@@ -275,26 +318,36 @@ mod tests {
         );
         device(
             "4-1",
-            &[("bDeviceClass", "ef"), ("product", "Arduino Micro")],
+            &[
+                ("bDeviceClass", "ef"),
+                ("dev", "189:385"),
+                ("manufacturer", "Arduino LLC"),
+                ("product", "Arduino Micro"),
+            ],
         );
         device(
             "2-1",
-            &[("bDeviceClass", "00"), ("product", "USB audio CODEC")],
+            &[
+                ("bDeviceClass", "00"),
+                ("dev", "189:129"),
+                ("manufacturer", "Burr-Brown from TI"),
+                ("product", "USB audio CODEC"),
+            ],
         );
         device("2-1:1.0", &[("bInterfaceClass", "01")]);
         device("1-1", &[("bDeviceClass", "09"), ("product", "USB2.0 Hub")]);
         device("1-1.10", &[("manufacturer", "u-blox AG")]);
         device("1-1.2", &[("idVendor", "18d1"), ("idProduct", "2d00")]);
         assert_eq!(
-            usb_devices(&root),
+            usb_devices(&root, &udev),
             [
                 "USB 18d1:2d00",
                 "u-blox AG",
-                "USB audio CODEC",
-                "Arduino Micro"
+                "Texas Instruments PCM2912A Audio Codec",
+                "Arduino SA Arduino Micro"
             ]
         );
-        fs::remove_dir_all(&root).unwrap();
-        assert!(usb_devices(&root).is_empty());
+        fs::remove_dir_all(root.parent().unwrap()).unwrap();
+        assert!(usb_devices(&root, &udev).is_empty());
     }
 }

@@ -2326,9 +2326,10 @@ mod preview {
         snapshot.system.cpu_temp = "52.3 °C".into();
         snapshot.system.audio.codec = "USB audio CODEC (08bb:2902)".into();
         snapshot.system.usb_devices = vec![
-            "Pixel 10".into(),
-            "u-blox 7 - GPS/GNSS Receiver".into(),
-            "USB audio CODEC".into(),
+            "Google Inc. Android Open Accessory device".into(),
+            "U-Blox AG [u-blox 7]".into(),
+            "Texas Instruments PCM2912A Audio Codec".into(),
+            "Arduino SA Arduino Micro".into(),
         ];
         snapshot.system.audio.output = Some(StreamFormat {
             channels: 2,
