@@ -3,7 +3,7 @@ use navbridge_common::GnssSnapshot;
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
-    io::{Read, Write},
+    io::{self, Read, Write},
     net::TcpStream,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -12,6 +12,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use tracing::{info, warn};
 
 /// Below this speed, GNSS heading is noise rather than the direction of travel.
 const MIN_BEARING_SPEED: f64 = 1.0;
@@ -52,6 +53,7 @@ impl GnssService {
         let stop = Arc::new(AtomicBool::new(false));
         let (shared, stopped) = (snapshot.clone(), stop.clone());
         let worker = thread::spawn(move || {
+            let mut outage = Outage::default();
             let mut present = false;
             let mut receiver = |now_present: bool| {
                 if now_present != present {
@@ -61,7 +63,7 @@ impl GnssService {
             };
             while !stopped.load(Ordering::Relaxed) {
                 let mut state = Receiver::default();
-                let result = (|| -> std::io::Result<()> {
+                let result = (|| -> io::Result<()> {
                     let mut socket = TcpStream::connect_timeout(
                         &"127.0.0.1:2947".parse().unwrap(),
                         Duration::from_millis(500),
@@ -73,11 +75,20 @@ impl GnssService {
                     let mut chunk = [0u8; 4096];
                     while !stopped.load(Ordering::Relaxed) {
                         match socket.read(&mut chunk) {
-                            Ok(0) => break,
+                            Ok(0) => {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::UnexpectedEof,
+                                    "GPSD closed the connection",
+                                ))
+                            }
                             Ok(n) => {
                                 pending.extend_from_slice(&chunk[..n]);
                                 while let Some(end) = pending.iter().position(|&b| b == b'\n') {
                                     if let Ok(report) = serde_json::from_slice(&pending[..end]) {
+                                        // Its first report since a problem ends it.
+                                        if let Some(problem) = outage.ended() {
+                                            info!(%problem, "GPSD answers again");
+                                        }
                                         let fix = state.report(&report, Instant::now());
                                         receiver(!state.selected.is_empty());
                                         if let Some(fix) = fix {
@@ -87,13 +98,16 @@ impl GnssService {
                                     pending.drain(..=end);
                                 }
                                 if pending.len() > 65536 {
-                                    break;
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "GPSD sent a line over 64 KiB",
+                                    ));
                                 }
                             }
                             Err(e)
                                 if matches!(
                                     e.kind(),
-                                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
                                 ) => {}
                             Err(e) => return Err(e),
                         }
@@ -102,7 +116,12 @@ impl GnssService {
                     }
                     Ok(())
                 })();
-                let _ = result;
+                if let Err(e) = result {
+                    // Once, not at every retry.
+                    if outage.failed(&e) {
+                        warn!(%e, "GPSD unavailable; trying again every second");
+                    }
+                }
                 receiver(false);
                 *shared.write().unwrap() = GnssSnapshot {
                     status: "GPSD unavailable".into(),
@@ -134,6 +153,24 @@ impl Drop for GnssService {
         }
     }
 }
+/// Why GPSD could not be read, as last logged: each new reason is logged
+/// once rather than at every retry, and so is the end of it.
+#[derive(Default)]
+struct Outage(Option<String>);
+impl Outage {
+    /// GPSD failed: whether `why` differs from the reason last logged.
+    fn failed(&mut self, why: &io::Error) -> bool {
+        let why = why.to_string();
+        let new = self.0.as_deref() != Some(why.as_str());
+        self.0 = Some(why);
+        new
+    }
+    /// GPSD answers: the problem that ended, if one was logged.
+    fn ended(&mut self) -> Option<String> {
+        self.0.take()
+    }
+}
+
 #[derive(Default)]
 struct Receiver {
     devices: BTreeMap<String, String>,
@@ -336,6 +373,29 @@ fn fix(v: &Value, mode: u64) -> Option<Fix> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gpsd_problem_is_logged_once_and_so_is_its_end() {
+        let refused = io::Error::from(io::ErrorKind::ConnectionRefused);
+        let closed = io::Error::new(io::ErrorKind::UnexpectedEof, "GPSD closed the connection");
+        let mut outage = Outage::default();
+        assert_eq!(outage.ended(), None, "nothing had gone wrong");
+        assert!(outage.failed(&refused));
+        assert!(
+            !outage.failed(&refused),
+            "the same reason at the next retry"
+        );
+        assert!(outage.failed(&closed), "another reason");
+        assert_eq!(
+            outage.ended().as_deref(),
+            Some("GPSD closed the connection")
+        );
+        assert_eq!(outage.ended(), None, "ended once");
+        assert!(
+            outage.failed(&closed),
+            "a new outage, though for the same reason"
+        );
+    }
     use serde_json::json;
     #[test]
     #[ignore = "requires a USB receiver managed by local GPSD"]
