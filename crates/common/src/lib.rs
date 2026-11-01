@@ -102,9 +102,6 @@ pub struct ProjectionSnapshot {
     /// The DPI the phone is asked for when it connects, as chosen in Settings.
     #[serde(default)]
     pub dpi: u32,
-    /// The frame rate the phone is asked for when it connects: 30 or 60.
-    #[serde(default)]
-    pub fps: u32,
     /// The H.264 decoder in use, such as "FFmpeg 7.1.5 h264 (software)".
     #[serde(default)]
     pub decoder: String,
@@ -119,7 +116,6 @@ impl Default for ProjectionSnapshot {
             streaming: false,
             phone_name: String::new(),
             dpi: 0,
-            fps: 0,
             decoder: String::new(),
         }
     }
@@ -307,7 +303,6 @@ pub enum ClientCommand {
     PhoneAction { action: PhoneAction },
     SetWireless { enabled: bool },
     SetDpi { dpi: u32 },
-    SetFps { fps: u32 },
     SetVolume { percent: u8 },
     SetMicrophone { percent: u8 },
     SetTheme { theme: Theme },
@@ -326,9 +321,6 @@ pub enum ServerEvent {
         media_width: u32,
         media_height: u32,
         media_dpi: u32,
-        /// Highest frame rate requested from the phone.
-        #[serde(default)]
-        media_fps: u32,
     },
     Snapshot {
         snapshot: AppSnapshot,

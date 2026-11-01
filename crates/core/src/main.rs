@@ -41,11 +41,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = CoreConfig::load(&args.config)?;
     // Before any thread starts, so that every thread inherits the blocked signals.
     let stop = stop_requests()?;
-    let mut server = IpcServer::bind(
-        &config.socket_path,
-        config.android_auto.dpi,
-        config.android_auto.fps,
-    )?;
+    let mut server = IpcServer::bind(&config.socket_path, config.android_auto.dpi)?;
     // Choices made in Settings, which survive a restart.
     let settings = Arc::new(Settings::new(settings::PATH));
     let system = SystemService::start(config.audio.clone(), settings.clone());
@@ -108,13 +104,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     if (1..=1000).contains(&dpi) {
                         info!(dpi, "projection DPI for the next phone");
                         projection.set_dpi(dpi);
-                    }
-                    next_snapshot = Instant::now();
-                }
-                ClientCommand::SetFps { fps } => {
-                    if matches!(fps, 30 | 60) {
-                        info!(fps, "projection frame rate for the next phone");
-                        projection.set_fps(fps);
                     }
                     next_snapshot = Instant::now();
                 }

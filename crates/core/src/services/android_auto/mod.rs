@@ -101,8 +101,7 @@ pub struct ProjectionService {
     worker: Option<JoinHandle<()>>,
 }
 impl ProjectionService {
-    /// The DPI and frame rate chosen in Settings, kept in `settings`, replace
-    /// core.toml's. Decoded video goes to `frame_path`, for the UI.
+    /// The DPI chosen in Settings, kept in `settings`, replaces core.toml's. Decoded video goes to `frame_path`, for the UI.
     pub fn start(
         config: AndroidAutoConfig,
         audio: AudioConfig,
@@ -113,7 +112,6 @@ impl ProjectionService {
         let state = Arc::new(RwLock::new(State {
             projection: ProjectionSnapshot {
                 dpi: saved.dpi.unwrap_or(config.dpi),
-                fps: saved.fps.unwrap_or(config.fps),
                 ..Default::default()
             },
             usb: Default::default(),
@@ -190,11 +188,6 @@ impl ProjectionService {
         if self.frame_size.set(width, height) {
             info!(width, height, "projection frames at the UI's size");
         }
-    }
-    /// For the next phone too: 30 or 60 frames a second.
-    pub fn set_fps(&self, fps: u32) {
-        self.state.write().unwrap().projection.fps = fps;
-        self.settings.update(|saved| saved.fps = Some(fps));
     }
     pub fn set_night_mode(&self, night: bool) {
         self.state.write().unwrap().night = night;
@@ -552,7 +545,7 @@ fn runner(
         }
         video.reset();
         audio.reset();
-        let (night, parked, gnss, speedometer, speed, dpi, fps) = {
+        let (night, parked, gnss, speedometer, speed, dpi) = {
             let mut s = state.write().unwrap();
             s.usb.selected = transport.usb().cloned();
             s.usb.error = None;
@@ -565,14 +558,13 @@ fn runner(
                 s.speedometer,
                 s.speed,
                 s.projection.dpi,
-                s.projection.fps,
             )
         };
         let result = (|| -> Result<(), String> {
-            let config = AndroidAutoConfig {
-                dpi,
-                fps,
-                ..config.clone()
+            let config = {
+                let mut config = config.clone();
+                config.dpi = dpi;
+                config
             };
             let mut session = session::Session::new(config, night, parked, gnss)?
                 .with_speedometer(speedometer, speed);

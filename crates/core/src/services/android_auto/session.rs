@@ -227,10 +227,10 @@ pub fn discovery(config: &AndroidAutoConfig, gnss: bool, speedometer: bool) -> p
         if id == VIDEO {
             let mut vc = p::VideoConfig::new();
             vc.set_video_resolution(1);
-            // Current phone profile: 60=1, 30=2 (Open Android Auto).
-            // Older AASDK definitions reverse these values. Keep this mapping
-            // covered by the serialized discovery test and live-rate checks.
-            vc.set_video_fps(if config.fps == 60 { 1 } else { 2 });
+            // 60 frames a second: 1 in the current phone profile (Open
+            // Android Auto), where 30 is 2; older AASDK definitions reverse
+            // them. The serialized discovery test keeps it.
+            vc.set_video_fps(1);
             vc.set_margin_width(0);
             vc.set_margin_height(0);
             vc.set_dpi(config.dpi);
@@ -1162,21 +1162,16 @@ mod tests {
         assert!(s.message(VIDEO, 0, &[0; 16]).is_err());
     }
     #[test]
-    fn discovery_serializes_requested_frame_rates() {
-        for (fps, wire) in [(30, 2), (60, 1)] {
-            let config = AndroidAutoConfig {
-                fps,
-                ..Default::default()
-            };
-            let bytes = discovery(&config, false, false).write_to_bytes().unwrap();
-            let decoded = p::Discovery::parse_from_bytes(&bytes).unwrap();
-            let video = &decoded.channels[VIDEO as usize - 1]
-                .av_channel
-                .as_ref()
-                .unwrap()
-                .video_configs[0];
-            assert_eq!(video.video_fps(), wire);
-        }
+    fn discovery_asks_for_60_frames_a_second() {
+        let config = AndroidAutoConfig::default();
+        let bytes = discovery(&config, false, false).write_to_bytes().unwrap();
+        let decoded = p::Discovery::parse_from_bytes(&bytes).unwrap();
+        let video = &decoded.channels[VIDEO as usize - 1]
+            .av_channel
+            .as_ref()
+            .unwrap()
+            .video_configs[0];
+        assert_eq!(video.video_fps(), 1);
     }
     #[test]
     fn location_and_speed_are_offered_only_with_their_source() {

@@ -15,9 +15,8 @@ pub const PATH: &str = "/var/lib/navbridge/settings.toml";
 #[serde(default)]
 pub struct Saved {
     pub wireless_android_auto: bool,
-    /// The projection's DPI and frame rate, instead of core.toml's.
+    /// The projection's DPI, instead of core.toml's.
     pub dpi: Option<u32>,
-    pub fps: Option<u32>,
     /// The codec's output volume and microphone gain, in percent of their range.
     pub volume: Option<u8>,
     pub microphone: Option<u8>,
@@ -88,7 +87,6 @@ mod tests {
         assert_eq!(settings.load(), Saved::default());
         settings.update(|saved| saved.wireless_android_auto = true);
         settings.update(|saved| saved.dpi = Some(140));
-        settings.update(|saved| saved.fps = Some(30));
         settings.update(|saved| saved.volume = Some(70));
         settings.update(|saved| saved.theme = Theme::Blue);
         assert_eq!(
@@ -96,7 +94,6 @@ mod tests {
             Saved {
                 wireless_android_auto: true,
                 dpi: Some(140),
-                fps: Some(30),
                 volume: Some(70),
                 microphone: None,
                 theme: Theme::Blue,
@@ -105,8 +102,9 @@ mod tests {
         assert!(fs::read_to_string(&path)
             .unwrap()
             .contains("theme = \"blue\""));
-        // A file from before, with wireless mode only, still reads.
-        fs::write(&path, "wireless_android_auto = true\n").unwrap();
+        // A file from before, with wireless mode and the frame rate it no
+        // longer keeps, still reads.
+        fs::write(&path, "wireless_android_auto = true\nfps = 30\n").unwrap();
         let saved = settings.load();
         assert!(saved.wireless_android_auto);
         assert_eq!((saved.dpi, saved.volume), (None, None));

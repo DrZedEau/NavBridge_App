@@ -1,6 +1,6 @@
 use crate::services::ibus::Button;
 use navbridge_common::{InputAction, DEFAULT_SOCKET_PATH, MEDIA_DPI};
-use serde::Deserialize;
+use serde::{de::IgnoredAny, Deserialize};
 use std::{collections::BTreeMap, fs, net::SocketAddr, path::Path};
 // Unknown keys are rejected so that a typo stops the core instead of being ignored.
 #[derive(Clone, Debug, Deserialize)]
@@ -26,11 +26,8 @@ impl Default for CoreConfig {
 impl CoreConfig {
     pub fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let s: Self = toml::from_str(&fs::read_to_string(path)?)?;
-        if s.android_auto.dpi == 0
-            || s.android_auto.dpi > 1000
-            || !matches!(s.android_auto.fps, 30 | 60)
-        {
-            return Err("android_auto.dpi must be 1..1000; fps must be 30 or 60".into());
+        if s.android_auto.dpi == 0 || s.android_auto.dpi > 1000 {
+            return Err("android_auto.dpi must be 1..1000".into());
         }
         if s.android_auto.certificate.is_some() != s.android_auto.private_key.is_some() {
             return Err("certificate and private_key must be supplied together".into());
@@ -42,7 +39,10 @@ impl CoreConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct AndroidAutoConfig {
     pub dpi: u32,
-    pub fps: u32,
+    /// No longer read: the phone is always asked for 60 frames a second. A
+    /// core.toml from before still loads.
+    #[serde(rename = "fps")]
+    _fps: IgnoredAny,
     pub decoder: DecoderChoice,
     pub left_hand_drive: bool,
     pub certificate: Option<String>,
@@ -55,7 +55,7 @@ impl Default for AndroidAutoConfig {
     fn default() -> Self {
         Self {
             dpi: MEDIA_DPI,
-            fps: 30,
+            _fps: IgnoredAny,
             decoder: DecoderChoice::Auto,
             left_hand_drive: true,
             certificate: None,
@@ -140,7 +140,7 @@ mod tests {
     #[test]
     fn shipped_config_parses_and_unknown_keys_are_rejected() {
         let c: CoreConfig = toml::from_str(include_str!("../../../config/core.toml")).unwrap();
-        assert_eq!(c.android_auto.fps, 60);
+        assert_eq!(c.android_auto.dpi, 160);
         assert_eq!(c.android_auto.decoder, DecoderChoice::Auto);
         assert!(c.ibus.enabled);
         assert_eq!(c.ibus.device, IbusConfig::default().device);
@@ -155,6 +155,8 @@ mod tests {
         );
         let c: CoreConfig = toml::from_str("[android_auto]\ndecoder = \"software\"").unwrap();
         assert_eq!(c.android_auto.decoder, DecoderChoice::Software);
+        // The frame rate, from before it was always 60, is still accepted.
+        assert!(toml::from_str::<CoreConfig>("[android_auto]\nfps = 30").is_ok());
         assert!(toml::from_str::<CoreConfig>("[android_auto]\ndecoder = \"gpu\"").is_err());
         let c: CoreConfig =
             toml::from_str("[android_auto]\nhead_unit_server = \"127.0.0.1:5277\"").unwrap();

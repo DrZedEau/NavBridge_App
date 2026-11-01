@@ -52,8 +52,8 @@ temporary directory in tmpfs instead.
   without touching the others' keys. Hiding and resuming
   move the phone's video focus, so the phone stops sending video while the
   NavBridge menu is shown.
-- Core to UI: `hello` (geometry check, and the DPI and frame rate requested
-  from the phone), `snapshot` (every 500 ms or on request)
+- Core to UI: `hello` (geometry check, and the DPI requested from the phone),
+  `snapshot` (every 500 ms or on request)
   and `projection_event` (phone connected or disconnected, streaming started,
   phone asked for the NavBridge menu).
 

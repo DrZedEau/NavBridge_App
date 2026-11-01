@@ -30,7 +30,8 @@ and odometer from its I-Bus, through the carrier board's ATmega32U4.
 - Projection is H.264 at 800x480, averaged 2:1 (area scaling, with full
   chroma) to the 400x240 panel. Every picture is decoded, but of those that queue up while decoding
   lags, only the newest is scaled and shown.
-  FFmpeg normalizes full/limited color range. DPI and 30/60 fps are configurable.
+  FFmpeg normalizes full/limited color range. The phone is asked for 60 fps;
+  the DPI is configurable.
   The Pi 4 / CM4's hardware decoder (`h264_v4l2m2m`) is used when present; the
   Pi 5 / CM5 has none and decodes in software.
 - A dedicated USB reader uses 16 KB transfers and a bounded queue. The session
@@ -108,7 +109,6 @@ snapshot_interval_ms = 500
 
 [android_auto]
 dpi = 160
-fps = 60
 decoder = "auto"
 left_hand_drive = true
 
@@ -129,8 +129,9 @@ frame for 30 pictures, then asks the phone for a keyframe. `decoder =
 "software"` never tries the hardware one. The core logs the decoder it uses, and
 System's Video box shows it.
 
-The default configuration requests 60 fps. Frame-rate wire values are 60=1 and
-30=2, verified on the Pixel/CM5 during live comparison. Older AASDK definitions
+The core always asks the phone for 60 fps; an `fps` line left in an older
+core.toml is ignored. The frame-rate wire value for 60 fps is 1 (30 fps is 2),
+verified on the Pixel/CM5 during live comparison. Older AASDK definitions
 reverse these values. The frontend loads each frame as soon as the core
 publishes it (inotify on `/run/navbridge`) and shows it at the panel's next refresh.
 Measured animation rates can be below the requested maximum, especially when
@@ -219,7 +220,7 @@ PC window works alongside the keyboard:
 - **Phone**: a tap switches Enable pairing. Android Auto's screen takes one
   finger's taps and drags, as the core declares an 800x480 touchscreen to the
   phone; Exit in Android Auto's launcher returns to the menu.
-- **Settings**: a tap switches Hotspot, DPI, FPS and Theme. A tap opens a volume row;
+- **Settings**: a tap switches Hotspot, Theme and DPI. A tap opens a volume row;
   then a tap on the left or right half of its value steps it by 1%, repeating
   while held, and a tap on its label closes it.
 - **System**: a swipe turns the page its way; a tap turns it towards its side.
@@ -237,9 +238,9 @@ returns:
   dimmed while the hotspot is off, and in the middle "Waiting for phone" with
   the hotspot off, "Waiting for paired phone" with it on, or while pairing is
   open, the name to pair with and the time left.
-- **Settings**: the hotspot for wireless Android Auto, the projection's DPI and
-  frame rate, the codec's speaker volume and microphone gain, and the UI's
-  theme (see below).
+- **Settings**: the hotspot for wireless Android Auto, the UI's theme, the
+  projection's DPI, and the codec's speaker volume and microphone gain (see
+  below).
 - **System**: the System pages.
 
 Lights are green when on and red when off. CORE: the UI is connected to the
@@ -258,13 +259,12 @@ at once, and Enter or Back close the row again.
 | Section | Row | Values | Notes |
 | --- | --- | --- | --- |
 | Wireless | Hotspot | Switch, on / off | Wireless Android Auto (see below) |
+| UI | Theme | Amber / Blue / Green | The UI's colours, on black; at once |
 | Video | DPI | 160 / 140 | The phone gets it when it next connects |
-| | FPS | 60 / 30 | The phone gets it when it next connects |
 | Audio | Speakers volume | 0-100%, 1% steps | The codec's `Speaker` level; held keys repeat |
 | | Microphone volume | 0-100%, 1% steps | The codec's `Mic` capture gain; held keys repeat |
-| UI | Theme | Amber / Blue / Green | The UI's colours, on black; at once |
 
-The video choices apply when a phone next connects. The codec has fewer steps than 1%
+The DPI applies when a phone next connects. The codec has fewer steps than 1%
 (`Speaker` 0-76, `Mic` 0-42), so a press does not always change what is heard.
 Choices are kept in
 `/var/lib/navbridge/settings.toml`; the levels are set again whenever the codec

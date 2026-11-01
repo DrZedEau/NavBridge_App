@@ -37,33 +37,30 @@ enum Screen {
 const MENU_ITEMS: usize = 3;
 /// System pages: module and USB, video and audio, GNSS, and the car's I-Bus.
 const SYSTEM_PAGES: usize = 4;
-/// The projection DPIs and frame rates Settings offers.
+/// The projection DPIs Settings offers.
 const DPI_CHOICES: [u32; 2] = [160, 140];
-const FPS_CHOICES: [u32; 2] = [60, 30];
 
 /// Settings' rows, top to bottom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Setting {
     /// Wireless Android Auto: the hotspot, and Bluetooth for phones.
     Hotspot,
-    Dpi,
-    Fps,
-    Volume,
-    Microphone,
     /// The UI's colours.
     Theme,
+    Dpi,
+    Volume,
+    Microphone,
 }
-const SETTINGS: [Setting; 6] = [
+const SETTINGS: [Setting; 5] = [
     Setting::Hotspot,
+    Setting::Theme,
     Setting::Dpi,
-    Setting::Fps,
     Setting::Volume,
     Setting::Microphone,
-    Setting::Theme,
 ];
 /// The Settings rows the panel has room for, with their sections' headings:
 /// the list scrolls to keep the chosen row in view.
-const SETTINGS_SHOWN: usize = 5;
+const SETTINGS_SHOWN: usize = 4;
 /// The themes Settings offers, in the order it steps through them.
 const THEMES: [navbridge_common::Theme; 3] = [
     navbridge_common::Theme::Amber,
@@ -550,9 +547,8 @@ fn answer_pairing(state: &mut UiState, accept: bool, commands: &Commands) {
 }
 
 /// A Settings row tapped, `index` counting the rows shown: the hotspot, the
-/// DPI, the frame rate and the theme change at once; a level opens, then its
-/// value's halves (`half` -1 and 1) step it down and up, and a tap on its
-/// label closes it.
+/// theme and the DPI change at once; a level opens, then its value's halves
+/// (`half` -1 and 1) step it down and up, and a tap on its label closes it.
 fn tap_setting(state: &mut UiState, index: usize, half: i32, commands: &Commands) {
     if state.screen != Screen::Settings || pairing_shown(state) {
         return;
@@ -572,9 +568,7 @@ fn tap_setting(state: &mut UiState, index: usize, half: i32, commands: &Commands
         return;
     }
     match SETTINGS[index] {
-        Setting::Hotspot | Setting::Dpi | Setting::Fps | Setting::Theme => {
-            change_setting(state, true, commands)
-        }
+        Setting::Hotspot | Setting::Dpi | Setting::Theme => change_setting(state, true, commands),
         Setting::Volume | Setting::Microphone => state.settings_editing = true,
     }
 }
@@ -948,8 +942,8 @@ fn settings_shown(index: usize) -> std::ops::Range<usize> {
     first..(first + SETTINGS_SHOWN).min(SETTINGS.len())
 }
 
-/// Changes the open row's value, up or down: the hotspot, the DPI and the
-/// frame rate switch, the levels move by 1%.
+/// Changes the open row's value, up or down: the hotspot and the DPI switch,
+/// the levels move by 1% and the theme steps to the next or previous one.
 fn change_setting(
     state: &mut UiState,
     up: bool,
@@ -975,14 +969,6 @@ fn change_setting(
             };
             let _ = commands.send(ClientCommand::SetDpi { dpi });
             snapshot.projection.dpi = dpi;
-        }
-        Setting::Fps => {
-            let fps = match snapshot.projection.fps {
-                fps if fps == FPS_CHOICES[0] => FPS_CHOICES[1],
-                _ => FPS_CHOICES[0],
-            };
-            let _ = commands.send(ClientCommand::SetFps { fps });
-            snapshot.projection.fps = fps;
         }
         // At either end, a held key sends nothing more.
         Setting::Volume => {
@@ -1051,7 +1037,7 @@ fn section(row: Setting) -> &'static str {
         Setting::Dpi => "VIDEO",
         Setting::Volume => "AUDIO",
         Setting::Theme => "UI",
-        Setting::Fps | Setting::Microphone => "",
+        Setting::Microphone => "",
     }
 }
 
@@ -1066,7 +1052,6 @@ fn setting_text(state: &UiState, row: Setting) -> (&'static str, String) {
     match row {
         Setting::Hotspot => ("Hotspot", String::new()),
         Setting::Dpi => ("DPI", number(snapshot.projection.dpi)),
-        Setting::Fps => ("FPS", number(snapshot.projection.fps)),
         Setting::Volume => (
             "Speakers volume",
             percent(snapshot.system.audio.volume_percent),
@@ -1658,10 +1643,10 @@ mod navigation_tests {
         };
         // Left/Right only move between the rows, and wrap.
         press(&mut state, KeyAction::Right, false);
-        assert_eq!(selected_setting(&state), Setting::Dpi);
-        press(&mut state, KeyAction::Left, false);
-        press(&mut state, KeyAction::Left, false);
         assert_eq!(selected_setting(&state), Setting::Theme);
+        press(&mut state, KeyAction::Left, false);
+        press(&mut state, KeyAction::Left, false);
+        assert_eq!(selected_setting(&state), Setting::Microphone);
         press(&mut state, KeyAction::Right, false);
         assert_eq!(selected_setting(&state), Setting::Hotspot);
         assert!(rx.try_recv().is_err(), "choosing a row changed it");
@@ -1677,7 +1662,7 @@ mod navigation_tests {
         assert!(rx.try_recv().is_err(), "a held key switched it twice");
         // Left/Right still move on to the next row.
         press(&mut state, KeyAction::Right, false);
-        assert_eq!(selected_setting(&state), Setting::Dpi);
+        assert_eq!(selected_setting(&state), Setting::Theme);
         assert!(rx.try_recv().is_err());
         press(&mut state, KeyAction::Left, false);
         // A phone on USB does not stop it; a missing core does.
@@ -1717,13 +1702,13 @@ mod navigation_tests {
             ..UiState::default()
         };
         state.snapshot.projection.dpi = 160;
-        state.snapshot.projection.fps = 60;
         state.snapshot.system.audio.volume_percent = Some(14);
         state.snapshot.system.audio.microphone_percent = Some(48);
         let press = |state: &mut UiState, action, repeat| {
             handle_key_event(state, action, true, repeat, &tx);
         };
-        // The DPI switches between 160 and 140.
+        // The DPI, below the theme, switches between 160 and 140.
+        press(&mut state, KeyAction::Right, false);
         press(&mut state, KeyAction::Right, false);
         press(&mut state, KeyAction::Select, false);
         press(&mut state, KeyAction::Right, false);
@@ -1739,20 +1724,6 @@ mod navigation_tests {
         // Back closes it too.
         press(&mut state, KeyAction::Back, false);
         assert_eq!(state.screen, Screen::Settings);
-        // The frame rate switches between 60 and 30.
-        press(&mut state, KeyAction::Right, false);
-        press(&mut state, KeyAction::Select, false);
-        press(&mut state, KeyAction::Left, false);
-        press(&mut state, KeyAction::Right, false);
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(ClientCommand::SetFps { fps: 30 })
-        ));
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(ClientCommand::SetFps { fps: 60 })
-        ));
-        press(&mut state, KeyAction::Select, false);
         // Levels move in 1% steps; a held key repeats.
         press(&mut state, KeyAction::Right, false);
         press(&mut state, KeyAction::Select, false);
@@ -1788,7 +1759,6 @@ mod navigation_tests {
         assert!(rx.try_recv().is_err());
         assert_eq!(setting_text(&state, Setting::Microphone).1, "n/a");
         assert_eq!(setting_text(&state, Setting::Dpi).1, "160");
-        assert_eq!(setting_text(&state, Setting::Fps).1, "60");
     }
 
     #[test]
@@ -1913,22 +1883,19 @@ mod navigation_tests {
             ..UiState::default()
         };
         state.snapshot.projection.dpi = 160;
-        state.snapshot.projection.fps = 60;
         state.snapshot.system.audio.volume_percent = Some(50);
-        // The hotspot, the DPI and the frame rate change with one tap.
+        // The hotspot and the DPI change with one tap.
         tap_setting(&mut state, 0, 0, &tx);
-        tap_setting(&mut state, 1, 0, &tx);
         tap_setting(&mut state, 2, 0, &tx);
         let sent: Vec<_> = rx.try_iter().collect();
         assert!(matches!(
             sent[..],
             [
                 ClientCommand::SetWireless { enabled: true },
-                ClientCommand::SetDpi { dpi: 140 },
-                ClientCommand::SetFps { fps: 30 }
+                ClientCommand::SetDpi { dpi: 140 }
             ]
         ));
-        assert_eq!(selected_setting(&state), Setting::Fps);
+        assert_eq!(selected_setting(&state), Setting::Dpi);
         assert!(!state.settings_editing);
         // A level opens; its value's halves step it; its label closes it.
         tap_setting(&mut state, 3, 0, &tx);
@@ -1944,12 +1911,18 @@ mod navigation_tests {
             ));
         }
         // Another row's halves do nothing while it is closed.
-        tap_setting(&mut state, 4, 1, &tx);
+        tap_setting(&mut state, 2, 1, &tx);
         assert!(rx.try_recv().is_err());
         tap_setting(&mut state, 3, 0, &tx);
         assert!(!state.settings_editing);
         tap_setting(&mut state, 3, 1, &tx);
         assert!(rx.try_recv().is_err());
+        // The microphone, the last row: the list scrolls by a row to show
+        // it, and taps count the rows shown.
+        assert_eq!((settings_shown(3), settings_shown(4)), (0..4, 1..5));
+        state.settings_index = 4;
+        tap_setting(&mut state, 3, 0, &tx);
+        assert!(state.settings_editing && selected_setting(&state) == Setting::Microphone);
     }
 
     #[test]
@@ -1961,13 +1934,10 @@ mod navigation_tests {
             core_connected: true,
             ..UiState::default()
         };
-        // The last row, in its own section: the list scrolls by a row to
-        // show it, and taps count the rows shown.
+        // In its own section, after the hotspot's.
         assert_eq!(section(Setting::Theme), "UI");
-        assert_eq!((settings_shown(4), settings_shown(5)), (0..5, 1..6));
-        state.settings_index = 5;
         assert_eq!(setting_text(&state, Setting::Theme).1, "Amber");
-        tap_setting(&mut state, 4, 0, &tx);
+        tap_setting(&mut state, 1, 0, &tx);
         assert_eq!(selected_setting(&state), Setting::Theme);
         assert!(!state.settings_editing, "a tap changes it at once");
         // Enter opens it; then Right steps on and Left back, round the ends.
@@ -2365,7 +2335,6 @@ mod preview {
             ..Default::default()
         });
         snapshot.projection.dpi = 160;
-        snapshot.projection.fps = 60;
         snapshot.projection.decoder = "FFmpeg 7.1.5 h264 (software)".into();
         snapshot.system.cpu_usage = "12.5%".into();
         snapshot.system.memory = "1.2 / 7.9 GB".into();
@@ -2409,7 +2378,7 @@ mod preview {
             ("phone-waiting", Screen::Phone, 0),
             ("settings-open", Screen::Settings, 0),
             ("phone-off", Screen::Phone, 0),
-            ("settings-fps", Screen::Settings, 0),
+            ("settings-dpi", Screen::Settings, 0),
             ("system-module", Screen::System, 0),
             ("system-video", Screen::System, 1),
             ("system-gnss", Screen::System, 2),
@@ -2426,11 +2395,13 @@ mod preview {
             state.settings_editing = name == "settings-open";
             state.settings_index = match name {
                 "settings-open" => 3,
-                "settings-fps" => 2,
-                "settings-theme" => 5,
+                "settings-dpi" => 2,
+                "settings-theme" => 1,
+                // The last row, with the list scrolled to it.
+                "settings-green" => 4,
                 _ => 0,
             };
-            // The other themes, and the list scrolled to the theme's row.
+            // The other themes.
             state.snapshot.theme = match name {
                 "settings-theme" | "menu-blue" => navbridge_common::Theme::Blue,
                 "settings-green" | "menu-green" => navbridge_common::Theme::Green,
@@ -2438,7 +2409,7 @@ mod preview {
             };
             // And the hotspot's switch off, on an unchosen row; on the Phone
             // page, pairing open, then not, then the hotspot off.
-            state.snapshot.wireless.enabled = !matches!(name, "settings-fps" | "phone-off");
+            state.snapshot.wireless.enabled = !matches!(name, "settings-dpi" | "phone-off");
             state.snapshot.bluetooth.pairing = name == "phone";
             state.snapshot.bluetooth.confirm =
                 (name == "pairing").then(|| navbridge_common::PairingRequest {

@@ -39,18 +39,13 @@ fn append_commands(input: &mut Vec<u8>, bytes: &[u8], commands: &mut Vec<ClientC
 
 pub struct IpcServer {
     media_dpi: u32,
-    media_fps: u32,
     listener: UnixListener,
     clients: Vec<Client>,
     socket_path: String,
 }
 impl IpcServer {
-    /// The DPI and frame rate requested from the phone are sent in each hello.
-    pub fn bind(
-        socket_path: &str,
-        media_dpi: u32,
-        media_fps: u32,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    /// The DPI requested from the phone is sent in each hello.
+    pub fn bind(socket_path: &str, media_dpi: u32) -> Result<Self, Box<dyn std::error::Error>> {
         let path = Path::new(socket_path);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -64,7 +59,6 @@ impl IpcServer {
         info!(socket = socket_path, "IPC server listening");
         Ok(Self {
             media_dpi,
-            media_fps,
             listener,
             clients: Vec::new(),
             socket_path: socket_path.into(),
@@ -93,7 +87,6 @@ impl IpcServer {
                         media_width: MEDIA_WIDTH,
                         media_height: MEDIA_HEIGHT,
                         media_dpi: self.media_dpi,
-                        media_fps: self.media_fps,
                     };
                     if client.output.enqueue(&hello, MAX_EVENT_BYTES).is_ok() {
                         self.clients.push(client);
@@ -218,7 +211,7 @@ mod tests {
     #[test]
     fn connected_clients_are_capped() {
         let path = format!("/tmp/navbridge-ipc-limit-{}.sock", std::process::id());
-        let mut server = IpcServer::bind(&path, 160, 60).unwrap();
+        let mut server = IpcServer::bind(&path, 160).unwrap();
         let mut peers = Vec::new();
         for _ in 0..MAX_CLIENTS + 2 {
             peers.push(UnixStream::connect(&path).unwrap());
@@ -236,7 +229,7 @@ mod tests {
     fn wait_sleeps_until_a_client_or_a_wake_socket_needs_attention() {
         use std::io::Write;
         let path = format!("/tmp/navbridge-ipc-wait-{}.sock", std::process::id());
-        let mut server = IpcServer::bind(&path, 160, 60).unwrap();
+        let mut server = IpcServer::bind(&path, 160).unwrap();
         let (mut event, events) = UnixStream::pair().unwrap();
         let (mut stop, stops) = UnixStream::pair().unwrap();
         let wake = [events.as_fd(), stops.as_fd()];
