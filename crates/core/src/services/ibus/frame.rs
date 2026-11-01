@@ -8,6 +8,8 @@ use serde::Deserialize;
 
 /// The instrument cluster (IKE), which reports speed, temperatures and more.
 const CLUSTER: u8 = 0x80;
+/// The light control module (LCM), which reports the lamps.
+const LIGHTS: u8 = 0xD0;
 /// The board monitor's panel (BMBT): radio presets, arrows, knob, soft keys.
 const BOARD_MONITOR: u8 = 0xF0;
 /// The steering wheel's buttons (MFL).
@@ -39,6 +41,8 @@ pub enum Reading {
     },
     /// The handbrake is pulled, from the cluster's sensor status.
     Handbrake(bool),
+    /// The headlights' low beam is on, from the light module's lamp status.
+    LowBeam(bool),
 }
 
 /// The frame on one of the microcontroller's lines. Lines that are not
@@ -98,25 +102,25 @@ fn frame(bytes: &[u8]) -> Result<Frame, String> {
 
 /// What a frame says about the car, for the messages NavBridge knows.
 pub fn decode(frame: &Frame) -> Option<Reading> {
-    if frame.source != CLUSTER {
-        return None;
-    }
-    match *frame.message.as_slice() {
-        [0x11, keys, ..] => Some(Reading::Ignition(ignition(keys))),
-        [0x18, speed, rpm, ..] => Some(Reading::Speed {
+    match (frame.source, frame.message.as_slice()) {
+        (CLUSTER, &[0x11, keys, ..]) => Some(Reading::Ignition(ignition(keys))),
+        (CLUSTER, &[0x18, speed, rpm, ..]) => Some(Reading::Speed {
             kmh: u16::from(speed) * 2,
             rpm: u16::from(rpm) * 100,
         }),
-        [0x19, outside, coolant, ..] => Some(Reading::Temperatures {
+        (CLUSTER, &[0x19, outside, coolant, ..]) => Some(Reading::Temperatures {
             outside: outside as i8,
             coolant: coolant as i8,
         }),
-        [0x17, low, middle, high, ..] => Some(Reading::Odometer {
+        (CLUSTER, &[0x17, low, middle, high, ..]) => Some(Reading::Odometer {
             km: u32::from_le_bytes([low, middle, high, 0]),
         }),
         // Its first byte's lowest bit; the others are warnings, such as worn
         // brake pads, and the next byte says whether the engine runs.
-        [0x13, sensors, ..] => Some(Reading::Handbrake(sensors & 0x01 != 0)),
+        (CLUSTER, &[0x13, sensors, ..]) => Some(Reading::Handbrake(sensors & 0x01 != 0)),
+        // Sent at each change and every 30 seconds while lamps are on. Its
+        // first byte: 0x01 parking lights, 0x02 low beam, 0x04 high beam.
+        (LIGHTS, &[0x5B, lamps, ..]) => Some(Reading::LowBeam(lamps & 0x02 != 0)),
         _ => None,
     }
 }
@@ -417,6 +421,20 @@ mod tests {
             read("IBUS1 RX 5 800ABF1304010000000086A5"),
             Some(Reading::Handbrake(false))
         );
+        // The light module: parking lights and low beam, parking lights
+        // alone, everything off.
+        assert_eq!(
+            read("IBUS1 RX 6 D008BF5B03000000013E"),
+            Some(Reading::LowBeam(true))
+        );
+        assert_eq!(
+            read("IBUS1 RX 7 D008BF5B01000000013C"),
+            Some(Reading::LowBeam(false))
+        );
+        assert_eq!(
+            read("IBUS1 RX 8 D008BF5B00000000013D"),
+            Some(Reading::LowBeam(false))
+        );
         assert_eq!(ignition(0x00), Ignition::Off);
         assert_eq!(ignition(0x01), Ignition::Accessory);
         assert_eq!(ignition(0x03), Ignition::On);
@@ -426,6 +444,13 @@ mod tests {
             source: 0x3B,
             destination: 0xBF,
             message: vec![0x18, 0x3C, 0x1E],
+        };
+        assert_eq!(decode(&other), None);
+        // Nor the light module's message id from another module.
+        let other = Frame {
+            source: 0x80,
+            destination: 0xBF,
+            message: vec![0x5B, 0x03],
         };
         assert_eq!(decode(&other), None);
     }

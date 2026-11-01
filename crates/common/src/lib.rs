@@ -208,6 +208,9 @@ pub struct VehicleSnapshot {
     /// The handbrake is pulled, as the cluster last reported it.
     #[serde(default)]
     pub handbrake: Option<bool>,
+    /// The headlights' low beam is on, as the light module last reported it.
+    #[serde(default)]
+    pub low_beam: Option<bool>,
 }
 
 /// The ignition key's position, as the instrument cluster reports it.

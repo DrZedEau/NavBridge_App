@@ -2190,6 +2190,7 @@ mod vehicle_tests {
             outside_c: Some(-4),
             odometer_km: Some(123_456),
             handbrake: Some(true),
+            low_beam: Some(true),
         };
         assert_eq!(
             vehicle_status(&vehicle, true),
@@ -2303,6 +2304,7 @@ mod preview {
             outside_c: Some(14),
             odometer_km: Some(187_654),
             handbrake: Some(false),
+            low_beam: Some(false),
         };
         for (name, screen, page) in [
             // Each Phone page follows another screen, so that its switch is

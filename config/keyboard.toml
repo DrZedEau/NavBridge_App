@@ -8,7 +8,8 @@ select = ["Return", "Space"]
 back = ["Backspace"]
 home = ["Escape", "Home"]
 quit = ["Q"]
-# Day or night mode from any page.
+# Day or night mode from any page; with the I-Bus read, until the low beam
+# next goes on or off.
 normal_mode = ["PageUp"]
 night_mode = ["PageDown"]
 # The parking brake, which lifts Android Auto's driving restrictions while on

@@ -183,7 +183,7 @@ buttons).
 | H | Android Auto home |
 | M / S | Open the navigation app / media in Android Auto |
 | P | Pause or resume music (the phone knows which) |
-| Page Up / Page Down | Day / night mode from any page |
+| Page Up / Page Down | Day / night mode from any page, until the low beam next goes on or off |
 | Ctrl / Alt | Parking brake on / off from any page: Android Auto's driving restrictions off / on |
 | Q | Quit |
 
@@ -191,7 +191,9 @@ In Android Auto, Up/Down switch focus sections; Left/Right step through items
 using rotary input. Enter selects and Backspace goes back.
 
 There are no touchscreen controls. Night mode starts in day mode and survives
-phone reconnects until the core restarts.
+phone reconnects until the core restarts. While the I-Bus is read, it follows
+the headlights: night when the low beam comes on, day when it goes off. The
+keys or a car button still switch it until the low beam next changes.
 
 Android Auto gets the parking brake and a driving status: no driving
 restrictions while the parking brake is on, so the keyboard, long lists and
@@ -320,11 +322,16 @@ Android Auto gets the speed too: a phone connecting while the I-Bus is read is
 offered a speed sensor, which then gets every reading (each snapshot, twice a
 second). The driving restrictions lift only while the car stands still with the
 handbrake on (see Keyboard), which the cluster reports in its sensor status
-(`13`, the first data byte's lowest bit) whenever it changes; the core logs
-`handbrake` with each change. Until the cluster has reported it since the core
-started, the handbrake counts as off, so pull or release it once if Android
-Auto stays restricted. While the I-Bus is read, the parking brake keys and
-buttons do nothing. The core
+(`13`, the first data byte's lowest bit) whenever it changes and every 8
+seconds while the engine runs; the core logs `handbrake` with each change. With
+the key in position 1 the cluster reports the handbrake as off, so Android Auto
+stays restricted until the ignition is on. While the I-Bus is read, the parking
+brake keys and buttons do nothing.
+
+The light module (`D0`) reports the lamps (`5B`, the first data byte's `0x02`
+bit is the low beam) at each change and every 30 seconds while they are on,
+and night mode follows the low beam (see Keyboard); the core logs `night mode
+follows the headlights` with each change. The core
 logs `Android Auto uses the car's speed from its I-Bus` when the phone takes
 it. The line below the readings shows the link
 and how many frames it carried; damaged frames point to a wiring or interference problem.
