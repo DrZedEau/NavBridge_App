@@ -127,7 +127,11 @@ Media (48 kHz stereo), speech such as guidance and the assistant (16 kHz mono)
 and system sounds (16 kHz mono) go to ALSA through `plug` and `dmix`, so the
 streams mix. Media is ducked while the phone holds transient audio focus. The
 microphone is captured at 16 kHz mono and sent to the phone while it keeps the
-microphone open. Neither audio thread polls: playback sleeps in `poll()` until
+microphone open, as many 20 ms blocks at a time as the window it asks for
+(1-10) allows; the others wait for its acknowledgements, up to 200 ms, and only
+older ones are dropped. The core logs the window when the phone opens the
+microphone, and how many blocks it dropped when it closes it. Neither audio
+thread polls: playback sleeps in `poll()` until
 new samples arrive or ALSA has room for queued ones, and capture sleeps until
 the phone opens the microphone, then blocks on each 20 ms read.
 

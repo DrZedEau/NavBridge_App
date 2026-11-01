@@ -7,6 +7,7 @@ use crate::services::audio::Stream;
 use crate::services::gnss::Fix;
 use navbridge_common::{NavigationKey, PhoneAction, TouchKind, MEDIA_HEIGHT, MEDIA_WIDTH};
 use protobuf::{Message, MessageField};
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/aa/mod.rs"));
@@ -87,6 +88,10 @@ const UNRESTRICTED: i32 = 0;
 const FULLY_RESTRICTED: i32 = 31;
 /// How old the last fix may be to answer the phone's request for location.
 const FRESH_FIX: Duration = Duration::from_secs(2);
+/// How much microphone audio, in microseconds, waits while the phone's window
+/// is full: ten 20 ms blocks. Older audio is dropped, as it would only delay
+/// what the phone hears.
+const MIC_HOLD: u64 = 200_000;
 /// Android key codes, then Android Auto's own car buttons above 65535.
 mod keycode {
     pub const HOME: u32 = 3;
@@ -167,6 +172,11 @@ pub struct Session {
     mic: bool,
     mic_window: u32,
     mic_unacked: u32,
+    /// Microphone blocks that wait for room in the window, oldest first, with
+    /// their timestamps; acknowledgements send them.
+    mic_waiting: VecDeque<(u64, Vec<u8>)>,
+    /// Blocks dropped since the microphone opened, for waiting too long.
+    mic_dropped: u32,
     started: Instant,
     last_ping: Instant,
     pong: Option<(i64, Instant)>,
@@ -317,6 +327,8 @@ impl Session {
             mic: false,
             mic_window: 1,
             mic_unacked: 0,
+            mic_waiting: VecDeque::new(),
+            mic_dropped: 0,
             started: now,
             last_ping: now,
             pong: None,
@@ -507,8 +519,7 @@ impl Session {
             self.opened[channel as usize] = false;
             self.sessions[channel as usize] = None;
             if channel == MIC {
-                self.mic = false;
-                actions.push(Action::Microphone(false));
+                self.mic_off(&mut actions);
             }
             if let Some(s) = audio_stream(channel) {
                 actions.push(Action::StopAudio(s));
@@ -602,8 +613,7 @@ impl Session {
                         actions.push(Action::StopAudio(s));
                     }
                     if channel == MIC {
-                        self.mic = false;
-                        actions.push(Action::Microphone(false));
+                        self.mic_off(&mut actions);
                     }
                 }
                 msg::media::DATA | msg::media::CODEC_CONFIG => {
@@ -630,10 +640,23 @@ impl Session {
                 }
                 msg::media::MIC_OPEN if channel == MIC => {
                     let m = parse::<p::MicOpen>(body)?;
-                    self.mic = m.open();
-                    self.mic_window = m.max_unacked().clamp(1, 10) as u32;
-                    self.mic_unacked = 0;
-                    actions.push(Action::Microphone(self.mic));
+                    if m.open() {
+                        // Without a window of its own, the phone gets the
+                        // smallest.
+                        self.mic_window = m.max_unacked().clamp(1, 10) as u32;
+                        tracing::info!(
+                            window = self.mic_window,
+                            asked = m.max_unacked(),
+                            "the phone opens the microphone"
+                        );
+                        self.mic = true;
+                        self.mic_unacked = 0;
+                        self.mic_waiting.clear();
+                        self.mic_dropped = 0;
+                        actions.push(Action::Microphone(true));
+                    } else {
+                        self.mic_off(&mut actions);
+                    }
                     let mut r = p::MicResponse::new();
                     r.set_session(self.sessions[MIC as usize].unwrap_or(0));
                     r.set_value(0);
@@ -647,9 +670,10 @@ impl Session {
                         } else {
                             ack.receive_timestamps.len() as u32
                         };
-                        if n <= self.mic_unacked {
-                            self.mic_unacked -= n;
-                        }
+                        // More than was outstanding, as after a reopen,
+                        // frees the whole window rather than none of it.
+                        self.mic_unacked = self.mic_unacked.saturating_sub(n);
+                        self.send_microphone()?;
                     }
                 }
                 msg::media::VIDEO_FOCUS_REQUEST if channel == VIDEO => {
@@ -873,14 +897,47 @@ impl Session {
         }
         Ok(())
     }
-    pub fn microphone(&mut self, pcm: &[u8], time: u64) -> Result<bool, String> {
-        if self.mic && self.opened[MIC as usize] && self.mic_unacked < self.mic_window {
-            let body = [time.to_be_bytes().as_slice(), pcm].concat();
+    /// A block of microphone audio, captured at `time`: sent at once while
+    /// the phone's window has room, else when its acknowledgements make some.
+    pub fn microphone(&mut self, pcm: &[u8], time: u64) -> Result<(), String> {
+        if !(self.mic && self.opened[MIC as usize]) {
+            return Ok(());
+        }
+        self.mic_waiting.push_back((time, pcm.to_vec()));
+        while self
+            .mic_waiting
+            .front()
+            .is_some_and(|&(oldest, _)| time.saturating_sub(oldest) > MIC_HOLD)
+        {
+            self.mic_waiting.pop_front();
+            self.mic_dropped += 1;
+        }
+        self.send_microphone()
+    }
+    /// Sends the waiting microphone blocks the phone's window has room for.
+    fn send_microphone(&mut self) -> Result<(), String> {
+        while self.mic_unacked < self.mic_window {
+            let Some((time, pcm)) = self.mic_waiting.pop_front() else {
+                break;
+            };
+            let body = [time.to_be_bytes().as_slice(), &pcm].concat();
             self.raw(MIC, msg::media::DATA, &body)?;
             self.mic_unacked += 1;
-            return Ok(true);
         }
-        Ok(false)
+        Ok(())
+    }
+    /// The phone stops listening: the audio still waiting goes, and how much
+    /// waited too long is logged.
+    fn mic_off(&mut self, actions: &mut Vec<Action>) {
+        if self.mic {
+            tracing::info!(
+                dropped = self.mic_dropped,
+                "the phone closes the microphone"
+            );
+        }
+        self.mic = false;
+        self.mic_waiting.clear();
+        actions.push(Action::Microphone(false));
     }
     pub fn tick(&mut self) -> Result<(), String> {
         if !self.discovered && self.started.elapsed() > Duration::from_secs(30) {
@@ -983,22 +1040,67 @@ mod tests {
         open.set_max_unacked(1);
         s.message(MIC, 0x8005, &open.write_to_bytes().unwrap())
             .unwrap();
-        assert!(s.microphone(&[0; 640], 10).unwrap());
-        assert!(!s.microphone(&[0; 640], 20).unwrap());
+        // The first block fills the window; the next waits.
+        let sent = s.outgoing.len();
+        s.microphone(&[0; 640], 10).unwrap();
+        s.microphone(&[0; 640], 20).unwrap();
+        assert_eq!((s.outgoing.len() - sent, s.mic_waiting.len()), (1, 1));
+        // Another session's acknowledgement frees nothing.
         let mut ack = p::Ack::new();
         ack.set_session(11);
         ack.set_value(1);
         s.message(MIC, 0x8004, &ack.write_to_bytes().unwrap())
             .unwrap();
-        assert_eq!(s.mic_unacked, 1);
+        assert_eq!((s.mic_unacked, s.mic_waiting.len()), (1, 1));
+        // Its own sends the waiting block in the room it makes.
         ack.set_session(12);
         s.message(MIC, 0x8004, &ack.write_to_bytes().unwrap())
             .unwrap();
-        assert!(s.microphone(&[0; 640], 30).unwrap());
+        assert_eq!((s.outgoing.len() - sent, s.mic_unacked), (2, 1));
+        assert!(s.mic_waiting.is_empty());
+        // Closed, it sends and keeps nothing.
+        s.microphone(&[0; 640], 30).unwrap();
         open.set_open(false);
         s.message(MIC, 0x8005, &open.write_to_bytes().unwrap())
             .unwrap();
-        assert!(!s.microphone(&[0; 640], 40).unwrap());
+        assert!(s.mic_waiting.is_empty());
+        let sent = s.outgoing.len();
+        s.microphone(&[0; 640], 40).unwrap();
+        assert_eq!((s.outgoing.len(), s.mic_waiting.len()), (sent, 0));
+    }
+    #[test]
+    fn microphone_audio_waits_for_the_window_until_it_is_too_old() {
+        let mut s = connected_session();
+        s.opened[MIC as usize] = true;
+        let mut open = p::MicOpen::new();
+        open.set_open(true);
+        open.set_max_unacked(2);
+        s.message(MIC, 0x8005, &open.write_to_bytes().unwrap())
+            .unwrap();
+        // Fifteen 20 ms blocks: two go, and the rest wait, as long as they
+        // span no more than 200 ms.
+        for block in 0..15u64 {
+            s.microphone(&[0; 640], block * 20_000).unwrap();
+        }
+        assert_eq!(s.mic_unacked, 2);
+        assert_eq!(s.mic_waiting.len(), 11);
+        assert_eq!(s.mic_waiting.front().unwrap().0, 80_000);
+        assert_eq!(s.mic_dropped, 2);
+        // An acknowledgement of more than is outstanding frees the whole
+        // window, and the oldest waiting blocks go.
+        let mut ack = p::Ack::new();
+        ack.set_session(0);
+        ack.set_value(5);
+        s.message(MIC, 0x8004, &ack.write_to_bytes().unwrap())
+            .unwrap();
+        assert_eq!(s.mic_unacked, 2);
+        assert_eq!(s.mic_waiting.front().unwrap().0, 120_000);
+        // Without a window of its own, the phone gets one block at a time.
+        open.set_max_unacked(0);
+        s.message(MIC, 0x8005, &open.write_to_bytes().unwrap())
+            .unwrap();
+        assert_eq!((s.mic_window, s.mic_dropped), (1, 0));
+        assert!(s.mic_waiting.is_empty());
     }
     #[test]
     fn horizontal_navigation_uses_signed_rotary_and_vertical_uses_dpad() {
