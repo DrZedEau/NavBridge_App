@@ -14,6 +14,27 @@ connected as the phone connects, gives Android Auto the car's position. The
 last System page shows the car's speed, engine speed, temperatures, ignition
 and odometer from its I-Bus, through the carrier board's ATmega32U4.
 
+## Screenshots
+
+The UI at 800x480, as a PC window draws it with frontend.toml's `scale = 2`;
+the car's panel shows the same layout at 400x240. The data is sample data.
+
+| Menu | Phone, pairing open |
+| --- | --- |
+| ![The menu: Phone, Settings and System tiles, the Bluetooth, Wi-Fi and GNSS lights and the time](docs/screenshots/menu.png) | ![The Phone page with pairing open and its time left](docs/screenshots/phone.png) |
+
+| Settings | A phone asking to pair |
+| --- | --- |
+| ![Settings: the Wireless, Audio, Video and UI boxes](docs/screenshots/settings.png) | ![The Bluetooth pairing code to compare, with Pair and Refuse](docs/screenshots/pairing.png) |
+
+| System: Compute Module and USB devices | System: video and audio |
+| --- | --- |
+| ![CPU, RAM and temperature, and the four USB devices](docs/screenshots/system-module.png) | ![The UI and projection resolutions, the decoder, and the audio formats](docs/screenshots/system-video.png) |
+
+| System: GNSS | System: the car, from its I-Bus |
+| --- | --- |
+| ![The GNSS receiver, fix, satellites, position, altitude, speed, HDOP and time](docs/screenshots/system-gnss.png) | ![Speed, engine speed, coolant and outside temperatures, ignition and odometer](docs/screenshots/system-ibus.png) |
+
 ## Architecture
 
 - `navbridge-core`: Android Open Accessory USB discovery, GAL version exchange,
@@ -549,6 +570,9 @@ To see the screens without the panel, the UI renders them with sample data into
 ```bash
 cargo test -p navbridge-ui --features navbridge-ui/direct-kms -- --ignored preview
 ```
+
+The `*-800x480.ppm` renders, converted to PNG, are the screenshots in
+`docs/screenshots`.
 
 Useful milestones: `Android accessory connected`, `Android Auto TLS authenticated`,
 `projection video format established`, `PCM playback opened`. At debug level the

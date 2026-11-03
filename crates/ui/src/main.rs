@@ -2690,47 +2690,9 @@ mod preview {
             ("reverse", Screen::Phone, 0),
             ("pairing", Screen::Menu, 0),
         ] {
+            stage(&mut state, name);
             state.screen = screen;
             state.system_page = page;
-            // The speakers' volume, opened to change it.
-            state.settings_editing = matches!(name, "settings-open" | "settings-phone");
-            state.settings_index = place(match name {
-                "settings-open" => Setting::Volume,
-                "settings-dpi" => Setting::Dpi,
-                "settings-theme" => Setting::Theme,
-                // The default phone, opened, with a long name; and Connect,
-                // once Disconnect has ended the session.
-                "settings-phone" => Setting::DefaultPhone,
-                // The last row, in the last box.
-                "settings-green" => Setting::Microphone,
-                _ => Setting::Hotspot,
-            });
-            let bluetooth = &mut state.snapshot.bluetooth;
-            bluetooth.default_phone = Some(if name == "settings-phone" {
-                "A0:B1:C2:D3:E4:F5".into()
-            } else {
-                "64:9D:38:E1:B6:24".into()
-            });
-            bluetooth.paused = name == "settings-phone";
-            // A wireless session, where the hotspot is on.
-            state.snapshot.projection.wireless = !matches!(name, "settings-dpi" | "settings-phone");
-            // The other themes.
-            state.snapshot.theme = match name {
-                "settings-theme" | "menu-blue" => navbridge_common::Theme::Blue,
-                "settings-green" | "menu-green" => navbridge_common::Theme::Green,
-                _ => navbridge_common::Theme::Amber,
-            };
-            // And the hotspot's switch off, on an unchosen row; on the Phone
-            // page, pairing open, then not, then the hotspot off.
-            state.snapshot.wireless.enabled = !matches!(name, "settings-dpi" | "phone-off");
-            state.snapshot.bluetooth.pairing = name == "phone";
-            // The car in reverse, over the Phone page.
-            state.snapshot.vehicle.reverse = Some(name == "reverse");
-            state.snapshot.bluetooth.confirm =
-                (name == "pairing").then(|| navbridge_common::PairingRequest {
-                    device: "Pixel 10".into(),
-                    code: "042137".into(),
-                });
             render_state(&ui, &state);
             capture(&ui, &window, name, 1);
         }
@@ -2791,14 +2753,72 @@ mod preview {
         );
         state.settings_editing = false;
 
-        // The menu as a PC window draws it at frontend.toml's scale = 2.
+        // As a PC window draws them at frontend.toml's scale = 2: the screens
+        // the README shows, from docs/screenshots.
         window
             .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged { scale_factor: 2.0 });
         window.set_size(slint::PhysicalSize::new(UI_WIDTH * 2, UI_HEIGHT * 2));
         ui.set_double_size(true);
-        state.screen = Screen::Menu;
-        render_state(&ui, &state);
-        capture(&ui, &window, "menu-800x480", 2);
+        for (name, screen, page) in [
+            ("menu", Screen::Menu, 0),
+            ("phone", Screen::Phone, 0),
+            ("settings", Screen::Settings, 0),
+            ("pairing", Screen::Menu, 0),
+            ("system-module", Screen::System, 0),
+            ("system-video", Screen::System, 1),
+            ("system-gnss", Screen::System, 2),
+            ("system-ibus", Screen::System, 3),
+        ] {
+            stage(&mut state, name);
+            state.screen = screen;
+            state.system_page = page;
+            render_state(&ui, &state);
+            capture(&ui, &window, &format!("{name}-800x480"), 2);
+        }
+    }
+
+    /// Sets up the sample state a preview `name` shows, beyond its screen and
+    /// page.
+    fn stage(state: &mut UiState, name: &str) {
+        // The speakers' volume, opened to change it.
+        state.settings_editing = matches!(name, "settings-open" | "settings-phone");
+        state.settings_index = place(match name {
+            "settings-open" => Setting::Volume,
+            "settings-dpi" => Setting::Dpi,
+            "settings-theme" => Setting::Theme,
+            // The default phone, opened, with a long name; and Connect,
+            // once Disconnect has ended the session.
+            "settings-phone" => Setting::DefaultPhone,
+            // The audio box's last row.
+            "settings-green" => Setting::Microphone,
+            _ => Setting::Hotspot,
+        });
+        let bluetooth = &mut state.snapshot.bluetooth;
+        bluetooth.default_phone = Some(if name == "settings-phone" {
+            "A0:B1:C2:D3:E4:F5".into()
+        } else {
+            "64:9D:38:E1:B6:24".into()
+        });
+        bluetooth.paused = name == "settings-phone";
+        // A wireless session, where the hotspot is on.
+        state.snapshot.projection.wireless = !matches!(name, "settings-dpi" | "settings-phone");
+        // The other themes.
+        state.snapshot.theme = match name {
+            "settings-theme" | "menu-blue" => navbridge_common::Theme::Blue,
+            "settings-green" | "menu-green" => navbridge_common::Theme::Green,
+            _ => navbridge_common::Theme::Amber,
+        };
+        // And the hotspot's switch off, on an unchosen row; on the Phone
+        // page, pairing open, then not, then the hotspot off.
+        state.snapshot.wireless.enabled = !matches!(name, "settings-dpi" | "phone-off");
+        state.snapshot.bluetooth.pairing = name == "phone";
+        // The car in reverse, over the Phone page.
+        state.snapshot.vehicle.reverse = Some(name == "reverse");
+        state.snapshot.bluetooth.confirm =
+            (name == "pairing").then(|| navbridge_common::PairingRequest {
+                device: "Pixel 10".into(),
+                code: "042137".into(),
+            });
     }
 
     /// Draws the window, `scale` times the UI's size, into /tmp/navbridge-NAME.ppm.
