@@ -332,8 +332,9 @@ export component AppWindow inherits Window {
     in property <string> vehicle-rpm: "n/a";
     in property <string> vehicle-coolant: "n/a";
     in property <string> vehicle-outside: "n/a";
-    in property <string> vehicle-ignition: "n/a";
-    in property <string> vehicle-odometer: "n/a";
+    // The cluster's on-board computer: the range left, average consumption.
+    in property <string> vehicle-range: "n/a";
+    in property <string> vehicle-consumption: "n/a";
 
     callback key-event(string, bool, bool);
     // Taps and drags, from a touchscreen or the mouse.
@@ -594,8 +595,8 @@ export component AppWindow inherits Window {
                 { label: "ENGINE", value: root.vehicle-rpm, note: "" },
                 { label: "COOLANT", value: root.vehicle-coolant, note: "" },
                 { label: "OUTSIDE", value: root.vehicle-outside, note: "" },
-                { label: "IGNITION", value: root.vehicle-ignition, note: "" },
-                { label: "ODOMETER", value: root.vehicle-odometer, note: "" },
+                { label: "RANGE", value: root.vehicle-range, note: "" },
+                { label: "CONSUMPTION", value: root.vehicle-consumption, note: "" },
             ]: Rectangle {
                 x: index == 0 || index == 2 || index == 4 ? 8px : 204px;
                 y: 32px + (index < 2 ? 0px : index < 4 ? 60px : 120px);

@@ -258,7 +258,13 @@ pub struct VehicleSnapshot {
     pub rpm: Option<u16>,
     pub coolant_c: Option<i8>,
     pub outside_c: Option<i8>,
-    pub odometer_km: Option<u32>,
+    /// The range left, in km, from the cluster's on-board computer.
+    #[serde(default)]
+    pub range_km: Option<u16>,
+    /// Average consumption ("Consumption 1"), in tenths of a litre per
+    /// 100 km, from the cluster's on-board computer.
+    #[serde(default)]
+    pub consumption_dl: Option<u16>,
     /// The handbrake is pulled, as the cluster last reported it.
     #[serde(default)]
     pub handbrake: Option<bool>,

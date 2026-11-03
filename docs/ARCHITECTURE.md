@@ -211,8 +211,9 @@ Both services require a paired phone over an encrypted link.
 The I-Bus service reads the carrier board's ATmega32U4 on its own thread: one
 line per frame the board hears, which the service checks (length, XOR
 checksum) and decodes when the instrument cluster sends it: ignition (`11`),
-road and engine speed (`18`), outside and coolant temperature (`19`),
-odometer (`17`), and the handbrake and reverse gear, manual or automatic
+road and engine speed (`18`), outside and coolant temperature (`19`), the
+on-board computer's range and consumption (`24`, as text), and the handbrake
+and reverse gear, manual or automatic
 (`13`, sensor status), and when the light module sends it: the low beam
 (`5B`, lamp status). The main loop hands each snapshot to the Android Auto service, which
 takes the speed, the handbrake and the low beam from it; the low beam's changes

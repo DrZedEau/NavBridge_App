@@ -319,7 +319,10 @@ struct State {
     speed: Option<(u16, u16, Instant)>,
     /// Outside and coolant, in °C.
     temperatures: Option<(i8, i8)>,
-    odometer: Option<u32>,
+    /// The on-board computer's range, in km, and consumption, in tenths of a
+    /// litre per 100 km: they hold until it sends them again.
+    range_km: Option<u16>,
+    consumption_dl: Option<u16>,
     /// The cluster says so when they change: they hold until then.
     handbrake: Option<bool>,
     reverse: Option<bool>,
@@ -379,7 +382,8 @@ impl State {
             Some(Reading::Temperatures { outside, coolant }) => {
                 self.temperatures.replace((outside, coolant)) != Some((outside, coolant))
             }
-            Some(Reading::Odometer { km }) => self.odometer.replace(km) != Some(km),
+            Some(Reading::Range(km)) => std::mem::replace(&mut self.range_km, km) != km,
+            Some(Reading::Consumption(dl)) => std::mem::replace(&mut self.consumption_dl, dl) != dl,
             Some(Reading::Sensors { handbrake, reverse }) => {
                 let pulled = self.handbrake.replace(handbrake) != Some(handbrake);
                 let shifted = self.reverse.replace(reverse) != Some(reverse);
@@ -423,7 +427,8 @@ impl State {
             vehicle.outside_c = Some(outside);
             vehicle.coolant_c = Some(coolant);
         }
-        vehicle.odometer_km = self.odometer;
+        vehicle.range_km = self.range_km;
+        vehicle.consumption_dl = self.consumption_dl;
         vehicle.handbrake = self.handbrake;
         vehicle.reverse = self.reverse;
         vehicle.low_beam = self.low_beam;
@@ -594,7 +599,12 @@ mod tests {
         };
         assert!(state.frame(Some(temperatures), start));
         assert!(!state.frame(Some(temperatures), start), "unchanged");
-        state.frame(Some(Reading::Odometer { km: 123_456 }), start);
+        state.frame(Some(Reading::Range(Some(473))), start);
+        assert!(state.frame(Some(Reading::Consumption(Some(132))), start));
+        assert!(
+            !state.frame(Some(Reading::Consumption(Some(132))), start),
+            "unchanged"
+        );
         assert_eq!(state.snapshot(start).handbrake, None, "not reported yet");
         let in_reverse = Reading::Sensors {
             handbrake: true,
@@ -608,8 +618,8 @@ mod tests {
         assert_eq!((v.speed_kmh, v.rpm), (Some(50), Some(1500)));
         assert_eq!((v.outside_c, v.coolant_c), (Some(12), Some(85)));
         assert_eq!(
-            (v.odometer_km, v.ignition, v.frames),
-            (Some(123_456), None, 7)
+            (v.range_km, v.consumption_dl, v.ignition, v.frames),
+            (Some(473), Some(132), None, 9)
         );
         assert_eq!(
             (v.handbrake, v.reverse, v.low_beam),
@@ -617,12 +627,12 @@ mod tests {
         );
 
         // Other frames keep the bus alive: a speed not sent again goes stale,
-        // while temperatures and distance, which change slowly, stay.
+        // while temperatures and the on-board computer's values stay.
         state.frame(None, at(9));
         state.frame(Some(Reading::Ignition(Ignition::On)), at(11));
         let v = state.snapshot(at(11));
         assert_eq!((v.speed_kmh, v.rpm), (None, None));
-        assert_eq!((v.coolant_c, v.odometer_km), (Some(85), Some(123_456)));
+        assert_eq!((v.coolant_c, v.range_km), (Some(85), Some(473)));
         assert_eq!(v.ignition, Some(Ignition::On));
         assert_eq!(
             (v.handbrake, v.reverse),
@@ -643,7 +653,8 @@ mod tests {
         // A quiet bus: the car is asleep, and nothing is current.
         let v = state.snapshot(at(24));
         assert_eq!(v.status, "No I-Bus traffic");
-        assert_eq!((v.ignition, v.coolant_c, v.frames), (None, None, 11));
+        assert_eq!((v.ignition, v.coolant_c, v.frames), (None, None, 13));
+        assert_eq!((v.range_km, v.consumption_dl), (None, None));
         assert_eq!((v.handbrake, v.reverse, v.low_beam), (None, None, None));
         assert!(v.interface, "the interface is still open");
         // Losing the interface forgets the car at once, but not the counts.
@@ -651,7 +662,7 @@ mod tests {
         state.closed("Interface not connected".into());
         let v = state.snapshot(at(13));
         assert_eq!(v.status, "Interface not connected");
-        assert_eq!((v.coolant_c, v.frames, v.bad_lines), (None, 11, 1));
+        assert_eq!((v.coolant_c, v.frames, v.bad_lines), (None, 13, 1));
         assert!(!v.interface);
     }
 

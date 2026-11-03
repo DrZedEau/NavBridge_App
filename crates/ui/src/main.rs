@@ -14,10 +14,9 @@ use config::{KeyboardConfig, UiConfig};
 use input::{KeyAction, KeyMap};
 use ipc::IpcEvent;
 use navbridge_common::{
-    video_frame_path, AppSnapshot, ClientCommand, Ignition, NavigationKey, ProjectionEvent,
-    ServerEvent, StreamFormat, TouchKind, VehicleSnapshot, VideoCodec, CALL_VOLUME_DB,
-    DEFAULT_SOCKET_PATH, MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH, VIDEO_FRAME_HEADER_SIZE,
-    VIDEO_FRAME_MAGIC,
+    video_frame_path, AppSnapshot, ClientCommand, NavigationKey, ProjectionEvent, ServerEvent,
+    StreamFormat, TouchKind, VehicleSnapshot, VideoCodec, CALL_VOLUME_DB, DEFAULT_SOCKET_PATH,
+    MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH, VIDEO_FRAME_HEADER_SIZE, VIDEO_FRAME_MAGIC,
 };
 use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer};
 use tracing_subscriber::EnvFilter;
@@ -860,8 +859,8 @@ fn render_state(ui: &AppWindow, state: &UiState) {
     ui.set_vehicle_rpm(reading(vehicle.rpm, "rpm").into());
     ui.set_vehicle_coolant(reading(vehicle.coolant_c, "°C").into());
     ui.set_vehicle_outside(reading(vehicle.outside_c, "°C").into());
-    ui.set_vehicle_ignition(ignition_text(vehicle.ignition).into());
-    ui.set_vehicle_odometer(odometer(vehicle.odometer_km).into());
+    ui.set_vehicle_range(kilometres(vehicle.range_km).into());
+    ui.set_vehicle_consumption(consumption(vehicle.consumption_dl).into());
     // Frames that arrive while projection cannot be shown are skipped; pick up
     // the newest one as soon as it can be, without waiting for the phone.
     refresh_projection(ui, state);
@@ -1288,19 +1287,8 @@ fn gnss_speed(speed: &str) -> String {
     }
 }
 
-fn ignition_text(ignition: Option<Ignition>) -> String {
-    match ignition {
-        None => "n/a",
-        Some(Ignition::Off) => "Off",
-        Some(Ignition::Accessory) => "Position 1",
-        Some(Ignition::On) => "On",
-        Some(Ignition::Starting) => "Starting",
-    }
-    .into()
-}
-
-/// "123 456 km".
-fn odometer(km: Option<u32>) -> String {
+/// "1 024 km".
+fn kilometres(km: Option<u16>) -> String {
     let Some(km) = km else {
         return "n/a".into();
     };
@@ -1313,6 +1301,14 @@ fn odometer(km: Option<u32>) -> String {
         grouped.push(digit);
     }
     format!("{grouped} km")
+}
+
+/// Tenths of a litre per 100 km, as "13.2 L/100 km".
+fn consumption(dl: Option<u16>) -> String {
+    match dl {
+        Some(dl) => format!("{}.{} L/100 km", dl / 10, dl % 10),
+        None => "n/a".into(),
+    }
 }
 
 /// An Audio row pair: stereo or mono, and the sampling rate, while the stream
@@ -2525,12 +2521,13 @@ mod vehicle_tests {
             interface: true,
             frames: 1234,
             bad_lines: 2,
-            ignition: Some(Ignition::On),
+            ignition: Some(navbridge_common::Ignition::On),
             speed_kmh: Some(120),
             rpm: Some(3000),
             coolant_c: Some(90),
             outside_c: Some(-4),
-            odometer_km: Some(123_456),
+            range_km: Some(473),
+            consumption_dl: Some(132),
             handbrake: Some(true),
             low_beam: Some(true),
             reverse: Some(false),
@@ -2542,11 +2539,10 @@ mod vehicle_tests {
         assert_eq!(reading(vehicle.speed_kmh, "km/h"), "120 km/h");
         assert_eq!(reading(vehicle.rpm, "rpm"), "3000 rpm");
         assert_eq!(reading(vehicle.outside_c, "°C"), "-4 °C");
-        assert_eq!(ignition_text(vehicle.ignition), "On");
-        assert_eq!(ignition_text(Some(Ignition::Accessory)), "Position 1");
-        assert_eq!(odometer(vehicle.odometer_km), "123 456 km");
-        assert_eq!(odometer(Some(1_000)), "1 000 km");
-        assert_eq!(odometer(Some(987)), "987 km");
+        assert_eq!(kilometres(vehicle.range_km), "473 km");
+        assert_eq!(kilometres(Some(1_024)), "1 024 km");
+        assert_eq!(consumption(vehicle.consumption_dl), "13.2 L/100 km");
+        assert_eq!(consumption(Some(90)), "9.0 L/100 km");
         assert_eq!(gnss_speed("36.0 km/h"), "GPS 36.0 km/h");
         assert_eq!(gnss_speed(""), "");
 
@@ -2556,8 +2552,8 @@ mod vehicle_tests {
         };
         assert_eq!(vehicle_status(&unknown, true), "Interface not connected");
         assert_eq!(reading(unknown.rpm, "rpm"), "n/a");
-        assert_eq!(ignition_text(unknown.ignition), "n/a");
-        assert_eq!(odometer(unknown.odometer_km), "n/a");
+        assert_eq!(kilometres(unknown.range_km), "n/a");
+        assert_eq!(consumption(unknown.consumption_dl), "n/a");
         // Without the core, nothing is known about the car.
         assert_eq!(vehicle_status(&vehicle, false), "Unavailable");
     }
@@ -2658,12 +2654,13 @@ mod preview {
             interface: true,
             frames: 1234,
             bad_lines: 0,
-            ignition: Some(Ignition::On),
+            ignition: Some(navbridge_common::Ignition::On),
             speed_kmh: Some(88),
             rpm: Some(2400),
             coolant_c: Some(90),
             outside_c: Some(14),
-            odometer_km: Some(187_654),
+            range_km: Some(512),
+            consumption_dl: Some(98),
             handbrake: Some(false),
             low_beam: Some(false),
             reverse: Some(false),

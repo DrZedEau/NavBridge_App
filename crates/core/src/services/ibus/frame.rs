@@ -36,9 +36,11 @@ pub enum Reading {
         outside: i8,
         coolant: i8,
     },
-    Odometer {
-        km: u32,
-    },
+    /// From the cluster's on-board computer, as it shows them: the range
+    /// left, in km, and the average consumption ("Consumption 1"), in tenths
+    /// of a litre per 100 km; `None` while it shows none, or another unit.
+    Range(Option<u16>),
+    Consumption(Option<u16>),
     /// From the cluster's sensor status: the handbrake is pulled, and the
     /// gearbox, manual or automatic, is in reverse.
     Sensors {
@@ -116,9 +118,16 @@ pub fn decode(frame: &Frame) -> Option<Reading> {
             outside: outside as i8,
             coolant: coolant as i8,
         }),
-        (CLUSTER, &[0x17, low, middle, high, ..]) => Some(Reading::Odometer {
-            km: u32::from_le_bytes([low, middle, high, 0]),
-        }),
+        // The on-board computer's values, as text, to every display: all of
+        // them as the ignition comes on, then from time to time. The first
+        // byte says which value, 0x06 the range and 0x04 consumption 1; the
+        // second holds display flags.
+        (CLUSTER, &[0x24, 0x06, _, ref text @ ..]) => Some(Reading::Range(
+            tenths(text, "KM").and_then(|tenths| u16::try_from(tenths / 10).ok()),
+        )),
+        (CLUSTER, &[0x24, 0x04, _, ref text @ ..]) => Some(Reading::Consumption(
+            tenths(text, "L/100").and_then(|tenths| u16::try_from(tenths).ok()),
+        )),
         // The handbrake is its first byte's lowest bit; the others are
         // warnings, such as worn brake pads. The next byte's high half is the
         // gearbox's position, 1 in reverse with a manual one too, and its
@@ -132,6 +141,30 @@ pub fn decode(frame: &Frame) -> Option<Reading> {
         (LIGHTS, &[0x5B, lamps, ..]) => Some(Reading::LowBeam(lamps & 0x02 != 0)),
         _ => None,
     }
+}
+
+/// A number as the on-board computer shows it, in tenths: " 473" is 4730,
+/// "13.2" is 132. Some clusters add the unit, which must then be `unit`;
+/// dashes, no number or another unit (miles, mpg) give `None`.
+fn tenths(text: &[u8], unit: &str) -> Option<u32> {
+    let text = std::str::from_utf8(text).ok()?;
+    let text = text.trim_matches(|c: char| c.is_ascii_whitespace() || c == '\0');
+    let end = text
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(text.len());
+    let (number, rest) = text.split_at(end);
+    if !(rest.trim().is_empty() || rest.trim().eq_ignore_ascii_case(unit)) {
+        return None;
+    }
+    let (whole, tenth) = number.split_once('.').unwrap_or((number, "0"));
+    if tenth.len() != 1 {
+        return None;
+    }
+    whole
+        .parse::<u32>()
+        .ok()?
+        .checked_mul(10)?
+        .checked_add(tenth.parse().ok()?)
 }
 
 /// A button on the board monitor or the steering wheel, by the name
@@ -416,11 +449,23 @@ mod tests {
                 coolant: 90
             })
         );
-        // 0x01E240 km, least significant byte first.
+        // The on-board computer's range and consumption, as heard in the car.
         assert_eq!(
-            read("IBUS1 RX 3 800ABF1740E2010000000081"),
-            Some(Reading::Odometer { km: 123_456 })
+            read("IBUS1 RX 3 8009FF2406002034373344"),
+            Some(Reading::Range(Some(473)))
         );
+        assert_eq!(
+            read("IBUS1 RX 3 8009FF24040031332E3248"),
+            Some(Reading::Consumption(Some(132)))
+        );
+        // As other clusters show them, and what is not a value in km or L/100.
+        assert_eq!(tenths(b"  70", "KM"), Some(700));
+        assert_eq!(tenths(b"123 KM ", "KM"), Some(1230));
+        assert_eq!(tenths(b"12.3 L/100", "L/100"), Some(123));
+        assert_eq!(tenths(b"----", "KM"), None);
+        assert_eq!(tenths(b"  45 MLS", "KM"), None);
+        assert_eq!(tenths(b"18.6 MPG", "L/100"), None);
+        assert_eq!(tenths(b"", "KM"), None);
         // Handbrake on, brake pads worn, engine running, no gear: a manual
         // gearbox out of reverse.
         assert_eq!(

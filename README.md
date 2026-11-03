@@ -11,8 +11,8 @@ provide iPhone CarPlay.
 Music, navigation/assistant playback and assistant microphone capture use the
 PCM2912A USB codec. An external GNSS receiver shows on the System page and, when
 connected as the phone connects, gives Android Auto the car's position. The
-last System page shows the car's speed, engine speed, temperatures, ignition
-and odometer from its I-Bus, through the carrier board's ATmega32U4.
+last System page shows the car's speed, engine speed, temperatures, range and
+consumption from its I-Bus, through the carrier board's ATmega32U4.
 
 ## Screenshots
 
@@ -33,7 +33,7 @@ the car's panel shows the same layout at 400x240. The data is sample data.
 
 | System: GNSS | System: the car, from its I-Bus |
 | --- | --- |
-| ![The GNSS receiver, fix, satellites, position, altitude, speed, HDOP and time](docs/screenshots/system-gnss.png) | ![Speed, engine speed, coolant and outside temperatures, ignition and odometer](docs/screenshots/system-ibus.png) |
+| ![The GNSS receiver, fix, satellites, position, altitude, speed, HDOP and time](docs/screenshots/system-gnss.png) | ![Speed, engine speed, coolant and outside temperatures, range and consumption](docs/screenshots/system-ibus.png) |
 
 ## Architecture
 
@@ -366,8 +366,14 @@ From the instrument cluster's broadcasts, System page 4 shows:
 | Speed | `18`, road speed | In steps of 2 km/h; the GNSS speed beside it while there is a fix |
 | Engine | `18`, engine speed | In steps of 100 rpm |
 | Coolant, Outside | `19` | °C |
-| Ignition | `11` | Off, Position 1, On, Starting |
-| Odometer | `17` | km, once something on the bus asks the cluster for it |
+| Range | `24`, value `06` | km left, from the cluster's on-board computer |
+| Consumption | `24`, value `04` | Its average consumption 1, L/100 km |
+
+The on-board computer sends its values as the text it would show: all of them
+as the ignition comes on, then from time to time. Range and consumption hold
+until it sends them again, and show n/a while it shows dashes, or in miles or
+mpg. The ignition (`11`) is not shown but still read: it clears the speeds and
+starts the shutdown (see Shutdown).
 
 A changed reading shows at once. How often one changes is up to the cluster:
 it sends road and engine speed every 2 seconds, and NavBridge cannot ask for
