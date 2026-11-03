@@ -8,7 +8,8 @@ StartLimitIntervalSec=0
 Type=simple
 User=@USER@
 Group=@GROUP@
-SupplementaryGroups=plugdev audio dialout
+# video: the hardware video decoders, their media devices and DMA buffers.
+SupplementaryGroups=plugdev audio dialout video
 WorkingDirectory=/opt/navbridge
 # The IPC socket and the projection frames, for the service's group only.
 # Kept while the core stops or restarts, so the UI's watch on it holds.

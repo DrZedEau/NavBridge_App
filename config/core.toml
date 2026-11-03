@@ -6,8 +6,9 @@ dpi = 160
 # The video codec the phone is asked for: "h264", or "h265", which a phone
 # without it ignores. Settings' choice replaces this one.
 codec = "h264"
-# "auto": the board's hardware H.264 decoder (Pi 4 / CM4), else software, as
-# on the Pi 5 / CM5; "software" never tries the hardware one.
+# "auto": the board's hardware decoder, for H.264 the Pi 4 / CM4's, for H.265
+# the HEVC one of the Pi 4 and 5, else software, as for H.264 on the Pi 5 /
+# CM5; "software" never tries the hardware one.
 decoder = "auto"
 left_hand_drive = true
 # Optional paired PEM files for a custom AA accessory identity:

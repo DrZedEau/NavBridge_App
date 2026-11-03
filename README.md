@@ -34,8 +34,12 @@ and odometer from its I-Bus, through the carrier board's ATmega32U4.
   FFmpeg normalizes full/limited color range. The phone is asked for 60 fps;
   the DPI is configurable.
   The Pi 4 / CM4's hardware H.264 decoder (`h264_v4l2m2m`) is used when
-  present; the Pi 5 / CM5 has none and decodes in software. H.265 decodes in
-  software.
+  present; the Pi 5 / CM5 has none and decodes H.264 in software. H.265
+  decodes on the HEVC hardware of the Pi 4 and 5 and their CMs
+  (`rpi-hevc-dec`, through Raspberry Pi FFmpeg's DRM hwaccel), else in
+  software. On a CM5, decoding, scaling and publishing 800x480 at 60 fps
+  takes about 14% of one core with H.265 in hardware, against about 25% for
+  H.264 and 34% for H.265 in software.
 - A dedicated USB reader uses 16 KB transfers and a bounded queue. The session
   worker handles replies without interrupting reads. USB unplug/error clears
   decoder, playback and capture state; a new connection negotiates fresh TLS
@@ -130,10 +134,11 @@ encodes, or `"h265"`. A phone without H.265 stays on H.264, and video decodes
 either way; the core logs the codec the phone chose (`Android Auto video
 codec`). Settings' choice replaces core.toml's.
 
-`decoder = "auto"` tries the board's hardware H.264 decoder first and falls back
-to FFmpeg's software decoder when there is none, as on the Pi 5 / CM5; it also
-falls back for the rest of the run if the hardware decoder fails or returns no
-frame for 30 pictures, then asks the phone for a keyframe. `decoder =
+`decoder = "auto"` tries the board's hardware decoder for the codec first: for
+H.264 the Pi 4 / CM4's, for H.265 the HEVC one of the Pi 4 and 5. It falls back
+to FFmpeg's software decoder when there is none, as for H.264 on the Pi 5 /
+CM5; it also falls back for the rest of the run if the hardware decoder fails
+or returns no frame for 30 pictures, then asks the phone for a keyframe. `decoder =
 "software"` never tries the hardware one. The core logs the decoder it uses, and
 System's Video box shows it.
 
@@ -277,7 +282,7 @@ at once, and Enter or Back close the row again.
 
 The DPI and the codec apply when a phone next connects. A phone that cannot
 encode H.265 stays on H.264; System's Video box shows the decoder that runs
-(`h264` or `hevc`). The audio codec has fewer steps than 1%
+(`h264` or `hevc`, hardware or software). The audio codec has fewer steps than 1%
 (`Speaker` 0-76, `Mic` 0-42), so a press does not always change what is heard.
 Call volume applies at once, during a call too (see Calls); it shows n/a while
 calls do not play in the car (`[audio] enabled = false`).

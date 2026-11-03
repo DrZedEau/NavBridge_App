@@ -13,7 +13,8 @@
    at **800x480**; its DPI is configurable (default 160).
 6. Video is H.264, or H.265 when chosen, decoded with FFmpeg: H.264 on the
    board's hardware decoder where there is one (Pi 4 / CM4), in software
-   otherwise (Pi 5 / CM5); H.265 in software.
+   otherwise (Pi 5 / CM5); H.265 on the HEVC hardware of the Pi 4 and 5, in
+   software without it.
 7. Audio stays in the core.
 8. Touch works alongside the keyboard: a touchscreen panel (libinput on the
    Pi), or the left mouse button in a PC window.
@@ -123,9 +124,10 @@ configuration first: SPS/PPS, and VPS for H.265)
     |
     v
 FFmpeg decoder for the codec the phone chose, one packet per message (no
-parser delay): h264_v4l2m2m where the board has it, else the software h264 or
-hevc; a failing hardware decoder gives way to software, which starts from the
-last configuration and a new keyframe
+parser delay): h264_v4l2m2m where the board has it, hevc with the DRM hwaccel
+(rpi-hevc-dec, frames copied out of their DRM buffers), else the software h264
+or hevc; a failing hardware decoder gives way to software, which starts from
+the last configuration and a new keyframe
     |
     v
 libswscale (area, 2:1 averaging, full chroma): 800x480 -> 400x240 RGBA, for the newest

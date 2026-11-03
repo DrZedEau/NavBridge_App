@@ -1,9 +1,11 @@
 use std::cell::Cell;
 use std::ffi::CStr;
+use std::fmt;
 use std::fs::{self, File};
 use std::io::Write;
 use std::iter;
 use std::path::{Path, PathBuf};
+use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
@@ -28,12 +30,34 @@ const MAX_CODEC_CONFIG_BYTES: usize = 64 * 1024;
 /// How often the frame counters are logged, at debug level, while video plays.
 const COUNTER_LOG_INTERVAL: Duration = Duration::from_secs(5);
 /// Hardware decoders tried before FFmpeg's software one, by codec: the V4L2
-/// H.264 decoder of the Pi 4 and CM4. The Pi 5 and CM5 have none for H.264,
-/// so they decode it in software.
-const HARDWARE_DECODERS: &[(VideoCodec, &str)] = &[(VideoCodec::H264, "h264_v4l2m2m")];
+/// H.264 decoder of the Pi 4 and CM4, and the HEVC decoder (rpi-hevc-dec) of
+/// the Pi 4 and 5 and their CMs, which Raspberry Pi FFmpeg drives as a DRM
+/// hwaccel. The Pi 5 and CM5 have none for H.264, so they decode it in software.
+const HARDWARE_DECODERS: &[(VideoCodec, Hardware)] = &[
+    (VideoCodec::H264, Hardware::Decoder("h264_v4l2m2m")),
+    (VideoCodec::H265, Hardware::Drm),
+];
 /// A hardware decoder that takes this many pictures without returning a frame
 /// is given up for the software one.
 const HARDWARE_STALL_PICTURES: u32 = 30;
+
+/// A hardware decoder: an FFmpeg decoder of its own, or FFmpeg's decoder for
+/// the codec with a DRM device, through which a hwaccel decodes and hands
+/// frames over as DRM buffers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hardware {
+    Decoder(&'static str),
+    Drm,
+}
+
+impl fmt::Display for Hardware {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Decoder(name) => f.write_str(name),
+            Self::Drm => f.write_str("DRM hwaccel"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PushResult {
@@ -192,7 +216,7 @@ impl VideoPipeline {
                 // software if the hardware one failed; false if even that fails.
                 let recovered = |engine: &mut DecoderEngine, err: String| {
                     worker_counters.dropped.fetch_add(1, Ordering::Relaxed);
-                    let reset = if engine.on_hardware {
+                    let reset = if engine.on_hardware.is_some() {
                         engine.give_up_hardware(&err)
                     } else {
                         warn!(%err, "video decode error; resetting decoder");
@@ -391,9 +415,9 @@ struct DecoderEngine {
     codec: VideoCodec,
     /// Hardware decoders still worth trying, by codec: none once one has
     /// failed, or is missing, or when core.toml asks for software.
-    hardware: Vec<(VideoCodec, &'static str)>,
-    /// Whether `decoder` is one of them.
-    on_hardware: bool,
+    hardware: Vec<(VideoCodec, Hardware)>,
+    /// Which of them `decoder` is, if one.
+    on_hardware: Option<Hardware>,
     /// Pictures sent since the last frame came back.
     pending_pictures: u32,
     info: DecoderInfo,
@@ -418,7 +442,7 @@ impl DecoderEngine {
         frame_path: PathBuf,
         decoded_count: Arc<AtomicU64>,
         codec: VideoCodec,
-        mut hardware: Vec<(VideoCodec, &'static str)>,
+        mut hardware: Vec<(VideoCodec, Hardware)>,
         info: DecoderInfo,
         size: FrameSize,
     ) -> Result<Self, String> {
@@ -499,10 +523,22 @@ impl DecoderEngine {
             .send_packet(&packet)
             .map_err(|e| format!("send video packet: {e}"))?;
         self.drain_frames();
-        if self.on_hardware && self.pending_pictures >= HARDWARE_STALL_PICTURES {
+        if self.on_hardware.is_some() && self.pending_pictures >= HARDWARE_STALL_PICTURES {
             return Err(format!("no frame after {} pictures", self.pending_pictures));
         }
         Ok(())
+    }
+
+    /// FFmpeg decodes in software when the DRM hwaccel does not start, as on
+    /// a board without its hardware: the decoder carries on, shown as software.
+    fn no_drm_hwaccel(&mut self) {
+        info!(codec = ?self.codec, "no hardware video decoder on this board");
+        let codec = self.codec;
+        self.hardware
+            .retain(|&entry| entry != (codec, Hardware::Drm));
+        self.on_hardware = None;
+        let name = self.decoder.codec().map(|c| c.name().to_owned());
+        show_decoder(&self.info, name.as_deref().unwrap_or_default(), false);
     }
 
     /// Takes the pictures the decoder has finished, keeping the newest.
@@ -511,6 +547,9 @@ impl DecoderEngine {
         while self.decoder.receive_frame(&mut decoded).is_ok() {
             if decoded.width() == 0 || decoded.height() == 0 || decoded.format() == Pixel::None {
                 continue;
+            }
+            if self.on_hardware == Some(Hardware::Drm) && decoded.format() != Pixel::DRM_PRIME {
+                self.no_drm_hwaccel();
             }
             self.pending_pictures = 0;
             self.decoded_count.fetch_add(1, Ordering::Relaxed);
@@ -527,6 +566,9 @@ impl DecoderEngine {
         let Some(mut decoded) = self.newest.take() else {
             return Ok(());
         };
+        if decoded.format() == Pixel::DRM_PRIME {
+            decoded = from_hardware(&decoded)?;
+        }
         normalize_full_range(&mut decoded);
         let (width, height) = self.size.get();
         let spec = (
@@ -658,78 +700,136 @@ fn decodes(codec: VideoCodec) -> bool {
 }
 
 /// Opens the first of the `hardware` decoders for `codec` that works, else
-/// FFmpeg's software one, and names it in `info`. Returns whether it is a
-/// hardware one. Boards do not grow a decoder: those that do not open are
+/// FFmpeg's software one, and names it in `info`. Returns which hardware one
+/// it is, if one. Boards do not grow a decoder: those that do not open are
 /// taken off `hardware`, so they are tried only once.
 fn open_decoder(
     codec: VideoCodec,
-    hardware: &mut Vec<(VideoCodec, &'static str)>,
+    hardware: &mut Vec<(VideoCodec, Hardware)>,
     info: &DecoderInfo,
-) -> Result<(ffmpeg::decoder::Video, bool), String> {
+) -> Result<(ffmpeg::decoder::Video, Option<Hardware>), String> {
     let mut opened = None;
     let mut missing = Vec::new();
-    for &(decodes, name) in hardware.iter() {
+    for &(decodes, kind) in hardware.iter() {
         if decodes != codec {
             continue;
         }
-        let Some(found) = ffmpeg::decoder::find_by_name(name) else {
-            info!(decoder = name, "hardware video decoder not in this FFmpeg");
-            missing.push(name);
+        let found = match kind {
+            Hardware::Decoder(name) => ffmpeg::decoder::find_by_name(name),
+            Hardware::Drm => ffmpeg::decoder::find(codec_id(codec)).filter(|&c| has_drm_hwaccel(c)),
+        };
+        let Some(found) = found else {
+            info!(decoder = %kind, ?codec, "hardware video decoder not in this FFmpeg");
+            missing.push((decodes, kind));
             continue;
         };
         // A missing device is expected on boards without one: say so once,
         // without FFmpeg's own error lines.
         let level = ffmpeg::util::log::get_level().unwrap_or(ffmpeg::util::log::Level::Info);
         ffmpeg::util::log::set_level(ffmpeg::util::log::Level::Quiet);
-        let result = open_codec(found);
+        let result = open_codec(found, kind == Hardware::Drm);
         ffmpeg::util::log::set_level(level);
         match result {
             Ok(decoder) => {
-                opened = Some((decoder, found, true));
+                opened = Some((decoder, found, Some(kind)));
                 break;
             }
             Err(e) => {
-                info!(decoder = name, %e, "no hardware video decoder on this board");
-                missing.push(name);
+                info!(decoder = %kind, ?codec, %e, "no hardware video decoder on this board");
+                missing.push((decodes, kind));
             }
         }
     }
-    hardware.retain(|(_, name)| !missing.contains(name));
+    hardware.retain(|entry| !missing.contains(entry));
     let (decoder, codec, on_hardware) = match opened {
         Some(opened) => opened,
         None => {
             let name = codec.name();
             let found = ffmpeg::decoder::find(codec_id(codec))
                 .ok_or_else(|| format!("FFmpeg {name} decoder not found"))?;
-            let decoder = open_codec(found)
+            let decoder = open_codec(found, false)
                 .map_err(|e| format!("open FFmpeg {name} software decoder: {e}"))?;
-            (decoder, found, false)
+            (decoder, found, None)
         }
     };
+    show_decoder(info, codec.name(), on_hardware.is_some());
+    Ok((decoder, on_hardware))
+}
+
+/// Names the decoder in use for the System page.
+fn show_decoder(info: &DecoderInfo, name: &str, hardware: bool) {
     // SAFETY: av_version_info returns a static string.
     let version = unsafe { CStr::from_ptr(ffmpeg::ffi::av_version_info()) }.to_string_lossy();
-    let name = decoder_text(&version, codec.name(), on_hardware);
+    let name = decoder_text(&version, name, hardware);
     let mut shown = info.name.lock().unwrap();
     if *shown != name {
         *shown = name;
         info.changed.store(true, Ordering::Relaxed);
     }
-    Ok((decoder, on_hardware))
+}
+
+/// Whether FFmpeg's `codec` decoder has a hwaccel that decodes through a DRM
+/// device, as Raspberry Pi FFmpeg's HEVC one does.
+fn has_drm_hwaccel(codec: ffmpeg::Codec) -> bool {
+    use ffmpeg::ffi::{avcodec_get_hw_config, AVHWDeviceType, AVPixelFormat};
+    // SAFETY: the configurations are static, and the list ends with null.
+    (0..)
+        .map_while(|i| unsafe { avcodec_get_hw_config(codec.as_ptr(), i).as_ref() })
+        .any(|config| {
+            config.device_type == AVHWDeviceType::AV_HWDEVICE_TYPE_DRM
+                && config.pix_fmt == AVPixelFormat::AV_PIX_FMT_DRM_PRIME
+        })
 }
 
 /// Opens a decoder for Android Auto's 800x480 stream. Hardware decoders size
 /// their buffers from it; the software one takes the size from the stream.
-fn open_codec(codec: ffmpeg::Codec) -> Result<ffmpeg::decoder::Video, ffmpeg::Error> {
+/// With `drm`, the decoder gets a DRM device, and its hwaccel starts when the
+/// stream's configuration arrives; without the hardware, FFmpeg decodes in
+/// software instead.
+fn open_codec(codec: ffmpeg::Codec, drm: bool) -> Result<ffmpeg::decoder::Video, ffmpeg::Error> {
     let mut context = ffmpeg::codec::context::Context::new_with_codec(codec);
-    // SAFETY: the context is not open yet, so these fields are the caller's.
+    // SAFETY: the context is not open yet, so these fields are the caller's;
+    // it frees the device with itself.
     unsafe {
         let context = context.as_mut_ptr();
         (*context).width = MEDIA_WIDTH as i32;
         (*context).height = MEDIA_HEIGHT as i32;
         (*context).coded_width = MEDIA_WIDTH as i32;
         (*context).coded_height = MEDIA_HEIGHT as i32;
+        if drm {
+            let created = ffmpeg::ffi::av_hwdevice_ctx_create(
+                &mut (*context).hw_device_ctx,
+                ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_DRM,
+                ptr::null(),
+                ptr::null_mut(),
+                0,
+            );
+            if created < 0 {
+                return Err(ffmpeg::Error::from(created));
+            }
+        }
     }
     context.decoder().video()
+}
+
+/// Copies a frame the hardware decoded, held in a DRM buffer, into memory for
+/// the scaler.
+fn from_hardware(frame: &ffmpeg::frame::Video) -> Result<ffmpeg::frame::Video, String> {
+    let mut copy = ffmpeg::frame::Video::empty();
+    // SAFETY: both frames are valid, and the copy gets buffers of its own.
+    let result = unsafe {
+        match ffmpeg::ffi::av_hwframe_transfer_data(copy.as_mut_ptr(), frame.as_ptr(), 0) {
+            0 => ffmpeg::ffi::av_frame_copy_props(copy.as_mut_ptr(), frame.as_ptr()),
+            error => error,
+        }
+    };
+    if result < 0 {
+        return Err(format!(
+            "copy the hardware frame: {}",
+            ffmpeg::Error::from(result)
+        ));
+    }
+    Ok(copy)
 }
 
 #[cfg(test)]
@@ -1023,12 +1123,12 @@ mod tests {
             path.clone(),
             Arc::clone(&count),
             VideoCodec::H264,
-            vec![(VideoCodec::H264, "no_such_decoder")],
+            vec![(VideoCodec::H264, Hardware::Decoder("no_such_decoder"))],
             info.clone(),
             FrameSize::default(),
         )
         .unwrap();
-        assert!(!engine.on_hardware);
+        assert!(engine.on_hardware.is_none());
         assert!(engine.hardware.is_empty(), "looked for again at each reset");
         assert!(info.name.lock().unwrap().ends_with(" h264 (software)"));
         assert!(info.changed.load(Ordering::Relaxed));
@@ -1053,12 +1153,12 @@ mod tests {
             path.clone(),
             Arc::clone(&count),
             VideoCodec::H264,
-            vec![(VideoCodec::H264, "hevc")],
+            vec![(VideoCodec::H264, Hardware::Decoder("hevc"))],
             info.clone(),
             FrameSize::default(),
         )
         .unwrap();
-        assert!(engine.on_hardware);
+        assert_eq!(engine.on_hardware, Some(Hardware::Decoder("hevc")));
         assert!(info.name.lock().unwrap().ends_with(" hevc (hardware)"));
         // As Android Auto sends it: the SPS/PPS alone, then the pictures. The
         // stand-in fails outright, or returns no frame for
@@ -1076,7 +1176,7 @@ mod tests {
         assert_eq!(count.load(Ordering::Relaxed), 0);
         info.changed.store(false, Ordering::Relaxed);
         engine.give_up_hardware(&failure).unwrap();
-        assert!(!engine.on_hardware && engine.hardware.is_empty());
+        assert!(engine.on_hardware.is_none() && engine.hardware.is_empty());
         assert!(info.name.lock().unwrap().ends_with(" h264 (software)"));
         assert!(info.changed.load(Ordering::Relaxed));
         assert!(info.keyframe_wanted.load(Ordering::Relaxed));
@@ -1085,8 +1185,96 @@ mod tests {
         assert_eq!(count.load(Ordering::Relaxed), 1);
         // A reset for the next phone does not bring the hardware one back.
         engine.reset().unwrap();
-        assert!(!engine.on_hardware);
+        assert!(engine.on_hardware.is_none());
         let _ = fs::remove_file(&path);
+    }
+
+    /// Whether this board has the Raspberry Pi HEVC decoder.
+    fn board_has_hevc_decoder() -> bool {
+        fs::read_dir("/sys/class/video4linux")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|device| {
+                fs::read_to_string(device.path().join("name"))
+                    .is_ok_and(|name| name.trim() == "rpi-hevc-dec")
+            })
+    }
+
+    #[test]
+    fn h265_decodes_in_hardware_where_the_board_and_ffmpeg_can() {
+        let hevc = ffmpeg::decoder::find(ffmpeg::codec::Id::HEVC).unwrap();
+        let hardware = has_drm_hwaccel(hevc) && board_has_hevc_decoder();
+        // The last frame, from the DRM hwaccel where there is one, and from
+        // the software decoder.
+        let last_frame = |candidates: Vec<(VideoCodec, Hardware)>| {
+            let path = std::env::temp_dir().join(format!(
+                "navbridge-drm-test-{}-{}.rgba",
+                candidates.len(),
+                std::process::id()
+            ));
+            let count = Arc::new(AtomicU64::new(0));
+            let info = DecoderInfo::default();
+            let mut engine = DecoderEngine::new(
+                path.clone(),
+                Arc::clone(&count),
+                VideoCodec::H265,
+                candidates,
+                info.clone(),
+                FrameSize::default(),
+            )
+            .unwrap();
+            // Each access unit's frame comes at once, from the hardware too.
+            for (index, unit) in units_of(VideoCodec::H265).into_iter().enumerate() {
+                engine.push(unit).unwrap();
+                assert_eq!(count.load(Ordering::Relaxed), index as u64 + 1);
+                engine.show_newest().unwrap();
+            }
+            let frame = fs::read(&path).unwrap();
+            let _ = fs::remove_file(&path);
+            let name = info.name.lock().unwrap().clone();
+            (frame, engine.on_hardware, name)
+        };
+        let (drm, on_hardware, name) = last_frame(vec![(VideoCodec::H265, Hardware::Drm)]);
+        assert_eq!(on_hardware.is_some(), hardware);
+        let kind = if hardware { "hardware" } else { "software" };
+        assert!(name.ends_with(&format!(" hevc ({kind})")), "{name}");
+        // H.265 decodes to the same picture everywhere.
+        let (software, ..) = last_frame(Vec::new());
+        assert_eq!(drm.len(), software.len());
+        let differs = drm
+            .iter()
+            .zip(&software)
+            .filter(|(a, b)| a.abs_diff(**b) > 2);
+        assert_eq!(differs.count(), 0);
+    }
+
+    #[test]
+    fn a_drm_hwaccel_that_does_not_start_leaves_software_decoding() {
+        let path =
+            std::env::temp_dir().join(format!("navbridge-no-drm-test-{}.rgba", std::process::id()));
+        let count = Arc::new(AtomicU64::new(0));
+        let mut engine = software_engine(path.clone(), Arc::clone(&count));
+        // As FFmpeg's HEVC decoder with a DRM device on a board without the
+        // hardware: its frames come from software.
+        engine.on_hardware = Some(Hardware::Drm);
+        engine.hardware = vec![(VideoCodec::H264, Hardware::Drm)];
+        show_decoder(&engine.info, "h264", true);
+        engine.info.changed.store(false, Ordering::Relaxed);
+        for unit in access_units() {
+            engine.push(unit).unwrap();
+        }
+        let _ = fs::remove_file(&path);
+        assert_eq!(count.load(Ordering::Relaxed), 24);
+        assert!(engine.on_hardware.is_none());
+        assert!(engine.hardware.is_empty(), "not tried again");
+        assert!(engine
+            .info
+            .name
+            .lock()
+            .unwrap()
+            .ends_with(" h264 (software)"));
+        assert!(engine.info.changed.load(Ordering::Relaxed));
     }
 
     #[test]
