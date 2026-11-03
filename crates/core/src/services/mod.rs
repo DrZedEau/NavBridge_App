@@ -2,6 +2,7 @@ pub mod android_auto;
 pub mod audio;
 pub mod bluetooth;
 pub mod camera;
+pub mod carplay;
 pub mod events;
 pub mod frames;
 pub mod gnss;
