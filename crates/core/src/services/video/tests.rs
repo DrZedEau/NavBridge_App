@@ -7,9 +7,11 @@ use std::{fs, thread};
 
 use super::decoders::{decoder_text, has_drm_hwaccel, show_decoder, Hardware};
 use super::engine::DecoderEngine;
-use super::frames::{configure_colors, normalize_full_range, publish_frame, RGBA_BYTES_PER_PIXEL};
 use super::nal::{contains_keyframe, contains_picture, nal_type};
 use super::*;
+use crate::services::frames::{
+    configure_colors, normalize_full_range, publish_frame, RGBA_BYTES_PER_PIXEL,
+};
 use ffmpeg::software::scaling::context::Context as ScalingContext;
 use ffmpeg::software::scaling::flag::Flags as ScalingFlags;
 use ffmpeg::util::color::{Range, Space};

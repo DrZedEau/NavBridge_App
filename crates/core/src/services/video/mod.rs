@@ -4,7 +4,6 @@
 
 mod decoders;
 mod engine;
-mod frames;
 mod nal;
 #[cfg(test)]
 mod tests;
@@ -18,11 +17,12 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use std::{fs, iter};
 
+use crate::services::frames::FrameSize;
 use decoders::{decodes, HARDWARE_DECODERS};
 use engine::DecoderEngine;
 use ffmpeg_next as ffmpeg;
 use nal::contains_keyframe;
-use navbridge_common::{VideoCodec, MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH};
+use navbridge_common::VideoCodec;
 use tracing::{debug, error, info, warn};
 
 const VIDEO_QUEUE_DEPTH: usize = 12;
@@ -84,37 +84,6 @@ pub struct VideoPipeline {
     decoder: DecoderInfo,
     /// The codec the phone's video comes in.
     codec: Cell<VideoCodec>,
-}
-
-/// The size frames are published at, which the UI chooses: the panel's
-/// 400x240, or Android Auto's own 800x480 for a UI drawn twice as large on a
-/// PC. It can change while video plays.
-#[derive(Clone)]
-pub struct FrameSize(Arc<AtomicU64>);
-
-impl Default for FrameSize {
-    fn default() -> Self {
-        Self(Arc::new(AtomicU64::new(Self::pack(UI_WIDTH, UI_HEIGHT))))
-    }
-}
-
-impl FrameSize {
-    /// The sizes a UI can ask for; any other is refused.
-    pub const CHOICES: [(u32, u32); 2] = [(UI_WIDTH, UI_HEIGHT), (MEDIA_WIDTH, MEDIA_HEIGHT)];
-
-    fn pack(width: u32, height: u32) -> u64 {
-        u64::from(width) << 32 | u64::from(height)
-    }
-
-    /// Returns whether the size changed.
-    pub fn set(&self, width: u32, height: u32) -> bool {
-        self.0.swap(Self::pack(width, height), Ordering::Relaxed) != Self::pack(width, height)
-    }
-
-    pub fn get(&self) -> (u32, u32) {
-        let packed = self.0.load(Ordering::Relaxed);
-        ((packed >> 32) as u32, packed as u32)
-    }
 }
 
 /// The decoder in use, as the System page shows it, shared with the decoder

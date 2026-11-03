@@ -13,8 +13,8 @@ use super::runner::{runner, Setup};
 use super::{Command, EventReceiver, Inbox, State};
 use crate::config::{AndroidAutoConfig, AudioConfig};
 use crate::services::events;
+use crate::services::frames::FrameSize;
 use crate::services::gnss::GnssUpdate;
-use crate::services::video::FrameSize;
 use crate::settings::Settings;
 use navbridge_common::{
     NavigationKey, PhoneAction, ProjectionEvent, ProjectionPhase, ProjectionSnapshot, TouchKind,

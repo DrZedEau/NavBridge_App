@@ -7,9 +7,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::decoders::{from_hardware, open_decoder, show_decoder, Hardware};
-use super::frames::{configure_colors, normalize_full_range, publish_frame, Scaler};
 use super::nal::contains_picture;
-use super::{DecoderInfo, FrameSize};
+use super::DecoderInfo;
+use crate::services::frames::{
+    configure_colors, normalize_full_range, publish_frame, FrameSize, Scaler,
+};
 use ffmpeg::software::scaling::context::Context as ScalingContext;
 use ffmpeg::software::scaling::flag::Flags as ScalingFlags;
 use ffmpeg::util::format::Pixel;

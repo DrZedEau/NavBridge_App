@@ -1,20 +1,55 @@
-//! Decoded pictures for the UI: their colours, the scaler, and the frame file
-//! the UI reads.
+//! Pictures for the UI, from the projection decoder or the reverse camera:
+//! their colours, the scaler, and the frame files the UI reads.
 
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use ffmpeg::software::scaling::context::Context as ScalingContext;
 use ffmpeg::util::color::{Range, Space};
 use ffmpeg::util::format::Pixel;
 use ffmpeg_next as ffmpeg;
-use navbridge_common::{VIDEO_FRAME_HEADER_SIZE, VIDEO_FRAME_MAGIC};
+use navbridge_common::{
+    MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH, VIDEO_FRAME_HEADER_SIZE, VIDEO_FRAME_MAGIC,
+};
 
-pub(super) const RGBA_BYTES_PER_PIXEL: usize = 4;
+pub(crate) const RGBA_BYTES_PER_PIXEL: usize = 4;
+
+/// The size frames are published at, which the UI chooses: the panel's
+/// 400x240, or Android Auto's own 800x480 for a UI drawn twice as large on a
+/// PC. It can change while video plays.
+#[derive(Clone)]
+pub struct FrameSize(Arc<AtomicU64>);
+
+impl Default for FrameSize {
+    fn default() -> Self {
+        Self(Arc::new(AtomicU64::new(Self::pack(UI_WIDTH, UI_HEIGHT))))
+    }
+}
+
+impl FrameSize {
+    /// The sizes a UI can ask for; any other is refused.
+    pub const CHOICES: [(u32, u32); 2] = [(UI_WIDTH, UI_HEIGHT), (MEDIA_WIDTH, MEDIA_HEIGHT)];
+
+    fn pack(width: u32, height: u32) -> u64 {
+        u64::from(width) << 32 | u64::from(height)
+    }
+
+    /// Returns whether the size changed.
+    pub fn set(&self, width: u32, height: u32) -> bool {
+        self.0.swap(Self::pack(width, height), Ordering::Relaxed) != Self::pack(width, height)
+    }
+
+    pub fn get(&self) -> (u32, u32) {
+        let packed = self.0.load(Ordering::Relaxed);
+        ((packed >> 32) as u32, packed as u32)
+    }
+}
 
 // YUVJ has the same plane layout as YUV; retain its explicit full range.
-pub(super) fn normalize_full_range(frame: &mut ffmpeg::frame::Video) {
+pub(crate) fn normalize_full_range(frame: &mut ffmpeg::frame::Video) {
     let pixel = match frame.format() {
         Pixel::YUVJ420P => Pixel::YUV420P,
         Pixel::YUVJ422P => Pixel::YUV422P,
@@ -27,7 +62,7 @@ pub(super) fn normalize_full_range(frame: &mut ffmpeg::frame::Video) {
     frame.set_color_range(Range::JPEG);
 }
 
-pub(super) fn configure_colors(
+pub(crate) fn configure_colors(
     context: &mut ScalingContext,
     range: Range,
     space: Space,
@@ -58,13 +93,13 @@ pub(super) fn configure_colors(
     Ok(())
 }
 
-pub(super) struct Scaler {
+pub(crate) struct Scaler {
     /// The source's format, size and colours, and the output size.
-    pub(super) spec: (Pixel, u32, u32, Range, Space, u32, u32),
-    pub(super) context: ScalingContext,
+    pub(crate) spec: (Pixel, u32, u32, Range, Space, u32, u32),
+    pub(crate) context: ScalingContext,
 }
 
-pub(super) fn publish_frame(
+pub(crate) fn publish_frame(
     path: &Path,
     sequence: u64,
     frame: &ffmpeg::frame::Video,
