@@ -43,7 +43,7 @@ const USB_ROWS: usize = 4;
 /// The projection DPIs Settings offers.
 const DPI_CHOICES: [u32; 2] = [160, 140];
 
-/// Settings' rows, top to bottom.
+/// Settings' rows, in their sections' boxes left to right, then top to bottom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Setting {
     /// Wireless Android Auto: the hotspot, and Bluetooth for phones.
@@ -67,9 +67,6 @@ const SETTINGS: [Setting; 7] = [
     Setting::CallVolume,
     Setting::Microphone,
 ];
-/// The Settings rows the panel has room for, with their sections' headings:
-/// the list scrolls to keep the chosen row in view.
-const SETTINGS_SHOWN: usize = 4;
 /// The themes Settings offers, in the order it steps through them.
 const THEMES: [navbridge_common::Theme; 3] = [
     navbridge_common::Theme::Amber,
@@ -560,15 +557,14 @@ fn answer_pairing(state: &mut UiState, accept: bool, commands: &Commands) {
     }
 }
 
-/// A Settings row tapped, `index` counting the rows shown: the hotspot, the
-/// theme, the DPI and the codec change at once; a level opens, then its value's halves
+/// A Settings row tapped, its place in `SETTINGS`: the hotspot, the theme, the
+/// DPI and the codec change at once; a level opens, then its value's halves
 /// (`half` -1 and 1) step it down and up, and a tap on its label closes it.
 fn tap_setting(state: &mut UiState, index: usize, half: i32, commands: &Commands) {
     if state.screen != Screen::Settings || pairing_shown(state) {
         return;
     }
-    let first = settings_shown(settings_index(state)).start;
-    let index = (first + index).min(SETTINGS.len() - 1);
+    let index = index.min(SETTINGS.len() - 1);
     let open = state.settings_editing && settings_index(state) == index;
     if half != 0 {
         if open {
@@ -804,23 +800,30 @@ fn render_state(ui: &AppWindow, state: &UiState) {
     let (input_type, input_rate) = stream_text(audio.input, present, state.core_connected);
     ui.set_audio_input_type(input_type.into());
     ui.set_audio_input_rate(input_rate.into());
-    let index = settings_index(state);
-    let shown = settings_shown(index);
-    let rows: Vec<SettingsRow> = SETTINGS[shown.clone()]
-        .iter()
-        .map(|&row| {
-            let (label, value) = setting_text(state, row);
-            SettingsRow {
-                section: section(row).into(),
-                label: label.into(),
-                value: value.into(),
-                toggle: row == Setting::Hotspot,
-                on: state.snapshot.wireless.enabled,
+    let sections: Vec<SettingsSection> = settings_sections()
+        .into_iter()
+        .map(|(title, places)| {
+            let rows: Vec<SettingsRow> = places
+                .map(|index| {
+                    let row = SETTINGS[index];
+                    let (label, value) = setting_text(state, row);
+                    SettingsRow {
+                        index: index as i32,
+                        label: label.into(),
+                        value: value.into(),
+                        toggle: row == Setting::Hotspot,
+                        on: state.snapshot.wireless.enabled,
+                    }
+                })
+                .collect();
+            SettingsSection {
+                title: title.into(),
+                rows: slint::ModelRc::new(slint::VecModel::from(rows)),
             }
         })
         .collect();
-    ui.set_settings_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
-    ui.set_settings_index((index - shown.start) as i32);
+    ui.set_settings_sections(slint::ModelRc::new(slint::VecModel::from(sections)));
+    ui.set_settings_index(settings_index(state) as i32);
     ui.global::<Palette>()
         .set_theme(match state.snapshot.theme {
             navbridge_common::Theme::Amber => Theme::Amber,
@@ -950,11 +953,16 @@ fn selected_setting(state: &UiState) -> Setting {
     SETTINGS[settings_index(state)]
 }
 
-/// The rows Settings shows with the chosen one: the first ones, until it is
-/// further down.
-fn settings_shown(index: usize) -> std::ops::Range<usize> {
-    let first = (index + 1).saturating_sub(SETTINGS_SHOWN);
-    first..(first + SETTINGS_SHOWN).min(SETTINGS.len())
+/// Settings' sections in order, each with its rows' places in `SETTINGS`.
+fn settings_sections() -> Vec<(&'static str, std::ops::Range<usize>)> {
+    let mut sections: Vec<(&'static str, std::ops::Range<usize>)> = Vec::new();
+    for (index, &row) in SETTINGS.iter().enumerate() {
+        match sections.last_mut() {
+            Some((title, places)) if *title == section(row) => places.end = index + 1,
+            _ => sections.push((section(row), index..index + 1)),
+        }
+    }
+    sections
 }
 
 /// Changes the open row's value, up or down: the hotspot, the DPI and the
@@ -1072,14 +1080,13 @@ fn repeats(state: &UiState, action: KeyAction) -> bool {
     }
 }
 
-/// The section a row starts, if it starts one.
+/// The section a row is in.
 fn section(row: Setting) -> &'static str {
     match row {
         Setting::Hotspot => "WIRELESS",
-        Setting::Dpi => "VIDEO",
-        Setting::Volume => "AUDIO",
         Setting::Theme => "UI",
-        Setting::Codec | Setting::CallVolume | Setting::Microphone => "",
+        Setting::Dpi | Setting::Codec => "VIDEO",
+        Setting::Volume | Setting::CallVolume | Setting::Microphone => "AUDIO",
     }
 }
 
@@ -1095,12 +1102,9 @@ fn setting_text(state: &UiState, row: Setting) -> (&'static str, String) {
         Setting::Hotspot => ("Hotspot", String::new()),
         Setting::Dpi => ("DPI", number(snapshot.projection.dpi)),
         Setting::Codec => ("Codec", snapshot.projection.codec.name().into()),
-        Setting::Volume => (
-            "Speakers volume",
-            percent(snapshot.system.audio.volume_percent),
-        ),
+        Setting::Volume => ("Speakers", percent(snapshot.system.audio.volume_percent)),
         Setting::CallVolume => (
-            "Call volume",
+            "Calls",
             snapshot
                 .system
                 .audio
@@ -1108,7 +1112,7 @@ fn setting_text(state: &UiState, row: Setting) -> (&'static str, String) {
                 .map_or_else(|| "n/a".into(), decibels),
         ),
         Setting::Microphone => (
-            "Microphone volume",
+            "Microphone",
             percent(snapshot.system.audio.microphone_percent),
         ),
         Setting::Theme => (
@@ -1984,16 +1988,13 @@ mod navigation_tests {
         ));
         assert_eq!(selected_setting(&state), Setting::Codec);
         assert!(!state.settings_editing);
-        // A level opens; its value's halves step it; its label closes it. The
-        // speakers' volume is the fifth row: chosen with the keys, the list
-        // scrolls by one to show it.
-        state.settings_index = 4;
-        tap_setting(&mut state, 3, 0, &tx);
+        // A level opens; its value's halves step it; its label closes it.
+        tap_setting(&mut state, 4, 0, &tx);
         assert!(state.settings_editing && selected_setting(&state) == Setting::Volume);
         assert!(rx.try_recv().is_err());
-        tap_setting(&mut state, 3, 1, &tx);
-        tap_setting(&mut state, 3, 1, &tx);
-        tap_setting(&mut state, 3, -1, &tx);
+        tap_setting(&mut state, 4, 1, &tx);
+        tap_setting(&mut state, 4, 1, &tx);
+        tap_setting(&mut state, 4, -1, &tx);
         for expected in [51, 52, 51] {
             assert!(matches!(
                 rx.try_recv(),
@@ -2001,21 +2002,33 @@ mod navigation_tests {
             ));
         }
         // Another row's halves do nothing while it is closed.
-        tap_setting(&mut state, 2, 1, &tx);
-        assert!(rx.try_recv().is_err());
-        tap_setting(&mut state, 3, 0, &tx);
-        assert!(!state.settings_editing);
         tap_setting(&mut state, 3, 1, &tx);
         assert!(rx.try_recv().is_err());
-        // The microphone, the last row: the list scrolls by three rows to show
-        // it, and taps count the rows shown.
-        assert_eq!(
-            (settings_shown(3), settings_shown(4), settings_shown(6)),
-            (0..4, 1..5, 3..7)
-        );
-        state.settings_index = 6;
-        tap_setting(&mut state, 3, 0, &tx);
+        tap_setting(&mut state, 4, 0, &tx);
+        assert!(!state.settings_editing);
+        tap_setting(&mut state, 4, 1, &tx);
+        assert!(rx.try_recv().is_err());
+        // The microphone, the last row, is on screen with the others.
+        tap_setting(&mut state, 6, 0, &tx);
         assert!(state.settings_editing && selected_setting(&state) == Setting::Microphone);
+    }
+
+    #[test]
+    fn settings_fill_four_boxes_in_the_keys_order() {
+        let sections: Vec<_> = settings_sections()
+            .into_iter()
+            .map(|(title, places)| (title, places.map(|i| SETTINGS[i]).collect::<Vec<_>>()))
+            .collect();
+        use Setting::*;
+        assert_eq!(
+            sections,
+            [
+                ("WIRELESS", vec![Hotspot]),
+                ("UI", vec![Theme]),
+                ("VIDEO", vec![Dpi, Codec]),
+                ("AUDIO", vec![Volume, CallVolume, Microphone]),
+            ]
+        );
     }
 
     #[test]
@@ -2508,7 +2521,7 @@ mod preview {
                 "settings-open" => 4,
                 "settings-dpi" => 2,
                 "settings-theme" => 1,
-                // The last row, with the list scrolled to it.
+                // The last row, in the last box.
                 "settings-green" => 6,
                 _ => 0,
             };
@@ -2561,8 +2574,25 @@ mod preview {
         state.settings_editing = false;
         render_state(&ui, &state);
         tap(40.0, 15.0);
-        tap(100.0, 60.0);
-        assert_eq!(*taps.borrow(), ["tile 1", "back", "row 0 0"]);
+        // A row in each box: the hotspot, the theme, the codec, the microphone.
+        for (x, y) in [(100.0, 60.0), (250.0, 60.0), (100.0, 190.0), (250.0, 215.0)] {
+            tap(x, y);
+        }
+        // The speakers' volume, open: its label, its value's left and right.
+        state.settings_index = 4;
+        state.settings_editing = true;
+        render_state(&ui, &state);
+        for x in [230.0, 320.0, 370.0] {
+            tap(x, 167.0);
+        }
+        assert_eq!(
+            *taps.borrow(),
+            [
+                "tile 1", "back", "row 0 0", "row 1 0", "row 3 0", "row 6 0", "row 4 0",
+                "row 4 -1", "row 4 1"
+            ]
+        );
+        state.settings_editing = false;
 
         // The menu as a PC window draws it at frontend.toml's scale = 2.
         window

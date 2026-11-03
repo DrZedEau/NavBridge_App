@@ -66,13 +66,19 @@ export enum LedState { off, waiting, on }
 
 // One row in Settings: what it sets, and its current value.
 export struct SettingsRow {
-    // The section this row starts, shown above it; empty within a section.
-    section: string,
+    // Its place among all of Settings' rows, as keys and taps count them.
+    index: int,
     label: string,
     value: string,
     // A switch in place of the value, on or off.
     toggle: bool,
     on: bool,
+}
+
+// One of Settings' four boxes: its heading and its rows.
+export struct SettingsSection {
+    title: string,
+    rows: [SettingsRow],
 }
 
 // An on/off switch without text: on, its track is filled and its knob is
@@ -281,8 +287,8 @@ export component AppWindow inherits Window {
     in property <bool> video-active: false;
     // The Phone page's message until a phone connects.
     in property <string> phone-message: "";
-    // Settings: its rows, and the chosen one and whether Enter opened it.
-    in property <[SettingsRow]> settings-rows;
+    // Settings: its sections, the chosen row and whether Enter opened it.
+    in property <[SettingsSection]> settings-sections;
     in property <int> settings-index: 0;
     in property <bool> settings-editing: false;
     // Wireless mode is on: the Phone page offers pairing, and whether phones
@@ -625,91 +631,91 @@ export component AppWindow inherits Window {
             text: "Settings";
             tapped => { root.back-tapped(); }
         }
-        // Sections, each heading its rows. The chosen row is filled; once Enter
-        // or a tap opens it, it is outlined and its value takes arrows, as
-        // Left/Right, or a tap or hold on the value's halves, then change it.
-        VerticalLayout {
-            x: 12px; y: 32px; width: 376px; height: 200px;
-            alignment: start;
-            spacing: 3px;
-            for row[index] in root.settings-rows: VerticalLayout {
-                // Space between sections.
-                padding-top: row.section != "" && index > 0 ? 6px : 0px;
-                spacing: 1px;
-                if row.section != "": Text {
-                    height: 15px;
-                    text: row.section;
-                    color: Palette.accent;
-                    font-size: 10px;
-                    font-weight: 700;
-                    vertical-alignment: bottom;
+        // Four boxes of equal size, two by two, each a section and its rows.
+        // The chosen row is filled; once Enter or a tap opens it, it is
+        // outlined and its value takes arrows, as Left/Right, or a tap or hold
+        // on the value's halves, then change it.
+        for section[box] in root.settings-sections: Rectangle {
+            x: box == 0 || box == 2 ? 8px : 202px;
+            y: box < 2 ? 32px : 134px;
+            width: 190px; height: 98px;
+            border-radius: 4px;
+            background: Palette.surface;
+            border-width: 1px; border-color: Palette.border;
+            Text {
+                x: 8px; y: 4px; width: parent.width - 16px; height: 16px;
+                text: section.title;
+                color: Palette.accent; font-size: 11px; font-weight: 700;
+                vertical-alignment: center;
+            }
+            for row[place] in section.rows: line := Rectangle {
+                property <bool> chosen: row.index == root.settings-index;
+                property <bool> open: self.chosen && root.settings-editing;
+                property <color> ink: self.open ? Palette.accent
+                    : self.chosen ? Palette.selected-text : Palette.text;
+                x: 6px; y: 22px + place * 24px;
+                width: parent.width - 12px; height: 22px;
+                border-radius: 5px;
+                background: self.open ? Palette.selected-surface
+                    : self.chosen ? Palette.accent : Palette.background;
+                border-width: self.open ? 2px : 1px;
+                border-color: self.chosen ? Palette.accent : Palette.border;
+                Text {
+                    x: 8px; width: parent.width - 16px; height: parent.height;
+                    text: row.label;
+                    color: line.ink;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    wrap: no-wrap; overflow: elide;
                 }
-                line := Rectangle {
-                    property <bool> chosen: index == root.settings-index;
-                    property <bool> open: self.chosen && root.settings-editing;
-                    property <color> ink: self.open ? Palette.accent
-                        : self.chosen ? Palette.selected-text : Palette.text;
-                    height: 24px;
-                    border-radius: 5px;
-                    background: self.open ? Palette.selected-surface
-                        : self.chosen ? Palette.accent : Palette.surface;
-                    border-width: self.open ? 2px : 1px;
-                    border-color: self.chosen ? Palette.accent : Palette.border;
-                    Text {
-                        x: 10px; width: 200px; height: parent.height;
-                        text: row.label;
-                        color: line.ink;
-                        font-size: 14px;
+                HorizontalLayout {
+                    x: parent.width / 2; width: parent.width / 2 - 8px; height: parent.height;
+                    alignment: end;
+                    spacing: 5px;
+                    if line.open: Text {
+                        text: "‹";
+                        color: line.ink; font-size: 13px; font-weight: 700;
                         vertical-alignment: center;
                     }
-                    HorizontalLayout {
-                        x: 210px; width: parent.width - 220px; height: parent.height;
-                        alignment: end;
-                        spacing: 6px;
-                        if line.open: Text {
-                            text: "‹";
-                            color: line.ink; font-size: 14px; font-weight: 700;
-                            vertical-alignment: center;
-                        }
-                        if row.toggle: VerticalLayout {
-                            alignment: center;
-                            Switch {
-                                on: row.on;
-                                inverse: line.chosen && !line.open;
-                            }
-                        }
-                        if !row.toggle: Text {
-                            text: row.value;
-                            color: line.ink; font-size: 14px; font-weight: 700;
-                            vertical-alignment: center;
-                        }
-                        if line.open: Text {
-                            text: "›";
-                            color: line.ink; font-size: 14px; font-weight: 700;
-                            vertical-alignment: center;
+                    if row.toggle: VerticalLayout {
+                        alignment: center;
+                        Switch {
+                            on: row.on;
+                            inverse: line.chosen && !line.open;
                         }
                     }
-                    area := TouchArea {
-                        // An open row's value: -1 its left half, 1 its right
-                        // half, which step at once and repeat while held.
-                        property <int> half: !line.open || self.pressed-x < 210px ? 0
-                            : self.pressed-x < 210px + (self.width - 210px) / 2 ? -1 : 1;
-                        pointer-event(event) => {
-                            if (event.kind == PointerEventKind.down && self.half != 0) {
-                                root.setting-tapped(index, self.half);
-                            }
-                        }
-                        clicked => {
-                            if (self.half == 0) {
-                                root.setting-tapped(index, 0);
-                            }
+                    if !row.toggle: Text {
+                        text: row.value;
+                        color: line.ink; font-size: 13px; font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    if line.open: Text {
+                        text: "›";
+                        color: line.ink; font-size: 13px; font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+                area := TouchArea {
+                    // An open row's value, its right half: -1 the half's
+                    // left, 1 its right, which step at once and repeat while
+                    // held.
+                    property <int> half: !line.open || self.pressed-x < self.width / 2 ? 0
+                        : self.pressed-x < self.width * 3 / 4 ? -1 : 1;
+                    pointer-event(event) => {
+                        if (event.kind == PointerEventKind.down && self.half != 0) {
+                            root.setting-tapped(row.index, self.half);
                         }
                     }
-                    Timer {
-                        interval: 120ms;
-                        running: area.pressed && area.half != 0;
-                        triggered => { root.setting-tapped(index, area.half); }
+                    clicked => {
+                        if (self.half == 0) {
+                            root.setting-tapped(row.index, 0);
+                        }
                     }
+                }
+                Timer {
+                    interval: 120ms;
+                    running: area.pressed && area.half != 0;
+                    triggered => { root.setting-tapped(row.index, area.half); }
                 }
             }
         }

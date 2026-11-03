@@ -234,9 +234,10 @@ PC window works alongside the keyboard:
 - **Phone**: a tap switches Enable pairing. Android Auto's screen takes one
   finger's taps and drags, as the core declares an 800x480 touchscreen to the
   phone; Exit in Android Auto's launcher returns to the menu.
-- **Settings**: a tap switches Hotspot, Theme, DPI and Codec. A tap opens a volume row;
-  then a tap on the left or right half of its value steps it (by 1%, or 1 dB
-  for Call volume), repeating while held, and a tap on its label closes it.
+- **Settings**: every row is on screen. A tap switches Hotspot, Theme, DPI
+  and Codec. A tap opens a level (Speakers, Calls, Microphone); then a tap on
+  the left or right half of its value steps it (by 1%, or 1 dB for Calls),
+  repeating while held, and a tap on its label closes it.
 - **System**: a swipe turns the page its way; a tap turns it towards its side.
 - **Bluetooth pairing**: PAIR and REFUSE buttons, as well as Enter and Back.
 
@@ -264,8 +265,9 @@ The time is the Pi's local time. The tiles' icons are in `crates/ui/ui/icons`.
 
 ## Settings
 
-One page, in four sections, which scrolls to keep the chosen row in view.
-Left/Right (or Up/Down) choose a row. Enter flips
+One page of four boxes of equal size, one per section, two by two: Wireless
+and UI above, Video and Audio below. Left/Right (or Up/Down) choose a row, from
+box to box in that order. Enter flips
 the Hotspot switch at once; on the other rows, it opens the row: it is outlined
 and its value takes arrows. Left/Right then change the value, which takes effect
 at once, and Enter or Back close the row again.
@@ -276,15 +278,15 @@ at once, and Enter or Back close the row again.
 | UI | Theme | Amber / Blue / Green | The UI's colours, on black; at once |
 | Video | DPI | 160 / 140 | The phone gets it when it next connects |
 | | Codec | H.264 / H.265 | The phone is asked for it when it next connects |
-| Audio | Speakers volume | 0-100%, 1% steps | The codec's `Speaker` level; held keys repeat |
-| | Call volume | -12 to +18 dB, 1 dB steps | How much louder than Speakers volume calls play, 0 dB at first; held keys repeat |
-| | Microphone volume | 0-100%, 1% steps | The codec's `Mic` capture gain; held keys repeat |
+| Audio | Speakers | 0-100%, 1% steps | The codec's `Speaker` level; held keys repeat |
+| | Calls | -12 to +18 dB, 1 dB steps | How much louder than Speakers calls play, 0 dB at first; held keys repeat |
+| | Microphone | 0-100%, 1% steps | The codec's `Mic` capture gain; held keys repeat |
 
 The DPI and the codec apply when a phone next connects. A phone that cannot
 encode H.265 stays on H.264; System's Video box shows the decoder that runs
 (`h264` or `hevc`, hardware or software). The audio codec has fewer steps than 1%
 (`Speaker` 0-76, `Mic` 0-42), so a press does not always change what is heard.
-Call volume applies at once, during a call too (see Calls); it shows n/a while
+The Calls level applies at once, during a call too (see Calls); it shows n/a while
 calls do not play in the car (`[audio] enabled = false`).
 Choices are kept in
 `/var/lib/navbridge/settings.toml`; the levels are set again whenever the codec
@@ -510,12 +512,12 @@ rate, and `the call's audio ended`.
   (a command run before bluez-alsa starts) and LC3-SWB is turned off: the chip
   loses its packets, so phones use mSBC (16 kHz).
 - Phones send a call's audio well below music's loudness, so the caller plays
-  at Call volume in Settings: how much louder than Speakers volume, from -12 to
-  +18 dB, 0 dB at first. Turned up, a word that would clip is turned down just
+  at Settings' Calls level: how much louder than Speakers, from -12 to +18 dB,
+  0 dB at first. Turned up, a word that would clip is turned down just
   enough, and comes back up over about half a second. The core logs `call
   volume` with each change, and the volume with each call (`volume_db`).
 - The phone cancels the echo itself. If the caller hears themselves, or the car
-  is hard to hear, raise or lower Microphone volume in Settings.
+  is hard to hear, raise or lower Microphone in Settings.
 - Without bluez-alsa, calls stay on the phone, and the core logs `bluez-alsa
   cannot be asked about calls`.
 
