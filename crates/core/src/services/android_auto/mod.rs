@@ -15,7 +15,7 @@ use crate::services::{
     audio::AudioPipeline,
     events,
     gnss::{Fix, GnssUpdate},
-    media::{FrameSize, PushResult, VideoPipeline},
+    video::{FrameSize, PushResult, VideoPipeline},
     wifi::HOTSPOT_IP,
 };
 use crate::settings::Settings;

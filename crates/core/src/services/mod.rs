@@ -4,7 +4,7 @@ pub mod bluetooth;
 pub mod events;
 pub mod gnss;
 pub mod ibus;
-pub mod media;
 pub mod power;
 pub mod system;
+pub mod video;
 pub mod wifi;
