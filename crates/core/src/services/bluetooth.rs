@@ -1030,6 +1030,17 @@ async fn device_alias(
         .await
 }
 
+/// Lets the phone connect its services without asking this agent.
+async fn trust(connection: &zbus::Connection, device: &OwnedObjectPath) -> zbus::Result<()> {
+    Device1Proxy::builder(connection)
+        .path(device.as_str())?
+        .cache_properties(CacheProperties::No)
+        .build()
+        .await?
+        .set_trusted(true)
+        .await
+}
+
 /// Answers BlueZ when a phone pairs, showing the user the code to compare.
 struct Agent(Arc<Mutex<Shared>>);
 
@@ -1055,8 +1066,8 @@ impl Agent {
             }
             info!(phone = %name, "Bluetooth pairing request");
             shared.confirm = Some(Confirm {
-                device,
-                name,
+                device: device.clone(),
+                name: name.clone(),
                 code: format!("{passkey:06}"),
                 reply,
                 until: Instant::now() + CONFIRM_TIME,
@@ -1064,7 +1075,21 @@ impl Agent {
         }
         // The user's answer; a dropped request counts as refused.
         match answer.recv().await {
-            Ok(true) => Ok(()),
+            Ok(true) => {
+                // Trusted before the pairing ends: a phone connects its
+                // services the moment both sides have confirmed, at once
+                // when the phone confirmed first, and BlueZ asks this agent
+                // to authorize those of an untrusted phone, which it refuses.
+                match trust(connection, &device).await {
+                    Ok(()) => {
+                        info!(phone = %name, "Bluetooth phone trusted as its code is confirmed")
+                    }
+                    Err(e) => {
+                        warn!(%e, phone = %name, "Bluetooth phone not trusted before pairing ends")
+                    }
+                }
+                Ok(())
+            }
             _ => Err(Refusal::Rejected("refused on NavBridge".into())),
         }
     }
@@ -1073,7 +1098,16 @@ impl Agent {
         Err(Refusal::Rejected("pairing needs a code".into()))
     }
 
-    fn authorize_service(&self, _device: OwnedObjectPath, _uuid: String) -> Result<(), Refusal> {
+    async fn authorize_service(
+        &self,
+        device: OwnedObjectPath,
+        uuid: String,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), Refusal> {
+        let name = device_alias(connection, &device)
+            .await
+            .unwrap_or_else(|_| "A phone".into());
+        info!(phone = %name, %uuid, "Bluetooth service refused: the phone is not trusted");
         Err(Refusal::Rejected("not a NavBridge service".into()))
     }
 
@@ -1093,7 +1127,9 @@ impl Agent {
 
     fn cancel(&self) {
         // Dropping the request ends it as refused.
-        self.0.lock().unwrap().confirm = None;
+        if let Some(confirm) = self.0.lock().unwrap().confirm.take() {
+            info!(phone = %confirm.name, "Bluetooth pairing cancelled before NavBridge answered");
+        }
     }
 }
 
