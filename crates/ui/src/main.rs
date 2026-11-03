@@ -66,11 +66,11 @@ const SETTINGS: [Setting; 9] = [
     Setting::Hotspot,
     Setting::DefaultPhone,
     Setting::Disconnect,
+    Setting::Dpi,
+    Setting::Codec,
     Setting::Volume,
     Setting::CallVolume,
     Setting::Microphone,
-    Setting::Dpi,
-    Setting::Codec,
     Setting::Theme,
 ];
 /// The themes Settings offers, in the order it steps through them.
@@ -1136,8 +1136,8 @@ fn repeats(state: &UiState, action: KeyAction) -> bool {
 fn section(row: Setting) -> &'static str {
     match row {
         Setting::Hotspot | Setting::DefaultPhone | Setting::Disconnect => "WIRELESS",
-        Setting::Volume | Setting::CallVolume | Setting::Microphone => "AUDIO",
         Setting::Dpi | Setting::Codec => "VIDEO",
+        Setting::Volume | Setting::CallVolume | Setting::Microphone => "AUDIO",
         Setting::Theme => "UI",
     }
 }
@@ -2188,8 +2188,8 @@ mod navigation_tests {
             sections,
             [
                 ("WIRELESS", vec![Hotspot, DefaultPhone, Disconnect]),
-                ("AUDIO", vec![Volume, CallVolume, Microphone]),
                 ("VIDEO", vec![Dpi, Codec]),
+                ("AUDIO", vec![Volume, CallVolume, Microphone]),
                 ("UI", vec![Theme]),
             ]
         );
@@ -2785,8 +2785,8 @@ mod preview {
         assert_eq!(
             *taps.borrow(),
             [
-                "tile 1", "back", "row 0 0", "row 1 0", "row 2 0", "row 5 0", "row 7 0", "row 8 0",
-                "row 3 0", "row 3 -1", "row 3 1"
+                "tile 1", "back", "row 0 0", "row 1 0", "row 2 0", "row 7 0", "row 4 0", "row 8 0",
+                "row 5 0", "row 5 -1", "row 5 1"
             ]
         );
         state.settings_editing = false;

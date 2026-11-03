@@ -269,8 +269,8 @@ The time is the Pi's local time. The tiles' icons are in `crates/ui/ui/icons`.
 ## Settings
 
 One page of four boxes of equal size, one per section, two by two: Wireless
-and Audio above, Video and UI below. Left/Right (or Up/Down) choose a row, from
-box to box in that order. Enter flips
+above Video on the left, Audio above UI on the right. Left/Right (or Up/Down)
+choose a row, down the left column, then the right. Enter flips
 the Hotspot switch, and disconnects or connects the phone, at once; on the
 other rows, it opens the row: it is outlined
 and its value takes arrows. Left/Right then change the value, which takes effect
@@ -281,11 +281,11 @@ at once, and Enter or Back close the row again.
 | Wireless | Hotspot | Switch, on / off | Wireless Android Auto (see below) |
 | | Default phone | Any / each paired phone | The only phone NavBridge calls; Any calls them all |
 | | Disconnect | The phone in a wireless session, else n/a | Ends its session; the row then reads Connect, which calls the phones again |
+| Video | DPI | 160 / 140 | The phone gets it when it next connects |
+| | Codec | H.264 / H.265 | The phone is asked for it when it next connects |
 | Audio | Speakers | 0-100%, 1% steps | The codec's `Speaker` level; held keys repeat |
 | | Calls | -12 to +18 dB, 1 dB steps | How much louder than Speakers calls play, 0 dB at first; held keys repeat |
 | | Microphone | 0-100%, 1% steps | The codec's `Mic` capture gain; held keys repeat |
-| Video | DPI | 160 / 140 | The phone gets it when it next connects |
-| | Codec | H.264 / H.265 | The phone is asked for it when it next connects |
 | UI | Theme | Amber / Blue / Green | The UI's colours, on black; at once |
 
 The DPI and the codec apply when a phone next connects. A phone that cannot

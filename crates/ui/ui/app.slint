@@ -631,13 +631,14 @@ export component AppWindow inherits Window {
             text: "Settings";
             tapped => { root.back-tapped(); }
         }
-        // Four boxes of equal size, two by two, each a section and its rows.
+        // Four boxes of equal size, two by two, each a section and its rows,
+        // down the left column, then the right.
         // The chosen row is filled; once Enter or a tap opens it, it is
         // outlined and its value takes arrows, as Left/Right, or a tap or hold
         // on the value's halves, then change it.
         for section[box] in root.settings-sections: Rectangle {
-            x: box == 0 || box == 2 ? 8px : 202px;
-            y: box < 2 ? 32px : 134px;
+            x: box < 2 ? 8px : 202px;
+            y: box == 0 || box == 2 ? 32px : 134px;
             width: 190px; height: 98px;
             border-radius: 4px;
             background: Palette.surface;
