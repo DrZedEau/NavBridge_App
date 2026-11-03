@@ -53,9 +53,10 @@ temporary directory in tmpfs instead.
   `hide_projection`, `resume_projection`, `navigation_input`, `touch`,
   `phone_action`, `set_wireless`, `set_dpi`, `set_video_codec`, `set_volume`,
   `set_microphone`, `set_call_volume`, `set_theme`, `start_pairing`,
-  `stop_pairing` and `confirm_pairing`. Settings' choices (wireless mode, DPI,
+  `stop_pairing`, `confirm_pairing`, `set_default_phone`, `disconnect_phone`
+  and `connect_phone`. Settings' choices (wireless mode, DPI,
   the video codec, the audio codec's levels,
-  the call volume, the UI's theme) are kept in
+  the call volume, the UI's theme, the default phone) are kept in
   `/var/lib/navbridge/settings.toml`, which each service changes without
   touching the others' keys. Hiding and resuming move the phone's video
   focus, so the phone stops sending video while the NavBridge menu is shown.
@@ -196,7 +197,11 @@ while wireless mode is on. It registers:
   Android Auto look for the wireless service. The headset connection is closed
   at once. Phones are called one after another until one's Android Auto
   connects; a phone that answered gets 3 seconds for that before the next is
-  called, so that two phones do not set up at once.
+  called, so that two phones do not set up at once. With a default phone
+  chosen in Settings, only that one is called, while it is paired. After
+  Settings' Disconnect, which asks the phone on the hotspot to end its session,
+  no phone is called and the wireless service closes that phone's connection,
+  until Connect or wireless mode is next turned on.
 
 Both services require a paired phone over an encrypted link.
 

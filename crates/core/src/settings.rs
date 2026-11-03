@@ -25,6 +25,9 @@ pub struct Saved {
     pub call_volume_db: i8,
     /// The UI's colours.
     pub theme: Theme,
+    /// The one phone called for wireless Android Auto, by its Bluetooth
+    /// address; without one, every paired phone is called.
+    pub default_phone: Option<String>,
 }
 
 pub struct Settings {
@@ -94,6 +97,7 @@ mod tests {
         settings.update(|saved| saved.volume = Some(70));
         settings.update(|saved| saved.theme = Theme::Blue);
         settings.update(|saved| saved.call_volume_db = 6);
+        settings.update(|saved| saved.default_phone = Some("64:9D:38:E1:B6:24".into()));
         assert_eq!(
             settings.load(),
             Saved {
@@ -104,6 +108,7 @@ mod tests {
                 microphone: None,
                 call_volume_db: 6,
                 theme: Theme::Blue,
+                default_phone: Some("64:9D:38:E1:B6:24".into()),
             }
         );
         let file = fs::read_to_string(&path).unwrap();
@@ -124,6 +129,7 @@ mod tests {
             (None, None, None, 0)
         );
         assert_eq!(saved.theme, Theme::Amber);
+        assert_eq!(saved.default_phone, None);
         fs::remove_dir_all(dir).unwrap();
     }
 }

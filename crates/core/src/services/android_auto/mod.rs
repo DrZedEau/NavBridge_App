@@ -71,6 +71,8 @@ enum Command {
     ParkingBrake(bool),
     Location(Fix),
     Speed(Option<u16>),
+    /// End a wireless session, as Settings' Disconnect phone asks.
+    Disconnect,
 }
 /// Upper bound on the session thread's sleep, so pings and timeouts stay on time.
 const SESSION_TICK: Duration = Duration::from_millis(100);
@@ -284,6 +286,10 @@ impl ProjectionService {
     pub fn phone_action(&self, a: PhoneAction) {
         self.command(Command::Phone(a))
     }
+    /// Asks a phone on the hotspot to end its session; a phone on USB stays.
+    pub fn disconnect_wireless(&self) {
+        self.command(Command::Disconnect)
+    }
     pub fn usb_snapshot(&self) -> UsbSnapshot {
         self.state.read().unwrap().usb.clone()
     }
@@ -327,6 +333,7 @@ fn clear(
     let mut s = state.write().unwrap();
     s.projection.phone_connected = false;
     s.projection.streaming = false;
+    s.projection.wireless = false;
     s.projection.phone_name.clear();
     s.projection.phase = ProjectionPhase::WaitingForPhone;
     s.projection.status = "Connect an Android phone by USB".into();
@@ -558,6 +565,7 @@ fn runner(
             let mut s = state.write().unwrap();
             s.usb.selected = transport.usb().cloned();
             s.usb.error = None;
+            s.projection.wireless = matches!(transport, Transport::Wifi(_));
             s.projection.phase = ProjectionPhase::Starting;
             s.projection.status = format!("Negotiating Android Auto over {}", transport.kind());
             (
@@ -613,6 +621,12 @@ fn runner(
                         Command::ParkingBrake(engaged) => session.parking_brake(engaged)?,
                         Command::Location(fix) => session.location(fix)?,
                         Command::Speed(kmh) => session.vehicle_speed(kmh)?,
+                        Command::Disconnect => {
+                            if let Transport::Wifi(_) = &transport {
+                                info!("ending the wireless Android Auto session: Settings disconnected the phone");
+                                return close_session(&mut session, &transport, &inbox.woken);
+                            }
+                        }
                     }
                 }
                 session.tick()?;

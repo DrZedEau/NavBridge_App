@@ -234,8 +234,9 @@ PC window works alongside the keyboard:
 - **Phone**: a tap switches Enable pairing. Android Auto's screen takes one
   finger's taps and drags, as the core declares an 800x480 touchscreen to the
   phone; Exit in Android Auto's launcher returns to the menu.
-- **Settings**: every row is on screen. A tap switches Hotspot, Theme, DPI
-  and Codec. A tap opens a level (Speakers, Calls, Microphone); then a tap on
+- **Settings**: every row is on screen. A tap switches Hotspot, Default
+  phone, Theme, DPI and Codec, and Disconnect or Connect acts at once. A tap
+  opens a level (Speakers, Calls, Microphone); then a tap on
   the left or right half of its value steps it (by 1%, or 1 dB for Calls),
   repeating while held, and a tap on its label closes it.
 - **System**: a swipe turns the page its way; a tap turns it towards its side.
@@ -251,9 +252,11 @@ returns:
 - **Phone**: the connected phone's screen, Android Auto in this build (CarPlay
   is not in it yet). While there is none: the Enable pairing switch at the top,
   dimmed while the hotspot is off, and in the middle "Waiting for phone" with
-  the hotspot off, "Waiting for paired phone" with it on, or while pairing is
-  open, the name to pair with and the time left.
-- **Settings**: the hotspot for wireless Android Auto, the UI's theme, the
+  the hotspot off, "Waiting for paired phone" with it on (or the default
+  phone's name), "Disconnected" once Settings disconnected the phone, or while
+  pairing is open, the name to pair with and the time left.
+- **Settings**: the hotspot for wireless Android Auto, the phone it connects
+  and the end of its session, the UI's theme, the
   projection's DPI and video codec, the audio codec's speaker volume and
   microphone gain, and the call volume (see below).
 - **System**: the System pages.
@@ -268,13 +271,16 @@ The time is the Pi's local time. The tiles' icons are in `crates/ui/ui/icons`.
 One page of four boxes of equal size, one per section, two by two: Wireless
 and UI above, Video and Audio below. Left/Right (or Up/Down) choose a row, from
 box to box in that order. Enter flips
-the Hotspot switch at once; on the other rows, it opens the row: it is outlined
+the Hotspot switch, and disconnects or connects the phone, at once; on the
+other rows, it opens the row: it is outlined
 and its value takes arrows. Left/Right then change the value, which takes effect
 at once, and Enter or Back close the row again.
 
 | Section | Row | Values | Notes |
 | --- | --- | --- | --- |
 | Wireless | Hotspot | Switch, on / off | Wireless Android Auto (see below) |
+| | Default phone | Any / each paired phone | The only phone NavBridge calls; Any calls them all |
+| | Disconnect | The phone in a wireless session, else n/a | Ends its session; the row then reads Connect, which calls the phones again |
 | UI | Theme | Amber / Blue / Green | The UI's colours, on black; at once |
 | Video | DPI | 160 / 140 | The phone gets it when it next connects |
 | | Codec | H.264 / H.265 | The phone is asked for it when it next connects |
@@ -457,6 +463,15 @@ so Android Auto starts once the
 phone is in range with Bluetooth and Wi-Fi on. With several paired phones, the
 calls stop at the first whose Android Auto connects. A phone plugged in by USB still
 comes first.
+
+Settings' Default phone narrows the calls to one paired phone, kept in
+`settings.toml` (`default_phone`, its Bluetooth address); Any calls them all.
+Another paired phone still connects if it starts Android Auto itself.
+Disconnect asks the phone in a wireless session to end it. NavBridge then calls
+no phone and turns that one away, until Connect in the same row, wireless mode
+switched off and on, or a restart of the core. The core logs `default phone for
+wireless Android Auto`, `wireless Android Auto paused`, and for a phone turned
+away, `the phone's Android Auto turned away`.
 
 The choice is kept in `/var/lib/navbridge/settings.toml`, so the next start
 brings the hotspot back. To start with wireless mode on whatever was saved,

@@ -5,7 +5,7 @@
 //! it to the hotspot. Phones pair only while the user has opened pairing, and
 //! only once the user has confirmed on screen the code the phone shows.
 use crate::services::{android_auto::wireless, wifi};
-use navbridge_common::{BluetoothSnapshot, PairingRequest};
+use navbridge_common::{BluetoothPhone, BluetoothSnapshot, PairingRequest};
 use std::{
     cell::Cell,
     collections::HashMap,
@@ -161,6 +161,16 @@ struct Shared {
     confirm: Option<Confirm>,
     /// A phone that got the hotspot's details, until it should have joined.
     joining: Option<(String, Instant)>,
+    /// The paired phones, for the snapshot.
+    phones: Vec<BluetoothPhone>,
+    /// The one phone called, by address, as Settings chose it.
+    default_phone: Option<String>,
+    /// Disconnect phone ended the wireless session: no phone is called, and
+    /// `turned_away` cannot set up, until Connect phone.
+    paused: bool,
+    turned_away: Option<OwnedObjectPath>,
+    /// The phone that last got the hotspot's details.
+    last_setup: Option<OwnedObjectPath>,
 }
 
 impl Shared {
@@ -196,6 +206,8 @@ enum Request {
     Pair,
     ClosePairing,
     Confirmed(OwnedObjectPath),
+    /// Call the phones now, if no phone is connected.
+    Call,
 }
 
 pub struct BluetoothService {
@@ -208,9 +220,13 @@ pub struct BluetoothService {
 }
 
 impl BluetoothService {
-    /// Nothing reaches BlueZ until wireless mode is first turned on.
-    pub fn start(hotspot: wifi::HotspotWatch) -> Self {
-        let shared = Arc::new(Mutex::new(Shared::default()));
+    /// Nothing reaches BlueZ until wireless mode is first turned on. Only
+    /// `default_phone` is called, while it is paired.
+    pub fn start(hotspot: wifi::HotspotWatch, default_phone: Option<String>) -> Self {
+        let shared = Arc::new(Mutex::new(Shared {
+            default_phone,
+            ..Shared::default()
+        }));
         let (requests, received) = mpsc::channel();
         let name = wifi::unit_name();
         let worker = Worker {
@@ -283,6 +299,33 @@ impl BluetoothService {
         }
     }
 
+    /// The one phone called from now on, or every paired phone; called at
+    /// once if no phone is connected.
+    pub fn set_default_phone(&self, address: Option<String>) {
+        self.shared.lock().unwrap().default_phone = address;
+        self.send(Request::Call);
+    }
+
+    /// The user ended the wireless session: no phone is called, and the one
+    /// that set up last is turned away, until `connect`.
+    pub fn disconnect(&self) {
+        let mut shared = self.shared.lock().unwrap();
+        shared.paused = true;
+        shared.turned_away = shared.last_setup.clone();
+        info!("wireless Android Auto paused: no phone is called");
+    }
+
+    /// Calls the phones again, at once.
+    pub fn connect(&self) {
+        {
+            let mut shared = self.shared.lock().unwrap();
+            shared.paused = false;
+            shared.turned_away = None;
+        }
+        info!("wireless Android Auto resumed: phones are called");
+        self.send(Request::Call);
+    }
+
     pub fn snapshot(&self) -> BluetoothSnapshot {
         let shared = self.shared.lock().unwrap();
         BluetoothSnapshot {
@@ -297,6 +340,11 @@ impl BluetoothService {
                 device: confirm.name.clone(),
                 code: confirm.code.clone(),
             }),
+            phones: shared.phones.clone(),
+            // As BlueZ writes the address, whichever case Settings kept.
+            default_phone: default_of(&shared.phones, shared.default_phone.as_deref())
+                .map(|phone| phone.address.clone()),
+            paused: shared.paused,
         }
     }
 
@@ -334,8 +382,7 @@ struct Worker {
     registered: bool,
     error: Option<String>,
     next_setup: Instant,
-    /// Paired phones: their object paths and names.
-    phones: Vec<(OwnedObjectPath, String)>,
+    phones: Vec<Phone>,
     next_refresh: Instant,
     next_call: Instant,
     calling: Arc<AtomicBool>,
@@ -379,6 +426,7 @@ impl Worker {
                 Ok(Request::Confirmed(device)) => {
                     self.confirmed = Some((device, Instant::now() + PAIRED_TIME));
                 }
+                Ok(Request::Call) => self.next_call = Instant::now(),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
                     if self.wireless {
@@ -422,10 +470,14 @@ impl Worker {
             }
         }
         // While pairing is open, paired phones are not called: the user is
-        // pairing another one.
-        let (joining, pairing) = {
+        // pairing another one. Nor after Disconnect phone.
+        let (joining, pairing, paused) = {
             let shared = self.shared.lock().unwrap();
-            (shared.is_joining(), shared.pairing_until.is_some())
+            (
+                shared.is_joining(),
+                shared.pairing_until.is_some(),
+                shared.paused,
+            )
         };
         let early = self.early_until.is_some_and(|until| now < until);
         if self.registered
@@ -433,6 +485,7 @@ impl Worker {
             && !self.session
             && !joining
             && !pairing
+            && !paused
             && now >= self.next_call
         {
             self.next_call = now + CALL_INTERVAL;
@@ -440,8 +493,19 @@ impl Worker {
         } else if self.registered && now >= self.next_refresh {
             self.refresh_phones();
         }
-        let names: Vec<String> = self.phones.iter().map(|(_, name)| name.clone()).collect();
         let mut shared = self.shared.lock().unwrap();
+        let names: Vec<String> = to_call(&self.phones, shared.default_phone.as_deref())
+            .into_iter()
+            .map(|phone| phone.name)
+            .collect();
+        shared.phones = self
+            .phones
+            .iter()
+            .map(|phone| BluetoothPhone {
+                address: phone.address.clone(),
+                name: phone.name.clone(),
+            })
+            .collect();
         let pairing_left = shared
             .pairing_until
             .map(|until| until.saturating_duration_since(now))
@@ -456,6 +520,7 @@ impl Worker {
             self.error.as_deref(),
             pairing_left,
             joining,
+            shared.paused,
             &names,
             &self.name,
         );
@@ -503,6 +568,9 @@ impl Worker {
             let _ = confirm.reply.try_send(false);
         }
         shared.joining = None;
+        // Turned on again, wireless mode calls the phones afresh.
+        shared.paused = false;
+        shared.turned_away = None;
         shared.status.clear();
         info!("Bluetooth off for wireless Android Auto");
     }
@@ -597,14 +665,18 @@ impl Worker {
         }
     }
 
-    /// Calls the paired phones as a headset, on a thread of its own: a phone
-    /// out of range takes seconds to fail.
+    /// Calls the paired phones as a headset, or only the default one, on a
+    /// thread of its own: a phone out of range takes seconds to fail.
     fn call_phones(&mut self) {
         self.refresh_phones();
         let Some(connection) = self.connection.clone() else {
             return;
         };
-        let phones = self.phones.clone();
+        let default = self.shared.lock().unwrap().default_phone.clone();
+        let phones: Vec<(OwnedObjectPath, String)> = to_call(&self.phones, default.as_deref())
+            .into_iter()
+            .map(|phone| (phone.path, phone.name))
+            .collect();
         if phones.is_empty() || self.calling.swap(true, Ordering::Relaxed) {
             return;
         }
@@ -625,6 +697,39 @@ impl Worker {
         if spawned.is_err() {
             self.calling.store(false, Ordering::Relaxed);
         }
+    }
+}
+
+/// A paired phone, as BlueZ lists it.
+#[derive(Clone)]
+struct Phone {
+    path: OwnedObjectPath,
+    /// As "64:9D:38:E1:B6:24".
+    address: String,
+    name: String,
+}
+
+/// The phone among `phones` at `address`, if it is paired.
+fn default_of<'a>(
+    phones: &'a [BluetoothPhone],
+    address: Option<&str>,
+) -> Option<&'a BluetoothPhone> {
+    let address = address?;
+    phones
+        .iter()
+        .find(|phone| phone.address.eq_ignore_ascii_case(address))
+}
+
+/// The phones to call: the default one while it is paired, else every one.
+fn to_call(phones: &[Phone], default: Option<&str>) -> Vec<Phone> {
+    let chosen = default.and_then(|address| {
+        phones
+            .iter()
+            .find(|phone| phone.address.eq_ignore_ascii_case(address))
+    });
+    match chosen {
+        Some(phone) => vec![phone.clone()],
+        None => phones.to_vec(),
     }
 }
 
@@ -834,8 +939,8 @@ fn tolerate_existing(result: zbus::Result<()>) -> zbus::Result<()> {
 }
 
 /// Paired devices that have a phone's side of a headset or hands-free
-/// connection, as (object path, name).
-fn paired_phones(connection: &Connection) -> zbus::Result<Vec<(OwnedObjectPath, String)>> {
+/// connection, by name.
+fn paired_phones(connection: &Connection) -> zbus::Result<Vec<Phone>> {
     let objects = zbus::blocking::fdo::ObjectManagerProxy::builder(connection)
         .destination("org.bluez")?
         .path("/")?
@@ -850,10 +955,15 @@ fn paired_phones(connection: &Connection) -> zbus::Result<Vec<(OwnedObjectPath, 
             let paired = property(&device, "Paired").unwrap_or(false);
             let uuids: Vec<String> = property(&device, "UUIDs").unwrap_or_default();
             let name = property(&device, "Alias").unwrap_or_else(|| "phone".to_string());
-            is_phone(paired, &uuids).then_some((path, name))
+            let address = property(&device, "Address").unwrap_or_default();
+            is_phone(paired, &uuids).then_some(Phone {
+                path,
+                address,
+                name,
+            })
         })
         .collect();
-    phones.sort_by(|a, b| a.1.cmp(&b.1));
+    phones.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(phones)
 }
 
@@ -877,6 +987,7 @@ fn describe(
     error: Option<&str>,
     pairing_left: Option<Duration>,
     joining: Option<&str>,
+    paused: bool,
     phones: &[String],
     name: &str,
 ) -> String {
@@ -896,6 +1007,9 @@ fn describe(
     }
     if let Some(phone) = joining {
         return format!("{phone} is joining the hotspot");
+    }
+    if paused {
+        return "Disconnected: Connect phone in Settings calls the phones again".into();
     }
     match phones {
         [] => "No phone paired: enable pairing".into(),
@@ -1000,13 +1114,21 @@ impl WirelessProfile {
         let name = device_alias(connection, &device)
             .await
             .unwrap_or_else(|_| device.to_string());
-        info!(phone = %name, "the phone's Android Auto connected over Bluetooth");
-        self.0.lock().unwrap().joining = Some((name.clone(), Instant::now() + JOINING_TIME));
+        {
+            let mut shared = self.0.lock().unwrap();
+            // Closing the link turns it away.
+            if shared.paused && shared.turned_away.as_ref() == Some(&device) {
+                info!(phone = %name, "the phone's Android Auto turned away: Settings disconnected it");
+                return;
+            }
+            info!(phone = %name, "the phone's Android Auto connected over Bluetooth");
+            shared.joining = Some((name.clone(), Instant::now() + JOINING_TIME));
+        }
         let link = UnixStream::from(std::os::fd::OwnedFd::from(fd));
         let (shared, hotspot) = (self.0.clone(), self.1.clone());
         let spawned = thread::Builder::new()
             .name("aa-wireless-setup".into())
-            .spawn(move || setup(link, name, shared, hotspot));
+            .spawn(move || setup(link, device, name, shared, hotspot));
         if let Err(e) = spawned {
             warn!(%e, "could not start the wireless setup");
         }
@@ -1018,6 +1140,7 @@ impl WirelessProfile {
 /// Sends a phone to the hotspot: it then opens the session over Wi-Fi.
 fn setup(
     mut link: UnixStream,
+    device: OwnedObjectPath,
     phone: String,
     shared: Arc<Mutex<Shared>>,
     hotspot: wifi::HotspotWatch,
@@ -1043,7 +1166,9 @@ fn setup(
                 waited_ms,
                 "wireless Android Auto: the phone has the hotspot's details"
             );
-            shared.lock().unwrap().joining = Some((phone, Instant::now() + JOINING_TIME));
+            let mut shared = shared.lock().unwrap();
+            shared.joining = Some((phone, Instant::now() + JOINING_TIME));
+            shared.last_setup = Some(device);
         }
         Err(e) => {
             warn!(%e, %phone, "wireless Android Auto setup failed");
@@ -1164,9 +1289,9 @@ mod tests {
     fn the_status_says_what_bluetooth_does() {
         let name = "NavBridge-984B";
         let phones = ["Pixel 7 Pro".to_string()];
-        assert_eq!(describe(false, None, None, None, &phones, name), "");
+        assert_eq!(describe(false, None, None, None, false, &phones, name), "");
         assert_eq!(
-            describe(true, Some("no adapter"), None, None, &phones, name),
+            describe(true, Some("no adapter"), None, None, false, &phones, name),
             "Bluetooth unavailable: no adapter"
         );
         assert_eq!(
@@ -1175,23 +1300,91 @@ mod tests {
                 None,
                 Some(Duration::from_secs(95)),
                 None,
+                false,
                 &phones,
                 name
             ),
             "Pairing open (1:35): on your phone, pair with NavBridge-984B"
         );
         assert_eq!(
-            describe(true, None, None, Some("Pixel 7 Pro"), &phones, name),
+            describe(true, None, None, Some("Pixel 7 Pro"), false, &phones, name),
             "Pixel 7 Pro is joining the hotspot"
         );
         assert_eq!(
-            describe(true, None, None, None, &phones, name),
+            describe(true, None, None, None, true, &phones, name),
+            "Disconnected: Connect phone in Settings calls the phones again"
+        );
+        assert_eq!(
+            describe(true, None, None, None, false, &phones, name),
             "Waiting for Pixel 7 Pro"
         );
         assert_eq!(
-            describe(true, None, None, None, &[], name),
+            describe(true, None, None, None, false, &[], name),
             "No phone paired: enable pairing"
         );
+    }
+
+    #[test]
+    fn only_the_default_phone_is_called_while_it_is_paired() {
+        let phone = |name: &str, address: &str| Phone {
+            path: OwnedObjectPath::try_from(format!(
+                "/org/bluez/hci0/dev_{}",
+                address.replace(':', "_")
+            ))
+            .unwrap(),
+            address: address.into(),
+            name: name.into(),
+        };
+        let phones = [
+            phone("Pixel 10", "64:9D:38:E1:B6:24"),
+            phone("Pixel 8", "A0:B1:C2:D3:E4:F5"),
+        ];
+        let names = |default| -> Vec<String> {
+            to_call(&phones, default)
+                .into_iter()
+                .map(|phone| phone.name)
+                .collect()
+        };
+        assert_eq!(names(None), ["Pixel 10", "Pixel 8"]);
+        // Its address, whichever its case.
+        assert_eq!(names(Some("a0:b1:c2:d3:e4:f5")), ["Pixel 8"]);
+        // A default phone no longer paired: every phone, as without one.
+        assert_eq!(names(Some("00:11:22:33:44:55")), ["Pixel 10", "Pixel 8"]);
+    }
+
+    #[test]
+    fn a_disconnected_phone_is_turned_away_until_connect() {
+        // Wireless mode stays off, so BlueZ is never contacted.
+        let service = BluetoothService::start(
+            wifi::HotspotWatch::default(),
+            Some("A0:B1:C2:D3:E4:F5".into()),
+        );
+        let pixel = OwnedObjectPath::try_from("/org/bluez/hci0/dev_A0_B1_C2_D3_E4_F5").unwrap();
+        {
+            let mut shared = service.shared.lock().unwrap();
+            shared.last_setup = Some(pixel.clone());
+            shared.phones = vec![BluetoothPhone {
+                address: "A0:B1:C2:D3:E4:F5".into(),
+                name: "Pixel 8".into(),
+            }];
+        }
+        let snapshot = service.snapshot();
+        assert_eq!(snapshot.default_phone.as_deref(), Some("A0:B1:C2:D3:E4:F5"));
+        assert!(!snapshot.paused);
+        service.disconnect();
+        assert!(service.snapshot().paused);
+        assert_eq!(service.shared.lock().unwrap().turned_away, Some(pixel));
+        service.connect();
+        assert!(!service.snapshot().paused);
+        assert_eq!(service.shared.lock().unwrap().turned_away, None);
+        // In BlueZ's case; and a default phone that is not paired, as none.
+        service.set_default_phone(Some("a0:b1:c2:d3:e4:f5".into()));
+        assert_eq!(
+            service.snapshot().default_phone.as_deref(),
+            Some("A0:B1:C2:D3:E4:F5")
+        );
+        service.set_default_phone(Some("00:11:22:33:44:55".into()));
+        assert_eq!(service.snapshot().default_phone, None);
     }
 
     fn waiting_code(service: &BluetoothService, until: Instant) -> async_channel::Receiver<bool> {
@@ -1209,7 +1402,7 @@ mod tests {
     #[test]
     fn the_users_answer_or_its_absence_reaches_the_phone() {
         // Wireless mode stays off, so BlueZ is never contacted.
-        let service = BluetoothService::start(wifi::HotspotWatch::default());
+        let service = BluetoothService::start(wifi::HotspotWatch::default(), None);
         let answer = waiting_code(&service, Instant::now() + CONFIRM_TIME);
         assert_eq!(
             service.snapshot().confirm,

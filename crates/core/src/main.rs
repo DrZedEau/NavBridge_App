@@ -49,7 +49,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Wi-Fi goes back to the home network.
     let wifi = services::wifi::WifiService::start(args.wireless, settings.clone());
     // Sends phones to the hotspot; up while wireless mode is on.
-    let bluetooth = services::bluetooth::BluetoothService::start(wifi.watch());
+    let bluetooth =
+        services::bluetooth::BluetoothService::start(wifi.watch(), settings.load().default_phone);
     let projection = ProjectionService::start(
         config.android_auto.clone(),
         config.audio.clone(),
@@ -147,6 +148,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 ClientCommand::ConfirmPairing { accept } => {
                     bluetooth.confirm(accept);
+                    next_snapshot = Instant::now();
+                }
+                ClientCommand::SetDefaultPhone { address } => {
+                    info!(phone = ?address, "default phone for wireless Android Auto");
+                    bluetooth.set_default_phone(address.clone());
+                    settings.update(|saved| saved.default_phone = address);
+                    next_snapshot = Instant::now();
+                }
+                // Only a wireless session ends; a phone on USB stays.
+                ClientCommand::DisconnectPhone => {
+                    if projection.snapshot().wireless {
+                        bluetooth.disconnect();
+                        projection.disconnect_wireless();
+                    }
+                    next_snapshot = Instant::now();
+                }
+                ClientCommand::ConnectPhone => {
+                    bluetooth.connect();
                     next_snapshot = Instant::now();
                 }
             }

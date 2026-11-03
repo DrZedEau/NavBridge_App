@@ -111,6 +111,9 @@ pub struct ProjectionSnapshot {
     pub streaming: bool,
     #[serde(default)]
     pub phone_name: String,
+    /// The session runs over the hotspot: wireless Android Auto.
+    #[serde(default)]
+    pub wireless: bool,
     /// The DPI the phone is asked for when it connects, as chosen in Settings.
     #[serde(default)]
     pub dpi: u32,
@@ -130,6 +133,7 @@ impl Default for ProjectionSnapshot {
             phone_connected: false,
             streaming: false,
             phone_name: String::new(),
+            wireless: false,
             dpi: 0,
             codec: VideoCodec::default(),
             decoder: String::new(),
@@ -206,6 +210,24 @@ pub struct BluetoothSnapshot {
     pub name: String,
     /// A phone asks to pair: the user compares the code and confirms.
     pub confirm: Option<PairingRequest>,
+    /// The paired phones, by name.
+    #[serde(default)]
+    pub phones: Vec<BluetoothPhone>,
+    /// The one phone called for wireless Android Auto, by its address, as
+    /// chosen in Settings; without one, every paired phone is called.
+    #[serde(default)]
+    pub default_phone: Option<String>,
+    /// Settings' Disconnect phone ended the wireless session: no phone is
+    /// called, and that one is turned away, until Connect phone.
+    #[serde(default)]
+    pub paused: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BluetoothPhone {
+    /// As "64:9D:38:E1:B6:24".
+    pub address: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -331,26 +353,68 @@ pub enum PhoneAction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientCommand {
-    Hello { client: String },
-    SetFrameSize { width: u32, height: u32 },
+    Hello {
+        client: String,
+    },
+    SetFrameSize {
+        width: u32,
+        height: u32,
+    },
     RequestSnapshot,
-    SetNightMode { enabled: bool },
-    SetParkingBrake { engaged: bool },
+    SetNightMode {
+        enabled: bool,
+    },
+    SetParkingBrake {
+        engaged: bool,
+    },
     HideProjection,
     ResumeProjection,
-    NavigationInput { key: NavigationKey, pressed: bool },
-    Touch { kind: TouchKind, x: u32, y: u32 },
-    PhoneAction { action: PhoneAction },
-    SetWireless { enabled: bool },
-    SetDpi { dpi: u32 },
-    SetVideoCodec { codec: VideoCodec },
-    SetVolume { percent: u8 },
-    SetMicrophone { percent: u8 },
-    SetCallVolume { db: i8 },
-    SetTheme { theme: Theme },
+    NavigationInput {
+        key: NavigationKey,
+        pressed: bool,
+    },
+    Touch {
+        kind: TouchKind,
+        x: u32,
+        y: u32,
+    },
+    PhoneAction {
+        action: PhoneAction,
+    },
+    SetWireless {
+        enabled: bool,
+    },
+    SetDpi {
+        dpi: u32,
+    },
+    SetVideoCodec {
+        codec: VideoCodec,
+    },
+    SetVolume {
+        percent: u8,
+    },
+    SetMicrophone {
+        percent: u8,
+    },
+    SetCallVolume {
+        db: i8,
+    },
+    SetTheme {
+        theme: Theme,
+    },
     StartPairing,
     StopPairing,
-    ConfirmPairing { accept: bool },
+    ConfirmPairing {
+        accept: bool,
+    },
+    /// The phone called for wireless Android Auto, by its address; none for
+    /// every paired phone.
+    SetDefaultPhone {
+        address: Option<String>,
+    },
+    /// Ends the wireless session, and calls no phone until ConnectPhone.
+    DisconnectPhone,
+    ConnectPhone,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

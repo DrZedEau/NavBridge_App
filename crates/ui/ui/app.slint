@@ -660,39 +660,44 @@ export component AppWindow inherits Window {
                     : self.chosen ? Palette.accent : Palette.background;
                 border-width: self.open ? 2px : 1px;
                 border-color: self.chosen ? Palette.accent : Palette.border;
-                Text {
-                    x: 8px; width: parent.width - 16px; height: parent.height;
-                    text: row.label;
-                    color: line.ink;
-                    font-size: 13px;
-                    vertical-alignment: center;
-                    wrap: no-wrap; overflow: elide;
-                }
+                // The label, then the value on the right, cut short where a
+                // long one, such as a phone's name, would reach the label.
                 HorizontalLayout {
-                    x: parent.width / 2; width: parent.width / 2 - 8px; height: parent.height;
-                    alignment: end;
-                    spacing: 5px;
-                    if line.open: Text {
-                        text: "‹";
-                        color: line.ink; font-size: 13px; font-weight: 700;
+                    padding-left: 8px; padding-right: 8px;
+                    spacing: 8px;
+                    Text {
+                        text: row.label;
+                        color: line.ink;
+                        font-size: 13px;
                         vertical-alignment: center;
                     }
-                    if row.toggle: VerticalLayout {
-                        alignment: center;
-                        Switch {
-                            on: row.on;
-                            inverse: line.chosen && !line.open;
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: 5px;
+                        if line.open: Text {
+                            text: "‹";
+                            color: line.ink; font-size: 13px; font-weight: 700;
+                            vertical-alignment: center;
                         }
-                    }
-                    if !row.toggle: Text {
-                        text: row.value;
-                        color: line.ink; font-size: 13px; font-weight: 700;
-                        vertical-alignment: center;
-                    }
-                    if line.open: Text {
-                        text: "›";
-                        color: line.ink; font-size: 13px; font-weight: 700;
-                        vertical-alignment: center;
+                        if row.toggle: VerticalLayout {
+                            alignment: center;
+                            Switch {
+                                on: row.on;
+                                inverse: line.chosen && !line.open;
+                            }
+                        }
+                        if !row.toggle: Text {
+                            text: row.value;
+                            color: line.ink; font-size: 13px; font-weight: 700;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        if line.open: Text {
+                            text: "›";
+                            color: line.ink; font-size: 13px; font-weight: 700;
+                            vertical-alignment: center;
+                        }
                     }
                 }
                 area := TouchArea {

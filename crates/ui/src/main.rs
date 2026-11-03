@@ -48,6 +48,10 @@ const DPI_CHOICES: [u32; 2] = [160, 140];
 enum Setting {
     /// Wireless Android Auto: the hotspot, and Bluetooth for phones.
     Hotspot,
+    /// The one paired phone called for wireless Android Auto, or any.
+    DefaultPhone,
+    /// Ends the wireless session; then, Connect phone calls phones again.
+    Disconnect,
     /// The UI's colours.
     Theme,
     Dpi,
@@ -58,8 +62,10 @@ enum Setting {
     CallVolume,
     Microphone,
 }
-const SETTINGS: [Setting; 7] = [
+const SETTINGS: [Setting; 9] = [
     Setting::Hotspot,
+    Setting::DefaultPhone,
+    Setting::Disconnect,
     Setting::Theme,
     Setting::Dpi,
     Setting::Codec,
@@ -557,9 +563,10 @@ fn answer_pairing(state: &mut UiState, accept: bool, commands: &Commands) {
     }
 }
 
-/// A Settings row tapped, its place in `SETTINGS`: the hotspot, the theme, the
-/// DPI and the codec change at once; a level opens, then its value's halves
-/// (`half` -1 and 1) step it down and up, and a tap on its label closes it.
+/// A Settings row tapped, its place in `SETTINGS`: the hotspot, the default
+/// phone, the theme, the DPI and the codec change at once, and Disconnect acts;
+/// a level opens, then its value's halves (`half` -1 and 1) step it down and
+/// up, and a tap on its label closes it.
 fn tap_setting(state: &mut UiState, index: usize, half: i32, commands: &Commands) {
     if state.screen != Screen::Settings || pairing_shown(state) {
         return;
@@ -578,9 +585,12 @@ fn tap_setting(state: &mut UiState, index: usize, half: i32, commands: &Commands
         return;
     }
     match SETTINGS[index] {
-        Setting::Hotspot | Setting::Dpi | Setting::Codec | Setting::Theme => {
-            change_setting(state, true, commands)
-        }
+        Setting::Hotspot
+        | Setting::DefaultPhone
+        | Setting::Disconnect
+        | Setting::Dpi
+        | Setting::Codec
+        | Setting::Theme => change_setting(state, true, commands),
         Setting::Volume | Setting::CallVolume | Setting::Microphone => {
             state.settings_editing = true
         }
@@ -710,7 +720,7 @@ fn handle_action(
         },
         // Left/Right choose a row and Enter opens it; then Left/Right change
         // its value and Enter or Back close it again. Enter flips the hotspot's
-        // switch at once.
+        // switch at once, and disconnects or connects the phone.
         Screen::Settings => {
             let rows = SETTINGS.len();
             let index = settings_index(state);
@@ -722,7 +732,10 @@ fn handle_action(
                     state.settings_index = (index + 1) % rows
                 }
                 (false, KeyAction::Select) if state.core_connected => {
-                    if selected_setting(state) == Setting::Hotspot {
+                    if matches!(
+                        selected_setting(state),
+                        Setting::Hotspot | Setting::Disconnect
+                    ) {
                         change_setting(state, true, commands)
                     } else {
                         state.settings_editing = true
@@ -896,14 +909,20 @@ fn pair_option(state: &UiState) -> bool {
 }
 
 /// The Phone page's message until a phone connects. With the hotspot on,
-/// paired phones are called, except while pairing is open: then, how to pair.
+/// paired phones are called, or the default one, except while pairing is open:
+/// then, how to pair; and none once Settings disconnected the phone.
 fn phone_message(state: &UiState) -> String {
     let bluetooth = &state.snapshot.bluetooth;
     if !pair_option(state) {
         return "Waiting for phone".into();
     }
+    if bluetooth.paused && !bluetooth.pairing {
+        return "Disconnected\nConnect in Settings calls the phone again".into();
+    }
     if !bluetooth.pairing {
-        return "Waiting for paired phone".into();
+        return default_phone(state).map_or("Waiting for paired phone".into(), |name| {
+            format!("Waiting for {name}")
+        });
     }
     let name = if bluetooth.name.is_empty() {
         "NavBridge"
@@ -953,6 +972,12 @@ fn selected_setting(state: &UiState) -> Setting {
     SETTINGS[settings_index(state)]
 }
 
+/// A row's place in `SETTINGS`, as taps name it.
+#[cfg(test)]
+fn place(row: Setting) -> usize {
+    SETTINGS.iter().position(|&setting| setting == row).unwrap()
+}
+
 /// Settings' sections in order, each with its rows' places in `SETTINGS`.
 fn settings_sections() -> Vec<(&'static str, std::ops::Range<usize>)> {
     let mut sections: Vec<(&'static str, std::ops::Range<usize>)> = Vec::new();
@@ -967,7 +992,8 @@ fn settings_sections() -> Vec<(&'static str, std::ops::Range<usize>)> {
 
 /// Changes the open row's value, up or down: the hotspot, the DPI and the
 /// video codec switch, the audio codec's levels move by 1%, the call volume by
-/// 1 dB, and the theme steps to the next or previous one.
+/// 1 dB, the theme and the default phone step to the next or previous one, and
+/// Disconnect ends the wireless session, or once ended calls phones again.
 fn change_setting(
     state: &mut UiState,
     up: bool,
@@ -985,6 +1011,32 @@ fn change_setting(
             let enabled = !snapshot.wireless.enabled;
             let _ = commands.send(ClientCommand::SetWireless { enabled });
             snapshot.wireless.enabled = enabled;
+        }
+        // Any phone, then each paired one; past either end, round again.
+        Setting::DefaultPhone => {
+            let bluetooth = &mut snapshot.bluetooth;
+            let choices: Vec<Option<String>> = std::iter::once(None)
+                .chain(bluetooth.phones.iter().map(|p| Some(p.address.clone())))
+                .collect();
+            let i = choices
+                .iter()
+                .position(|c| *c == bluetooth.default_phone)
+                .unwrap_or(0);
+            let n = choices.len();
+            let address = choices[if up { i + 1 } else { i + n - 1 } % n].clone();
+            let _ = commands.send(ClientCommand::SetDefaultPhone {
+                address: address.clone(),
+            });
+            bluetooth.default_phone = address;
+        }
+        Setting::Disconnect => {
+            if snapshot.bluetooth.paused {
+                let _ = commands.send(ClientCommand::ConnectPhone);
+                snapshot.bluetooth.paused = false;
+            } else if snapshot.projection.wireless {
+                let _ = commands.send(ClientCommand::DisconnectPhone);
+                snapshot.bluetooth.paused = true;
+            }
         }
         Setting::Dpi => {
             let dpi = match snapshot.projection.dpi {
@@ -1083,11 +1135,22 @@ fn repeats(state: &UiState, action: KeyAction) -> bool {
 /// The section a row is in.
 fn section(row: Setting) -> &'static str {
     match row {
-        Setting::Hotspot => "WIRELESS",
+        Setting::Hotspot | Setting::DefaultPhone | Setting::Disconnect => "WIRELESS",
         Setting::Theme => "UI",
         Setting::Dpi | Setting::Codec => "VIDEO",
         Setting::Volume | Setting::CallVolume | Setting::Microphone => "AUDIO",
     }
+}
+
+/// The default phone's name, while it is paired; none for any phone.
+fn default_phone(state: &UiState) -> Option<&str> {
+    let bluetooth = &state.snapshot.bluetooth;
+    let address = bluetooth.default_phone.as_deref()?;
+    bluetooth
+        .phones
+        .iter()
+        .find(|phone| phone.address == address)
+        .map(|phone| phone.name.as_str())
 }
 
 /// A row's label and value; the hotspot's switch shows its value instead.
@@ -1100,6 +1163,25 @@ fn setting_text(state: &UiState, row: Setting) -> (&'static str, String) {
     };
     match row {
         Setting::Hotspot => ("Hotspot", String::new()),
+        Setting::DefaultPhone => (
+            "Default phone",
+            default_phone(state).unwrap_or("Any").into(),
+        ),
+        // A wireless session's phone, to disconnect; once disconnected, the
+        // phones that Connect calls.
+        Setting::Disconnect if snapshot.bluetooth.paused => {
+            ("Connect", default_phone(state).unwrap_or("Any").into())
+        }
+        Setting::Disconnect => (
+            "Disconnect",
+            if !snapshot.projection.wireless {
+                "n/a".into()
+            } else if snapshot.projection.phone_name.is_empty() {
+                "Phone".into()
+            } else {
+                snapshot.projection.phone_name.clone()
+            },
+        ),
         Setting::Dpi => ("DPI", number(snapshot.projection.dpi)),
         Setting::Codec => ("Codec", snapshot.projection.codec.name().into()),
         Setting::Volume => ("Speakers", percent(snapshot.system.audio.volume_percent)),
@@ -1678,7 +1760,7 @@ mod navigation_tests {
         };
         // Left/Right only move between the rows, and wrap.
         press(&mut state, KeyAction::Right, false);
-        assert_eq!(selected_setting(&state), Setting::Theme);
+        assert_eq!(selected_setting(&state), Setting::DefaultPhone);
         press(&mut state, KeyAction::Left, false);
         press(&mut state, KeyAction::Left, false);
         assert_eq!(selected_setting(&state), Setting::Microphone);
@@ -1697,7 +1779,7 @@ mod navigation_tests {
         assert!(rx.try_recv().is_err(), "a held key switched it twice");
         // Left/Right still move on to the next row.
         press(&mut state, KeyAction::Right, false);
-        assert_eq!(selected_setting(&state), Setting::Theme);
+        assert_eq!(selected_setting(&state), Setting::DefaultPhone);
         assert!(rx.try_recv().is_err());
         press(&mut state, KeyAction::Left, false);
         // A phone on USB does not stop it; a missing core does.
@@ -1743,9 +1825,8 @@ mod navigation_tests {
         let press = |state: &mut UiState, action, repeat| {
             handle_key_event(state, action, true, repeat, &tx);
         };
-        // The DPI, below the theme, switches between 160 and 140.
-        press(&mut state, KeyAction::Right, false);
-        press(&mut state, KeyAction::Right, false);
+        // The DPI switches between 160 and 140.
+        state.settings_index = place(Setting::Dpi);
         press(&mut state, KeyAction::Select, false);
         press(&mut state, KeyAction::Right, false);
         press(&mut state, KeyAction::Left, false);
@@ -1972,9 +2053,9 @@ mod navigation_tests {
         state.snapshot.projection.dpi = 160;
         state.snapshot.system.audio.volume_percent = Some(50);
         // The hotspot, the DPI and the codec change with one tap.
-        tap_setting(&mut state, 0, 0, &tx);
-        tap_setting(&mut state, 2, 0, &tx);
-        tap_setting(&mut state, 3, 0, &tx);
+        tap_setting(&mut state, place(Setting::Hotspot), 0, &tx);
+        tap_setting(&mut state, place(Setting::Dpi), 0, &tx);
+        tap_setting(&mut state, place(Setting::Codec), 0, &tx);
         let sent: Vec<_> = rx.try_iter().collect();
         assert!(matches!(
             sent[..],
@@ -1989,12 +2070,13 @@ mod navigation_tests {
         assert_eq!(selected_setting(&state), Setting::Codec);
         assert!(!state.settings_editing);
         // A level opens; its value's halves step it; its label closes it.
-        tap_setting(&mut state, 4, 0, &tx);
+        let volume = place(Setting::Volume);
+        tap_setting(&mut state, volume, 0, &tx);
         assert!(state.settings_editing && selected_setting(&state) == Setting::Volume);
         assert!(rx.try_recv().is_err());
-        tap_setting(&mut state, 4, 1, &tx);
-        tap_setting(&mut state, 4, 1, &tx);
-        tap_setting(&mut state, 4, -1, &tx);
+        tap_setting(&mut state, volume, 1, &tx);
+        tap_setting(&mut state, volume, 1, &tx);
+        tap_setting(&mut state, volume, -1, &tx);
         for expected in [51, 52, 51] {
             assert!(matches!(
                 rx.try_recv(),
@@ -2002,15 +2084,97 @@ mod navigation_tests {
             ));
         }
         // Another row's halves do nothing while it is closed.
-        tap_setting(&mut state, 3, 1, &tx);
+        tap_setting(&mut state, place(Setting::Codec), 1, &tx);
         assert!(rx.try_recv().is_err());
-        tap_setting(&mut state, 4, 0, &tx);
+        tap_setting(&mut state, volume, 0, &tx);
         assert!(!state.settings_editing);
-        tap_setting(&mut state, 4, 1, &tx);
+        tap_setting(&mut state, volume, 1, &tx);
         assert!(rx.try_recv().is_err());
         // The microphone, the last row, is on screen with the others.
-        tap_setting(&mut state, 6, 0, &tx);
+        tap_setting(&mut state, place(Setting::Microphone), 0, &tx);
         assert!(state.settings_editing && selected_setting(&state) == Setting::Microphone);
+    }
+
+    #[test]
+    fn wireless_rows_choose_the_default_phone_and_disconnect_it() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = UiState {
+            screen: Screen::Settings,
+            core_connected: true,
+            ..UiState::default()
+        };
+        state.snapshot.wireless.enabled = true;
+        state.snapshot.bluetooth.phones = ["Pixel 10", "Pixel 8"]
+            .into_iter()
+            .zip(["64:9D:38:E1:B6:24", "A0:B1:C2:D3:E4:F5"])
+            .map(|(name, address)| navbridge_common::BluetoothPhone {
+                address: address.into(),
+                name: name.into(),
+            })
+            .collect();
+        let text = |state: &UiState, row| {
+            let (label, value) = setting_text(state, row);
+            format!("{label}: {value}")
+        };
+        // Any phone at first; a tap steps to each paired phone, then round.
+        assert_eq!(text(&state, Setting::DefaultPhone), "Default phone: Any");
+        assert_eq!(phone_message(&state), "Waiting for paired phone");
+        let default = place(Setting::DefaultPhone);
+        tap_setting(&mut state, default, 0, &tx);
+        assert_eq!(
+            text(&state, Setting::DefaultPhone),
+            "Default phone: Pixel 10"
+        );
+        assert_eq!(phone_message(&state), "Waiting for Pixel 10");
+        tap_setting(&mut state, default, 0, &tx);
+        tap_setting(&mut state, default, 0, &tx);
+        // Enter opens it, and Left steps back, from Any round to the last.
+        let press = |state: &mut UiState, action| handle_key_event(state, action, true, false, &tx);
+        press(&mut state, KeyAction::Select);
+        assert!(state.settings_editing);
+        press(&mut state, KeyAction::Left);
+        press(&mut state, KeyAction::Select);
+        let chosen: Vec<_> = rx
+            .try_iter()
+            .map(|command| match command {
+                ClientCommand::SetDefaultPhone { address } => address,
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        let (pixel_10, pixel_8) = (
+            Some("64:9D:38:E1:B6:24".to_string()),
+            Some("A0:B1:C2:D3:E4:F5".to_string()),
+        );
+        assert_eq!(chosen, [pixel_10, pixel_8.clone(), None, pixel_8]);
+        // Without a wireless session, Disconnect has nothing to end.
+        let disconnect = place(Setting::Disconnect);
+        assert_eq!(text(&state, Setting::Disconnect), "Disconnect: n/a");
+        tap_setting(&mut state, disconnect, 0, &tx);
+        assert!(rx.try_recv().is_err());
+        // With one, Enter ends it at once, without opening the row...
+        state.snapshot.projection.wireless = true;
+        state.snapshot.projection.phone_name = "Pixel 10".into();
+        assert_eq!(text(&state, Setting::Disconnect), "Disconnect: Pixel 10");
+        state.settings_index = disconnect;
+        press(&mut state, KeyAction::Select);
+        assert!(!state.settings_editing);
+        assert!(matches!(rx.try_recv(), Ok(ClientCommand::DisconnectPhone)));
+        // ...and then the row calls the default phone again, as a tap does.
+        state.snapshot.projection.wireless = false;
+        assert_eq!(text(&state, Setting::Disconnect), "Connect: Pixel 8");
+        assert_eq!(
+            phone_message(&state),
+            "Disconnected\nConnect in Settings calls the phone again"
+        );
+        tap_setting(&mut state, disconnect, 0, &tx);
+        assert!(matches!(rx.try_recv(), Ok(ClientCommand::ConnectPhone)));
+        assert_eq!(text(&state, Setting::Disconnect), "Disconnect: n/a");
+        // Without the core, neither row does anything.
+        state.core_connected = false;
+        tap_setting(&mut state, default, 0, &tx);
+        state.snapshot.bluetooth.paused = true;
+        tap_setting(&mut state, disconnect, 0, &tx);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
@@ -2023,7 +2187,7 @@ mod navigation_tests {
         assert_eq!(
             sections,
             [
-                ("WIRELESS", vec![Hotspot]),
+                ("WIRELESS", vec![Hotspot, DefaultPhone, Disconnect]),
                 ("UI", vec![Theme]),
                 ("VIDEO", vec![Dpi, Codec]),
                 ("AUDIO", vec![Volume, CallVolume, Microphone]),
@@ -2076,7 +2240,7 @@ mod navigation_tests {
         // In its own section, after the hotspot's.
         assert_eq!(section(Setting::Theme), "UI");
         assert_eq!(setting_text(&state, Setting::Theme).1, "Amber");
-        tap_setting(&mut state, 1, 0, &tx);
+        tap_setting(&mut state, place(Setting::Theme), 0, &tx);
         assert_eq!(selected_setting(&state), Setting::Theme);
         assert!(!state.settings_editing, "a tap changes it at once");
         // Enter opens it; then Right steps on and Left back, round the ends.
@@ -2472,6 +2636,18 @@ mod preview {
         snapshot.system.audio.volume_percent = Some(75);
         snapshot.system.audio.call_volume_db = Some(6);
         snapshot.system.audio.microphone_percent = Some(48);
+        // Two paired phones; the first, in a wireless session.
+        snapshot.bluetooth.phones = vec![
+            navbridge_common::BluetoothPhone {
+                address: "64:9D:38:E1:B6:24".into(),
+                name: "Pixel 10".into(),
+            },
+            navbridge_common::BluetoothPhone {
+                address: "A0:B1:C2:D3:E4:F5".into(),
+                name: "Galaxy S25 Ultra".into(),
+            },
+        ];
+        snapshot.projection.phone_name = "Pixel 10".into();
         state.video = Some(VideoSettings {
             width: 800,
             height: 480,
@@ -2507,6 +2683,7 @@ mod preview {
             ("system-gnss", Screen::System, 2),
             ("system-ibus", Screen::System, 3),
             ("settings-theme", Screen::Settings, 0),
+            ("settings-phone", Screen::Settings, 0),
             ("menu-blue", Screen::Menu, 0),
             ("settings-green", Screen::Settings, 0),
             ("menu-green", Screen::Menu, 0),
@@ -2516,15 +2693,27 @@ mod preview {
             state.screen = screen;
             state.system_page = page;
             // The speakers' volume, opened to change it.
-            state.settings_editing = name == "settings-open";
-            state.settings_index = match name {
-                "settings-open" => 4,
-                "settings-dpi" => 2,
-                "settings-theme" => 1,
+            state.settings_editing = matches!(name, "settings-open" | "settings-phone");
+            state.settings_index = place(match name {
+                "settings-open" => Setting::Volume,
+                "settings-dpi" => Setting::Dpi,
+                "settings-theme" => Setting::Theme,
+                // The default phone, opened, with a long name; and Connect,
+                // once Disconnect has ended the session.
+                "settings-phone" => Setting::DefaultPhone,
                 // The last row, in the last box.
-                "settings-green" => 6,
-                _ => 0,
-            };
+                "settings-green" => Setting::Microphone,
+                _ => Setting::Hotspot,
+            });
+            let bluetooth = &mut state.snapshot.bluetooth;
+            bluetooth.default_phone = Some(if name == "settings-phone" {
+                "A0:B1:C2:D3:E4:F5".into()
+            } else {
+                "64:9D:38:E1:B6:24".into()
+            });
+            bluetooth.paused = name == "settings-phone";
+            // A wireless session, where the hotspot is on.
+            state.snapshot.projection.wireless = !matches!(name, "settings-dpi" | "settings-phone");
             // The other themes.
             state.snapshot.theme = match name {
                 "settings-theme" | "menu-blue" => navbridge_common::Theme::Blue,
@@ -2574,12 +2763,20 @@ mod preview {
         state.settings_editing = false;
         render_state(&ui, &state);
         tap(40.0, 15.0);
-        // A row in each box: the hotspot, the theme, the codec, the microphone.
-        for (x, y) in [(100.0, 60.0), (250.0, 60.0), (100.0, 190.0), (250.0, 215.0)] {
+        // Every row of the first box, and a row in each other: the theme,
+        // the codec, the microphone.
+        for (x, y) in [
+            (100.0, 60.0),
+            (100.0, 89.0),
+            (100.0, 113.0),
+            (250.0, 60.0),
+            (100.0, 190.0),
+            (250.0, 215.0),
+        ] {
             tap(x, y);
         }
         // The speakers' volume, open: its label, its value's left and right.
-        state.settings_index = 4;
+        state.settings_index = place(Setting::Volume);
         state.settings_editing = true;
         render_state(&ui, &state);
         for x in [230.0, 320.0, 370.0] {
@@ -2588,8 +2785,8 @@ mod preview {
         assert_eq!(
             *taps.borrow(),
             [
-                "tile 1", "back", "row 0 0", "row 1 0", "row 3 0", "row 6 0", "row 4 0",
-                "row 4 -1", "row 4 1"
+                "tile 1", "back", "row 0 0", "row 1 0", "row 2 0", "row 3 0", "row 5 0", "row 8 0",
+                "row 6 0", "row 6 -1", "row 6 1"
             ]
         );
         state.settings_editing = false;
