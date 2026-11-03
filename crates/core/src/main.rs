@@ -174,11 +174,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for event in projection.take_events() {
             server.broadcast_event(ServerEvent::ProjectionEvent { event });
         }
-        for input in ibus.take_inputs() {
+        let heard = ibus.take();
+        for input in heard.inputs {
             server.broadcast_event(ServerEvent::Input {
                 action: input.action,
                 pressed: input.pressed,
             });
+        }
+        // A changed reading shows at once, not at the next snapshot.
+        if heard.changed {
+            next_snapshot = Instant::now();
         }
 
         if Instant::now() >= next_snapshot {
@@ -225,7 +230,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // Sleep until a client, the phone, a stop request or the next snapshot
         // needs attention, so a command is forwarded the moment it arrives.
         server.wait(
-            &[projection.event_fd(), ibus.input_fd(), stop.as_fd()],
+            &[projection.event_fd(), ibus.event_fd(), stop.as_fd()],
             next_snapshot.saturating_duration_since(Instant::now()),
         );
     }

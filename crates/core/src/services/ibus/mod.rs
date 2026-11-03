@@ -48,15 +48,31 @@ pub struct ButtonInput {
     pub pressed: bool,
 }
 
-/// The car's buttons, for the UI.
+/// What the I-Bus thread passes to the main loop.
+enum Event {
+    Input(ButtonInput),
+    /// A reading changed.
+    Changed,
+}
+
+/// What the main loop gets from the bus since it last looked.
+#[derive(Debug, Default, PartialEq)]
+pub struct Heard {
+    /// The car's buttons, for the UI.
+    pub inputs: Vec<ButtonInput>,
+    /// A reading changed: the UI should see it now, not at the next snapshot.
+    pub changed: bool,
+}
+
+/// The car's buttons, and the channel to the main loop.
 struct Buttons {
     bindings: BTreeMap<Button, InputAction>,
-    inputs: EventSender<ButtonInput>,
+    events: EventSender<Event>,
 }
 
 pub struct IbusService {
     state: Arc<Mutex<State>>,
-    inputs: EventReceiver<ButtonInput>,
+    events: EventReceiver<Event>,
     /// How long after the ignition goes off the Pi shuts down, if it does.
     shutdown_delay: Option<Duration>,
     stop: Arc<AtomicBool>,
@@ -67,7 +83,7 @@ impl IbusService {
     pub fn start(config: IbusConfig) -> Self {
         let state = Arc::new(Mutex::new(State::default()));
         let stop = Arc::new(AtomicBool::new(false));
-        let (sender, inputs) = events::channel().expect("create the I-Bus input channel");
+        let (sender, events) = events::channel().expect("create the I-Bus event channel");
         let shutdown_delay = config
             .shutdown
             .then(|| Duration::from_secs(config.shutdown_delay_s));
@@ -78,7 +94,7 @@ impl IbusService {
             let device = PathBuf::from(config.device);
             let buttons = Buttons {
                 bindings: config.buttons,
-                inputs: sender,
+                events: sender,
             };
             let worker = thread::Builder::new()
                 .name("ibus".into())
@@ -91,7 +107,7 @@ impl IbusService {
         };
         Self {
             state,
-            inputs,
+            events,
             shutdown_delay,
             stop,
             worker,
@@ -115,14 +131,21 @@ impl IbusService {
             .is_some_and(|at| at.elapsed() >= delay)
     }
 
-    /// The car's buttons since the last call, for the UI.
-    pub fn take_inputs(&self) -> Vec<ButtonInput> {
-        self.inputs.take()
+    /// The car's buttons, and whether a reading changed, since the last call.
+    pub fn take(&self) -> Heard {
+        let mut heard = Heard::default();
+        for event in self.events.take() {
+            match event {
+                Event::Input(input) => heard.inputs.push(input),
+                Event::Changed => heard.changed = true,
+            }
+        }
+        heard
     }
 
-    /// Readable whenever `take_inputs` has something to return.
-    pub fn input_fd(&self) -> BorrowedFd<'_> {
-        self.inputs.fd()
+    /// Readable whenever `take` has something to return.
+    pub fn event_fd(&self) -> BorrowedFd<'_> {
+        self.events.fd()
     }
 }
 
@@ -227,7 +250,7 @@ fn received(
             if let Some(press) = press {
                 debug!(?press, "I-Bus button");
                 for input in inputs(press, &buttons.bindings) {
-                    let _ = buttons.inputs.send(input);
+                    let _ = buttons.events.send(Event::Input(input));
                 }
             }
             let kind = (frame.source, frame.destination, frame.message[0]);
@@ -242,6 +265,7 @@ fn received(
             }
             if state.lock().unwrap().frame(reading, Instant::now()) {
                 debug!(?reading, "I-Bus reading");
+                let _ = buttons.events.send(Event::Changed);
             }
         }
         Ok(None) => {}
@@ -468,7 +492,7 @@ mod tests {
         let mut taken = Vec::new();
         while taken.len() < count {
             assert!(Instant::now() < deadline, "only {taken:?}");
-            taken.extend(ibus.take_inputs());
+            taken.extend(ibus.take().inputs);
             thread::sleep(Duration::from_millis(20));
         }
         taken
@@ -690,10 +714,15 @@ mod tests {
         assert_eq!(v.ignition, Some(Ignition::On));
         assert_eq!((v.speed_kmh, v.rpm), (Some(120), Some(3000)));
         assert_eq!((v.outside_c, v.coolant_c), (Some(-10), Some(90)));
+        // New readings call for a snapshot at once; the same ones again do not.
+        assert!(ibus.take().changed);
+        board.write_all(b"IBUS1 RX 5 8005BF183C1E00\r\n").unwrap();
+        wait_for(&ibus, |v| v.frames == 4);
+        assert_eq!(ibus.take(), Heard::default());
         // Unplugged: what the car said no longer holds.
         drop(board);
         wait_for(&ibus, |v| v.status != "Receiving" && v.ignition.is_none());
-        assert_eq!(ibus.snapshot().frames, 3);
+        assert_eq!(ibus.snapshot().frames, 4);
     }
 
     #[test]

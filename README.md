@@ -369,13 +369,18 @@ From the instrument cluster's broadcasts, System page 4 shows:
 | Ignition | `11` | Off, Position 1, On, Starting |
 | Odometer | `17` | km, once something on the bus asks the cluster for it |
 
+A changed reading shows at once. How often one changes is up to the cluster:
+it sends road and engine speed every 2 seconds, and NavBridge cannot ask for
+them sooner, as it never sends on the bus.
+
 Speed and engine speed go back to n/a after 10 seconds without an update, or
 when the ignition is off; everything does after 10 seconds without any I-Bus
 traffic, as the car is then asleep.
 
 Android Auto gets the speed too: a phone connecting while the I-Bus is read, or
 a GNSS receiver is connected, is offered a speed sensor. It gets the GNSS fixes'
-speed, and the I-Bus's readings (each snapshot, twice a second) while no fix
+speed, and the I-Bus's readings (each snapshot: twice a second, and at each
+change) while no fix
 under 2 seconds old gives one, as without a fix or a receiver. The core logs
 `Android Auto uses the car's speed` when the phone takes it, then `Android
 Auto's speed comes from GNSS fixes` or `from the I-Bus` at each change.

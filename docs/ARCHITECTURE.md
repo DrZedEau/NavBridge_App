@@ -61,7 +61,8 @@ temporary directory in tmpfs instead.
   touching the others' keys. Hiding and resuming move the phone's video
   focus, so the phone stops sending video while the NavBridge menu is shown.
 - Core to UI: `hello` (geometry check, and the DPI requested from the phone),
-  `snapshot` (every 500 ms or on request), `projection_event` (phone connected
+  `snapshot` (every 500 ms, on request, and when an I-Bus reading changes),
+  `projection_event` (phone connected
   or disconnected, streaming started, phone asked for the NavBridge menu) and
   `input` (a car button, for the UI to act on as on its key).
 
@@ -223,7 +224,9 @@ bootloader. It waits for bytes in `poll()`, at most 500 ms so that it can stop,
 and reopens the port every 2 seconds while it is missing. Each reading keeps
 when it was heard: speeds expire after 10 seconds, and every reading once the
 bus has been quiet for 10 seconds or the board is gone. The `vehicle` part of
-the snapshot carries the readings, the link's status and its frame counts.
+the snapshot carries the readings, the link's status and its frame counts. A
+changed reading wakes the main loop, which sends a snapshot at once rather than
+at the next 500 ms one.
 
 The service also decodes the board monitor's buttons (`48`, its soft keys
 `47` and knob `49`, from `F0`) and the steering wheel's (`3B` from `50`),
