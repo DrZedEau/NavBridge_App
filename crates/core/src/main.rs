@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use config::CoreConfig;
 use ipc::IpcServer;
 use navbridge_common::{video_frame_path, AppSnapshot, ClientCommand, ServerEvent};
-use services::android_auto::ProjectionService;
+use services::android_auto::{CarBluetooth, ProjectionService};
 use services::codec::Gain;
 use services::system::SystemService;
 use settings::Settings;
@@ -56,6 +56,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         config.audio.clone(),
         video_frame_path(&config.socket_path),
         settings.clone(),
+        // Asked of BlueZ directly, as the Bluetooth service registers there.
+        CarBluetooth {
+            hands_free_address: services::bluetooth::hands_free_address,
+            paired: services::bluetooth::paired,
+        },
     )?;
     // While a receiver is connected, the phone gets the car's position.
     let gnss = services::gnss::GnssService::start(projection.gnss_input());

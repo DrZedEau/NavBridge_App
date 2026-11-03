@@ -13,7 +13,7 @@ pub mod wireless;
 use crate::config::{AndroidAutoConfig, AudioConfig, DecoderChoice};
 use crate::services::{
     audio::AudioPipeline,
-    bluetooth, events,
+    events,
     gnss::{Fix, GnssUpdate},
     media::{FrameSize, PushResult, VideoPipeline},
     wifi::HOTSPOT_IP,
@@ -93,6 +93,24 @@ struct Inbox {
 /// Projection events for the main loop.
 type EventSender = events::EventSender<ProjectionEvent>;
 type EventReceiver = events::EventReceiver<ProjectionEvent>;
+/// What the service asks of the car's Bluetooth. The core's main loop gives
+/// it, so that this service does not depend on the Bluetooth one, which uses
+/// this one's wireless handshake.
+#[derive(Clone, Copy)]
+pub struct CarBluetooth {
+    /// The car's address while something can take calls on it.
+    pub hands_free_address: fn() -> Option<String>,
+    /// Whether the car has paired with the phone at this address.
+    pub paired: fn(&str) -> bool,
+}
+/// What the session thread runs with, fixed for the core's run.
+struct Setup {
+    config: AndroidAutoConfig,
+    audio: AudioConfig,
+    frame_path: PathBuf,
+    frame_size: FrameSize,
+    bluetooth: CarBluetooth,
+}
 pub struct ProjectionService {
     state: Arc<RwLock<State>>,
     settings: Arc<Settings>,
@@ -111,6 +129,7 @@ impl ProjectionService {
         audio: AudioConfig,
         frame_path: PathBuf,
         settings: Arc<Settings>,
+        bluetooth: CarBluetooth,
     ) -> io::Result<Self> {
         let saved = settings.load();
         let state = Arc::new(RwLock::new(State {
@@ -142,8 +161,14 @@ impl ProjectionService {
         let frame_size = FrameSize::default();
         let video_size = frame_size.clone();
         let worker = thread::spawn(move || {
-            let frame = (frame_path, video_size);
-            if let Err(e) = runner(config, audio, frame, s.clone(), inbox, event_tx, end) {
+            let setup = Setup {
+                config,
+                audio,
+                frame_path,
+                frame_size: video_size,
+                bluetooth,
+            };
+            if let Err(e) = runner(setup, s.clone(), inbox, event_tx, end) {
                 error!(%e, "Android Auto stopped");
                 let mut state = s.write().unwrap();
                 state.projection.phase = ProjectionPhase::Error;
@@ -488,14 +513,19 @@ fn listen_before_address(address: SocketAddr) -> io::Result<TcpListener> {
     }
 }
 fn runner(
-    config: AndroidAutoConfig,
-    audio: AudioConfig,
-    (frame_path, frame_size): (PathBuf, FrameSize),
+    setup: Setup,
     state: Arc<RwLock<State>>,
     inbox: Inbox,
     events: EventSender,
     stop: Arc<AtomicBool>,
 ) -> Result<(), String> {
+    let Setup {
+        config,
+        audio,
+        frame_path,
+        frame_size,
+        bluetooth,
+    } = setup;
     let context = rusb::Context::new().map_err(|e| e.to_string())?;
     // A phone still in accessory mode was left by an earlier run that stopped
     // or crashed mid-session. Reset it so its first session here starts fresh.
@@ -596,7 +626,7 @@ fn runner(
                 config
             };
             // Asked of BlueZ at each phone, as bluez-alsa may have started.
-            let hands_free = bluetooth::hands_free_address();
+            let hands_free = (bluetooth.hands_free_address)();
             if let Some(address) = &hands_free {
                 info!(%address, "Android Auto is offered the car's Bluetooth for calls");
             }
@@ -693,7 +723,7 @@ fn runner(
                             let _ = events.send(ProjectionEvent::RequestHostUi);
                         }
                         Action::BluetoothPairing(phone) => {
-                            let paired = bluetooth::paired(&phone);
+                            let paired = (bluetooth.paired)(&phone);
                             info!(%phone, paired, "the phone asks whether the car's Bluetooth knows it");
                             session.bluetooth_paired(paired)?;
                         }
