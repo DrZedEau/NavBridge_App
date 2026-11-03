@@ -2,7 +2,7 @@
 
 use crate::input::KeyAction;
 use crate::render::pair_option;
-use crate::settings::{change_setting, selected_setting, settings_index, Setting, SETTINGS};
+use crate::settings_page::{change_setting, selected_setting, settings_index, Setting, SETTINGS};
 use crate::state::{Commands, Screen, UiState, MENU_ITEMS, SYSTEM_PAGES};
 use navbridge_common::{ClientCommand, NavigationKey, TouchKind};
 

@@ -2,7 +2,7 @@
 
 use crate::actions::reversing;
 use crate::projection::{read_frame_header, refresh_projection};
-use crate::settings::{
+use crate::settings_page::{
     default_phone, setting_text, settings_index, settings_sections, Setting, SETTINGS,
 };
 use crate::state::{Screen, UiState, VideoSettings, USB_ROWS};

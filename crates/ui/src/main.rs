@@ -5,7 +5,7 @@ mod input;
 mod ipc;
 mod projection;
 mod render;
-mod settings;
+mod settings_page;
 mod state;
 #[cfg(test)]
 mod tests;

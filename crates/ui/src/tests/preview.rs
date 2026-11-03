@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::{render::*, settings::*, state::*, AppWindow};
+use crate::{render::*, settings_page::*, state::*, AppWindow};
 use navbridge_common::{StreamFormat, VehicleSnapshot, UI_HEIGHT, UI_WIDTH};
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Platform, WindowAdapter};

@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use crate::config::KeyboardConfig;
 use crate::input::{KeyAction, KeyMap};
-use crate::{actions::*, projection::*, render::*, settings::*, state::*, LedState};
+use crate::{actions::*, projection::*, render::*, settings_page::*, state::*, LedState};
 use navbridge_common::{AppSnapshot, ClientCommand, NavigationKey, TouchKind, VideoCodec};
 
 fn connected_projection() -> UiState {
