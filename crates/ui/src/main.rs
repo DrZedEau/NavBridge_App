@@ -66,12 +66,12 @@ const SETTINGS: [Setting; 9] = [
     Setting::Hotspot,
     Setting::DefaultPhone,
     Setting::Disconnect,
-    Setting::Theme,
-    Setting::Dpi,
-    Setting::Codec,
     Setting::Volume,
     Setting::CallVolume,
     Setting::Microphone,
+    Setting::Dpi,
+    Setting::Codec,
+    Setting::Theme,
 ];
 /// The themes Settings offers, in the order it steps through them.
 const THEMES: [navbridge_common::Theme; 3] = [
@@ -1136,9 +1136,9 @@ fn repeats(state: &UiState, action: KeyAction) -> bool {
 fn section(row: Setting) -> &'static str {
     match row {
         Setting::Hotspot | Setting::DefaultPhone | Setting::Disconnect => "WIRELESS",
-        Setting::Theme => "UI",
-        Setting::Dpi | Setting::Codec => "VIDEO",
         Setting::Volume | Setting::CallVolume | Setting::Microphone => "AUDIO",
+        Setting::Dpi | Setting::Codec => "VIDEO",
+        Setting::Theme => "UI",
     }
 }
 
@@ -1763,7 +1763,7 @@ mod navigation_tests {
         assert_eq!(selected_setting(&state), Setting::DefaultPhone);
         press(&mut state, KeyAction::Left, false);
         press(&mut state, KeyAction::Left, false);
-        assert_eq!(selected_setting(&state), Setting::Microphone);
+        assert_eq!(selected_setting(&state), Setting::Theme);
         press(&mut state, KeyAction::Right, false);
         assert_eq!(selected_setting(&state), Setting::Hotspot);
         assert!(rx.try_recv().is_err(), "choosing a row changed it");
@@ -1870,7 +1870,7 @@ mod navigation_tests {
         ));
         press(&mut state, KeyAction::Back, false);
         // Levels move in 1% steps; a held key repeats.
-        press(&mut state, KeyAction::Right, false);
+        state.settings_index = place(Setting::Volume);
         press(&mut state, KeyAction::Select, false);
         press(&mut state, KeyAction::Right, false);
         press(&mut state, KeyAction::Right, true);
@@ -2188,9 +2188,9 @@ mod navigation_tests {
             sections,
             [
                 ("WIRELESS", vec![Hotspot, DefaultPhone, Disconnect]),
-                ("UI", vec![Theme]),
-                ("VIDEO", vec![Dpi, Codec]),
                 ("AUDIO", vec![Volume, CallVolume, Microphone]),
+                ("VIDEO", vec![Dpi, Codec]),
+                ("UI", vec![Theme]),
             ]
         );
     }
@@ -2763,15 +2763,15 @@ mod preview {
         state.settings_editing = false;
         render_state(&ui, &state);
         tap(40.0, 15.0);
-        // Every row of the first box, and a row in each other: the theme,
-        // the codec, the microphone.
+        // Every row of the first box, and a row in each other: the
+        // microphone, the codec, the theme.
         for (x, y) in [
             (100.0, 60.0),
             (100.0, 89.0),
             (100.0, 113.0),
-            (250.0, 60.0),
+            (250.0, 113.0),
             (100.0, 190.0),
-            (250.0, 215.0),
+            (250.0, 167.0),
         ] {
             tap(x, y);
         }
@@ -2780,13 +2780,13 @@ mod preview {
         state.settings_editing = true;
         render_state(&ui, &state);
         for x in [230.0, 320.0, 370.0] {
-            tap(x, 167.0);
+            tap(x, 60.0);
         }
         assert_eq!(
             *taps.borrow(),
             [
-                "tile 1", "back", "row 0 0", "row 1 0", "row 2 0", "row 3 0", "row 5 0", "row 8 0",
-                "row 6 0", "row 6 -1", "row 6 1"
+                "tile 1", "back", "row 0 0", "row 1 0", "row 2 0", "row 5 0", "row 7 0", "row 8 0",
+                "row 3 0", "row 3 -1", "row 3 1"
             ]
         );
         state.settings_editing = false;
