@@ -21,7 +21,7 @@ use crate::services::{
 use crate::settings::Settings;
 use navbridge_common::{
     NavigationKey, PhoneAction, ProjectionEvent, ProjectionPhase, ProjectionSnapshot, TouchKind,
-    UsbSnapshot, VehicleSnapshot,
+    UsbSnapshot, VehicleSnapshot, VideoCodec,
 };
 use std::{
     io,
@@ -79,7 +79,7 @@ const SERVER_RETRY: Duration = Duration::from_secs(5);
 /// How often listening on the hotspot's address is tried again after failing,
 /// such as while another program holds the port.
 const LISTEN_RETRY: Duration = Duration::from_secs(2);
-const DECODER_STOPPED: &str = "the H.264 decoder stopped";
+const DECODER_STOPPED: &str = "the video decoder stopped";
 /// Work for the session thread. Commands, USB transfers and microphone blocks
 /// each signal `wake` once queued, so the thread sleeps on `woken` instead of
 /// polling, and a key press reaches the phone without waiting for a timer.
@@ -102,7 +102,8 @@ pub struct ProjectionService {
     worker: Option<JoinHandle<()>>,
 }
 impl ProjectionService {
-    /// The DPI chosen in Settings, kept in `settings`, replaces core.toml's. Decoded video goes to `frame_path`, for the UI.
+    /// The DPI and codec chosen in Settings, kept in `settings`, replace
+    /// core.toml's. Decoded video goes to `frame_path`, for the UI.
     pub fn start(
         config: AndroidAutoConfig,
         audio: AudioConfig,
@@ -113,6 +114,7 @@ impl ProjectionService {
         let state = Arc::new(RwLock::new(State {
             projection: ProjectionSnapshot {
                 dpi: saved.dpi.unwrap_or(config.dpi),
+                codec: saved.video_codec.unwrap_or(config.codec),
                 ..Default::default()
             },
             usb: Default::default(),
@@ -175,6 +177,12 @@ impl ProjectionService {
     pub fn set_dpi(&self, dpi: u32) {
         self.state.write().unwrap().projection.dpi = dpi;
         self.settings.update(|saved| saved.dpi = Some(dpi));
+    }
+    /// For the next phone that connects, as the DPI is.
+    pub fn set_codec(&self, codec: VideoCodec) {
+        self.state.write().unwrap().projection.codec = codec;
+        self.settings
+            .update(|saved| saved.video_codec = Some(codec));
     }
     /// The size the UI shows projection frames at: 400x240, or 800x480 for a
     /// UI drawn twice as large.
@@ -546,7 +554,7 @@ fn runner(
         }
         video.reset();
         audio.reset();
-        let (night, parked, gnss, speedometer, speed, dpi) = {
+        let (night, parked, gnss, speedometer, speed, dpi, codec) = {
             let mut s = state.write().unwrap();
             s.usb.selected = transport.usb().cloned();
             s.usb.error = None;
@@ -559,12 +567,24 @@ fn runner(
                 s.speedometer,
                 s.speed,
                 s.projection.dpi,
+                s.projection.codec,
             )
+        };
+        // Without FFmpeg's H.265 decoder, the phone is asked for H.264.
+        let codec = if video.decodes(codec) {
+            codec
+        } else {
+            warn!(
+                ?codec,
+                "FFmpeg cannot decode this codec; asking the phone for H.264"
+            );
+            VideoCodec::H264
         };
         let result = (|| -> Result<(), String> {
             let config = {
                 let mut config = config.clone();
                 config.dpi = dpi;
+                config.codec = codec;
                 config
             };
             // Asked of BlueZ at each phone, as bluez-alsa may have started.
@@ -626,8 +646,9 @@ fn runner(
                             s.projection.status = "Android Auto connected".into();
                             let _ = events.send(ProjectionEvent::PhoneConnected);
                         }
+                        Action::VideoCodec(codec) => video.set_codec(codec),
                         Action::Video(data) => {
-                            match video.push_h264(&data) {
+                            match video.push(&data) {
                                 PushResult::NeedKeyframe => {
                                     warn!(
                                         "video decoding fell behind; asking the phone for a keyframe"

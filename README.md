@@ -18,7 +18,7 @@ and odometer from its I-Bus, through the carrier board's ATmega32U4.
 
 - `navbridge-core`: Android Open Accessory USB discovery, GAL version exchange,
   TLS 1.2 peer verification, protobuf channel negotiation, keyboard input, night
-  sensor, audio/video focus, H.264 decoding, ALSA audio, GPSD, the I-Bus and
+  sensor, audio/video focus, H.264 and H.265 decoding, ALSA audio, GPSD, the I-Bus and
   system metrics.
 - `navbridge-ui`: Slint menu (amber, blue or green) with status lights and a clock, Settings,
   four System pages, keyboard and touch navigation and the projection view. Escape/Home returns to the menu and gives video focus
@@ -28,13 +28,14 @@ and odometer from its I-Bus, through the carrier board's ATmega32U4.
   Video uses a generation-aware frame file beside the socket
   (`/run/navbridge/video.rgba`, open only to the services' group) rather than
   JSON. See [architecture](docs/ARCHITECTURE.md).
-- Projection is H.264 at 800x480, averaged 2:1 (area scaling, with full
-  chroma) to the 400x240 panel. Every picture is decoded, but of those that queue up while decoding
+- Projection is H.264, or H.265 when chosen in Settings, at 800x480, averaged
+  2:1 (area scaling, with full chroma) to the 400x240 panel. Every picture is decoded, but of those that queue up while decoding
   lags, only the newest is scaled and shown.
   FFmpeg normalizes full/limited color range. The phone is asked for 60 fps;
   the DPI is configurable.
-  The Pi 4 / CM4's hardware decoder (`h264_v4l2m2m`) is used when present; the
-  Pi 5 / CM5 has none and decodes in software.
+  The Pi 4 / CM4's hardware H.264 decoder (`h264_v4l2m2m`) is used when
+  present; the Pi 5 / CM5 has none and decodes in software. H.265 decodes in
+  software.
 - A dedicated USB reader uses 16 KB transfers and a bounded queue. The session
   worker handles replies without interrupting reads. USB unplug/error clears
   decoder, playback and capture state; a new connection negotiates fresh TLS
@@ -110,6 +111,7 @@ snapshot_interval_ms = 500
 
 [android_auto]
 dpi = 160
+codec = "h264"
 decoder = "auto"
 left_hand_drive = true
 
@@ -122,6 +124,11 @@ enabled = true
 playback_device = 'plug:SLAVE="dmix:CARD=CODEC,DEV=0"'
 capture_device = "plughw:CARD=CODEC,DEV=0"
 ```
+
+`codec` is the video codec the phone is asked for: `"h264"`, which every phone
+encodes, or `"h265"`. A phone without H.265 stays on H.264, and video decodes
+either way; the core logs the codec the phone chose (`Android Auto video
+codec`). Settings' choice replaces core.toml's.
 
 `decoder = "auto"` tries the board's hardware H.264 decoder first and falls back
 to FFmpeg's software decoder when there is none, as on the Pi 5 / CM5; it also
@@ -141,7 +148,8 @@ every 5 seconds, start with `NAVBRIDGE_FRAME_STATS=1 ./scripts/run_kms.sh`.
 
 Restart after changing projection settings in core.toml. DPI changes logical
 UI density, not the video or physical display resolution; Settings switches it
-between 160 and 140, and that choice replaces core.toml's. Audio defaults use the stable
+between 160 and 140, and the codec between H.264 and H.265, and those choices
+replace core.toml's. Audio defaults use the stable
 ALSA card name `CODEC`: 48 kHz stereo music, 16 kHz mono speech/system streams
 and 16 kHz mono microphone. ALSA `plug` performs conversion and `dmix` mixes
 playback. HDMI card numbering does not affect selection. Acoustic echo
@@ -221,7 +229,7 @@ PC window works alongside the keyboard:
 - **Phone**: a tap switches Enable pairing. Android Auto's screen takes one
   finger's taps and drags, as the core declares an 800x480 touchscreen to the
   phone; Exit in Android Auto's launcher returns to the menu.
-- **Settings**: a tap switches Hotspot, Theme and DPI. A tap opens a volume row;
+- **Settings**: a tap switches Hotspot, Theme, DPI and Codec. A tap opens a volume row;
   then a tap on the left or right half of its value steps it (by 1%, or 1 dB
   for Call volume), repeating while held, and a tap on its label closes it.
 - **System**: a swipe turns the page its way; a tap turns it towards its side.
@@ -240,8 +248,8 @@ returns:
   the hotspot off, "Waiting for paired phone" with it on, or while pairing is
   open, the name to pair with and the time left.
 - **Settings**: the hotspot for wireless Android Auto, the UI's theme, the
-  projection's DPI, the codec's speaker volume and microphone gain, and the
-  call volume (see below).
+  projection's DPI and video codec, the audio codec's speaker volume and
+  microphone gain, and the call volume (see below).
 - **System**: the System pages.
 
 Lights are green when on and red when off. CORE: the UI is connected to the
@@ -262,11 +270,14 @@ at once, and Enter or Back close the row again.
 | Wireless | Hotspot | Switch, on / off | Wireless Android Auto (see below) |
 | UI | Theme | Amber / Blue / Green | The UI's colours, on black; at once |
 | Video | DPI | 160 / 140 | The phone gets it when it next connects |
+| | Codec | H.264 / H.265 | The phone is asked for it when it next connects |
 | Audio | Speakers volume | 0-100%, 1% steps | The codec's `Speaker` level; held keys repeat |
 | | Call volume | -12 to +18 dB, 1 dB steps | How much louder than Speakers volume calls play, 0 dB at first; held keys repeat |
 | | Microphone volume | 0-100%, 1% steps | The codec's `Mic` capture gain; held keys repeat |
 
-The DPI applies when a phone next connects. The codec has fewer steps than 1%
+The DPI and the codec apply when a phone next connects. A phone that cannot
+encode H.265 stays on H.264; System's Video box shows the decoder that runs
+(`h264` or `hevc`). The audio codec has fewer steps than 1%
 (`Speaker` 0-76, `Mic` 0-42), so a press does not always change what is heard.
 Call volume applies at once, during a call too (see Calls); it shows n/a while
 calls do not play in the car (`[audio] enabled = false`).
@@ -282,7 +293,7 @@ appears, as a power cut can lose ALSA's own copy.
    device gives it), in the order of their ports, hubs left out; Empty for the
    rest.
 2. Video: UI resolution, projection resolution (Android Auto; CarPlay is not in
-   this build) and the H.264 decoder in use: FFmpeg's version, the decoder's
+   this build) and the video decoder in use: FFmpeg's version, the decoder's
    name, and software or hardware. Audio: the codec's output and input, stereo
    or mono, and their sampling rates as the hardware runs them; Idle while
    nothing plays or records.

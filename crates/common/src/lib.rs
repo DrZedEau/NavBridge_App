@@ -114,7 +114,10 @@ pub struct ProjectionSnapshot {
     /// The DPI the phone is asked for when it connects, as chosen in Settings.
     #[serde(default)]
     pub dpi: u32,
-    /// The H.264 decoder in use, such as "FFmpeg 7.1.5 h264 (software)".
+    /// The codec the phone is asked for when it connects, as chosen in Settings.
+    #[serde(default)]
+    pub codec: VideoCodec,
+    /// The video decoder in use, such as "FFmpeg 7.1.5 h264 (software)".
     #[serde(default)]
     pub decoder: String,
 }
@@ -128,7 +131,28 @@ impl Default for ProjectionSnapshot {
             streaming: false,
             phone_name: String::new(),
             dpi: 0,
+            codec: VideoCodec::default(),
             decoder: String::new(),
+        }
+    }
+}
+
+/// The video codec Android Auto is asked for: H.264, which every phone
+/// encodes, or H.265, which some do. A phone without H.265 stays on H.264.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoCodec {
+    #[default]
+    H264,
+    H265,
+}
+
+impl VideoCodec {
+    /// As Settings shows it: "H.264" or "H.265".
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::H264 => "H.264",
+            Self::H265 => "H.265",
         }
     }
 }
@@ -319,6 +343,7 @@ pub enum ClientCommand {
     PhoneAction { action: PhoneAction },
     SetWireless { enabled: bool },
     SetDpi { dpi: u32 },
+    SetVideoCodec { codec: VideoCodec },
     SetVolume { percent: u8 },
     SetMicrophone { percent: u8 },
     SetCallVolume { db: i8 },
@@ -401,5 +426,13 @@ mod tests {
         assert_eq!((MEDIA_WIDTH, MEDIA_HEIGHT, MEDIA_DPI), (800, 480, 160));
         assert_eq!(MEDIA_WIDTH, UI_WIDTH * 2);
         assert_eq!(MEDIA_HEIGHT, UI_HEIGHT * 2);
+    }
+
+    #[test]
+    fn codecs_read_as_core_toml_names_them() {
+        let codec = |name: &str| serde_json::from_str::<VideoCodec>(&format!("\"{name}\""));
+        assert_eq!(codec("h264").unwrap(), VideoCodec::H264);
+        assert_eq!(codec("h265").unwrap(), VideoCodec::H265);
+        assert!(codec("hevc").is_err());
     }
 }

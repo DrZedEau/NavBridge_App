@@ -1,6 +1,6 @@
 //! Choices made in Settings that survive a restart, kept together in one
 //! file. Each service changes only its own, and the others stay as they were.
-use navbridge_common::Theme;
+use navbridge_common::{Theme, VideoCodec};
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
@@ -15,8 +15,9 @@ pub const PATH: &str = "/var/lib/navbridge/settings.toml";
 #[serde(default)]
 pub struct Saved {
     pub wireless_android_auto: bool,
-    /// The projection's DPI, instead of core.toml's.
+    /// The projection's DPI and codec, instead of core.toml's.
     pub dpi: Option<u32>,
+    pub video_codec: Option<VideoCodec>,
     /// The codec's output volume and microphone gain, in percent of their range.
     pub volume: Option<u8>,
     pub microphone: Option<u8>,
@@ -89,6 +90,7 @@ mod tests {
         assert_eq!(settings.load(), Saved::default());
         settings.update(|saved| saved.wireless_android_auto = true);
         settings.update(|saved| saved.dpi = Some(140));
+        settings.update(|saved| saved.video_codec = Some(VideoCodec::H265));
         settings.update(|saved| saved.volume = Some(70));
         settings.update(|saved| saved.theme = Theme::Blue);
         settings.update(|saved| saved.call_volume_db = 6);
@@ -97,23 +99,29 @@ mod tests {
             Saved {
                 wireless_android_auto: true,
                 dpi: Some(140),
+                video_codec: Some(VideoCodec::H265),
                 volume: Some(70),
                 microphone: None,
                 call_volume_db: 6,
                 theme: Theme::Blue,
             }
         );
-        assert!(fs::read_to_string(&path)
-            .unwrap()
-            .contains("theme = \"blue\""));
+        let file = fs::read_to_string(&path).unwrap();
+        assert!(file.contains("theme = \"blue\""));
+        assert!(file.contains("video_codec = \"h265\""));
         // A file from before, with wireless mode and the frame rate it no
         // longer keeps, still reads.
         fs::write(&path, "wireless_android_auto = true\nfps = 30\n").unwrap();
         let saved = settings.load();
         assert!(saved.wireless_android_auto);
         assert_eq!(
-            (saved.dpi, saved.volume, saved.call_volume_db),
-            (None, None, 0)
+            (
+                saved.dpi,
+                saved.video_codec,
+                saved.volume,
+                saved.call_volume_db
+            ),
+            (None, None, None, 0)
         );
         assert_eq!(saved.theme, Theme::Amber);
         fs::remove_dir_all(dir).unwrap();

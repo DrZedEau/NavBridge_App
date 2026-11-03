@@ -15,8 +15,9 @@ use input::{KeyAction, KeyMap};
 use ipc::IpcEvent;
 use navbridge_common::{
     video_frame_path, AppSnapshot, ClientCommand, Ignition, NavigationKey, ProjectionEvent,
-    ServerEvent, StreamFormat, TouchKind, VehicleSnapshot, CALL_VOLUME_DB, DEFAULT_SOCKET_PATH,
-    MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH, VIDEO_FRAME_HEADER_SIZE, VIDEO_FRAME_MAGIC,
+    ServerEvent, StreamFormat, TouchKind, VehicleSnapshot, VideoCodec, CALL_VOLUME_DB,
+    DEFAULT_SOCKET_PATH, MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH, VIDEO_FRAME_HEADER_SIZE,
+    VIDEO_FRAME_MAGIC,
 };
 use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer};
 use tracing_subscriber::EnvFilter;
@@ -50,15 +51,18 @@ enum Setting {
     /// The UI's colours.
     Theme,
     Dpi,
+    /// The video codec the phone is asked for.
+    Codec,
     Volume,
     /// How much louder than the speakers' volume calls play.
     CallVolume,
     Microphone,
 }
-const SETTINGS: [Setting; 6] = [
+const SETTINGS: [Setting; 7] = [
     Setting::Hotspot,
     Setting::Theme,
     Setting::Dpi,
+    Setting::Codec,
     Setting::Volume,
     Setting::CallVolume,
     Setting::Microphone,
@@ -557,7 +561,7 @@ fn answer_pairing(state: &mut UiState, accept: bool, commands: &Commands) {
 }
 
 /// A Settings row tapped, `index` counting the rows shown: the hotspot, the
-/// theme and the DPI change at once; a level opens, then its value's halves
+/// theme, the DPI and the codec change at once; a level opens, then its value's halves
 /// (`half` -1 and 1) step it down and up, and a tap on its label closes it.
 fn tap_setting(state: &mut UiState, index: usize, half: i32, commands: &Commands) {
     if state.screen != Screen::Settings || pairing_shown(state) {
@@ -578,7 +582,9 @@ fn tap_setting(state: &mut UiState, index: usize, half: i32, commands: &Commands
         return;
     }
     match SETTINGS[index] {
-        Setting::Hotspot | Setting::Dpi | Setting::Theme => change_setting(state, true, commands),
+        Setting::Hotspot | Setting::Dpi | Setting::Codec | Setting::Theme => {
+            change_setting(state, true, commands)
+        }
         Setting::Volume | Setting::CallVolume | Setting::Microphone => {
             state.settings_editing = true
         }
@@ -951,9 +957,9 @@ fn settings_shown(index: usize) -> std::ops::Range<usize> {
     first..(first + SETTINGS_SHOWN).min(SETTINGS.len())
 }
 
-/// Changes the open row's value, up or down: the hotspot and the DPI switch,
-/// the codec's levels move by 1%, the call volume by 1 dB, and the theme steps
-/// to the next or previous one.
+/// Changes the open row's value, up or down: the hotspot, the DPI and the
+/// video codec switch, the audio codec's levels move by 1%, the call volume by
+/// 1 dB, and the theme steps to the next or previous one.
 fn change_setting(
     state: &mut UiState,
     up: bool,
@@ -979,6 +985,14 @@ fn change_setting(
             };
             let _ = commands.send(ClientCommand::SetDpi { dpi });
             snapshot.projection.dpi = dpi;
+        }
+        Setting::Codec => {
+            let codec = match snapshot.projection.codec {
+                VideoCodec::H264 => VideoCodec::H265,
+                VideoCodec::H265 => VideoCodec::H264,
+            };
+            let _ = commands.send(ClientCommand::SetVideoCodec { codec });
+            snapshot.projection.codec = codec;
         }
         // At either end, a held key sends nothing more.
         Setting::Volume => {
@@ -1065,7 +1079,7 @@ fn section(row: Setting) -> &'static str {
         Setting::Dpi => "VIDEO",
         Setting::Volume => "AUDIO",
         Setting::Theme => "UI",
-        Setting::CallVolume | Setting::Microphone => "",
+        Setting::Codec | Setting::CallVolume | Setting::Microphone => "",
     }
 }
 
@@ -1080,6 +1094,7 @@ fn setting_text(state: &UiState, row: Setting) -> (&'static str, String) {
     match row {
         Setting::Hotspot => ("Hotspot", String::new()),
         Setting::Dpi => ("DPI", number(snapshot.projection.dpi)),
+        Setting::Codec => ("Codec", snapshot.projection.codec.name().into()),
         Setting::Volume => (
             "Speakers volume",
             percent(snapshot.system.audio.volume_percent),
@@ -1741,6 +1756,34 @@ mod navigation_tests {
         // Back closes it too.
         press(&mut state, KeyAction::Back, false);
         assert_eq!(state.screen, Screen::Settings);
+        // The codec, below the DPI, switches between H.264 and H.265; a held
+        // key does not repeat.
+        assert_eq!(
+            setting_text(&state, Setting::Codec),
+            ("Codec", "H.264".into())
+        );
+        press(&mut state, KeyAction::Right, false);
+        press(&mut state, KeyAction::Select, false);
+        press(&mut state, KeyAction::Right, false);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientCommand::SetVideoCodec {
+                codec: VideoCodec::H265
+            })
+        ));
+        assert_eq!(
+            setting_text(&state, Setting::Codec),
+            ("Codec", "H.265".into())
+        );
+        assert!(!repeats(&state, KeyAction::Left));
+        press(&mut state, KeyAction::Left, false);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientCommand::SetVideoCodec {
+                codec: VideoCodec::H264
+            })
+        ));
+        press(&mut state, KeyAction::Back, false);
         // Levels move in 1% steps; a held key repeats.
         press(&mut state, KeyAction::Right, false);
         press(&mut state, KeyAction::Select, false);
@@ -1924,20 +1967,27 @@ mod navigation_tests {
         };
         state.snapshot.projection.dpi = 160;
         state.snapshot.system.audio.volume_percent = Some(50);
-        // The hotspot and the DPI change with one tap.
+        // The hotspot, the DPI and the codec change with one tap.
         tap_setting(&mut state, 0, 0, &tx);
         tap_setting(&mut state, 2, 0, &tx);
+        tap_setting(&mut state, 3, 0, &tx);
         let sent: Vec<_> = rx.try_iter().collect();
         assert!(matches!(
             sent[..],
             [
                 ClientCommand::SetWireless { enabled: true },
-                ClientCommand::SetDpi { dpi: 140 }
+                ClientCommand::SetDpi { dpi: 140 },
+                ClientCommand::SetVideoCodec {
+                    codec: VideoCodec::H265
+                }
             ]
         ));
-        assert_eq!(selected_setting(&state), Setting::Dpi);
+        assert_eq!(selected_setting(&state), Setting::Codec);
         assert!(!state.settings_editing);
-        // A level opens; its value's halves step it; its label closes it.
+        // A level opens; its value's halves step it; its label closes it. The
+        // speakers' volume is the fifth row: chosen with the keys, the list
+        // scrolls by one to show it.
+        state.settings_index = 4;
         tap_setting(&mut state, 3, 0, &tx);
         assert!(state.settings_editing && selected_setting(&state) == Setting::Volume);
         assert!(rx.try_recv().is_err());
@@ -1957,13 +2007,13 @@ mod navigation_tests {
         assert!(!state.settings_editing);
         tap_setting(&mut state, 3, 1, &tx);
         assert!(rx.try_recv().is_err());
-        // The microphone, the last row: the list scrolls by two rows to show
+        // The microphone, the last row: the list scrolls by three rows to show
         // it, and taps count the rows shown.
         assert_eq!(
-            (settings_shown(3), settings_shown(4), settings_shown(5)),
-            (0..4, 1..5, 2..6)
+            (settings_shown(3), settings_shown(4), settings_shown(6)),
+            (0..4, 1..5, 3..7)
         );
-        state.settings_index = 5;
+        state.settings_index = 6;
         tap_setting(&mut state, 3, 0, &tx);
         assert!(state.settings_editing && selected_setting(&state) == Setting::Microphone);
     }
@@ -2455,11 +2505,11 @@ mod preview {
             // The speakers' volume, opened to change it.
             state.settings_editing = name == "settings-open";
             state.settings_index = match name {
-                "settings-open" => 3,
+                "settings-open" => 4,
                 "settings-dpi" => 2,
                 "settings-theme" => 1,
                 // The last row, with the list scrolled to it.
-                "settings-green" => 5,
+                "settings-green" => 6,
                 _ => 0,
             };
             // The other themes.

@@ -11,8 +11,9 @@
 5. The NavBridge UI is laid out at **400x240**, the panel's size; in a PC
    window, frontend.toml's `scale = 2` draws it at 800x480. Android Auto runs
    at **800x480**; its DPI is configurable (default 160).
-6. H.264 is decoded with FFmpeg: on the board's hardware decoder where there is
-   one (Pi 4 / CM4), in software otherwise (Pi 5 / CM5).
+6. Video is H.264, or H.265 when chosen, decoded with FFmpeg: H.264 on the
+   board's hardware decoder where there is one (Pi 4 / CM4), in software
+   otherwise (Pi 5 / CM5); H.265 in software.
 7. Audio stays in the core.
 8. Touch works alongside the keyboard: a touchscreen panel (libinput on the
    Pi), or the left mouse button in a PC window.
@@ -31,7 +32,7 @@ navbridge-ui                          navbridge-core
 ------------                          --------------
 Slint 400x240 (KMS)                   USB discovery and AOA switch
 keys and touch          JSON IPC      Android Auto session (TLS, channels)
-menu, Settings, System <--------->    H.264 decode and scale (FFmpeg)
+menu, Settings, System <--------->    H.264/H.265 decode, scale (FFmpeg)
 projection view                       ALSA playback and microphone
        ^                              GPSD client, system metrics
        |                              Wi-Fi hotspot, BlueZ (wireless)
@@ -49,9 +50,10 @@ temporary directory in tmpfs instead.
 - UI to core: `hello`, `set_frame_size` (the size the UI shows projection
   frames at), `request_snapshot`, `set_night_mode`, `set_parking_brake`,
   `hide_projection`, `resume_projection`, `navigation_input`, `touch`,
-  `phone_action`, `set_wireless`, `set_dpi`, `set_volume`, `set_microphone`,
-  `set_call_volume`, `set_theme`, `start_pairing`, `stop_pairing` and
-  `confirm_pairing`. Settings' choices (wireless mode, DPI, the codec's levels,
+  `phone_action`, `set_wireless`, `set_dpi`, `set_video_codec`, `set_volume`,
+  `set_microphone`, `set_call_volume`, `set_theme`, `start_pairing`,
+  `stop_pairing` and `confirm_pairing`. Settings' choices (wireless mode, DPI,
+  the video codec, the audio codec's levels,
   the call volume, the UI's theme) are kept in
   `/var/lib/navbridge/settings.toml`, which each service changes without
   touching the others' keys. Hiding and resuming move the phone's video
@@ -93,6 +95,10 @@ each one.
   brake is the cluster's handbrake and any speed above 0 km/h restricts; the
   UI's parking brake is ignored. The GNSS service passes
   each GPSD fix straight to the session thread.
+- The service discovery's video channel names H.265 (codec 7, in its video
+  configuration's field 10) when Settings chose it, and no codec for H.264. The
+  phone's setup request names the codec it chose, H.264 by a phone without
+  H.265, and the decoder follows it.
 - While bluez-alsa runs as a hands-free device (`org.bluealsa` on the system
   bus), the service discovery also offers the car's Bluetooth (channel 8: the
   adapter's address, pairing by comparing a code), so the phone takes its calls
@@ -112,12 +118,14 @@ each one.
 ## Video
 
 ```text
-Phone: one H.264 access unit per Android Auto message (SPS/PPS first)
+Phone: one H.264 or H.265 access unit per Android Auto message (the codec
+configuration first: SPS/PPS, and VPS for H.265)
     |
     v
-FFmpeg decoder, one packet per message (no parser delay): h264_v4l2m2m
-where the board has it, else the software h264; a failing hardware decoder
-gives way to software, which starts from the last SPS/PPS and a new keyframe
+FFmpeg decoder for the codec the phone chose, one packet per message (no
+parser delay): h264_v4l2m2m where the board has it, else the software h264 or
+hevc; a failing hardware decoder gives way to software, which starts from the
+last configuration and a new keyframe
     |
     v
 libswscale (area, 2:1 averaging, full chroma): 800x480 -> 400x240 RGBA, for the newest
@@ -132,7 +140,8 @@ Slint image, loaded as soon as inotify reports the new file
 
 The two geometries share the same aspect ratio, so no crop or letterbox is
 needed. The decoder queue is shallow: if it overflows, frames are dropped until
-the next IDR frame, which the core requests by taking the phone's video focus
+the next keyframe (H.264 IDR, H.265 IDR or CRA), which the core requests by
+taking the phone's video focus
 away and giving it back.
 Persistent `memfd`/`mmap` buffers would avoid the per-frame file replacement.
 

@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::ffi::CStr;
 use std::fs::{self, File};
 use std::io::Write;
@@ -14,7 +15,8 @@ use ffmpeg::util::color::{Range, Space};
 use ffmpeg::util::format::Pixel;
 use ffmpeg_next as ffmpeg;
 use navbridge_common::{
-    MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH, VIDEO_FRAME_HEADER_SIZE, VIDEO_FRAME_MAGIC,
+    VideoCodec, MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH, VIDEO_FRAME_HEADER_SIZE,
+    VIDEO_FRAME_MAGIC,
 };
 use tracing::{debug, error, info, warn};
 
@@ -25,10 +27,10 @@ const VIDEO_QUEUE_DEPTH: usize = 12;
 const MAX_CODEC_CONFIG_BYTES: usize = 64 * 1024;
 /// How often the frame counters are logged, at debug level, while video plays.
 const COUNTER_LOG_INTERVAL: Duration = Duration::from_secs(5);
-/// H.264 decoders tried before FFmpeg's software one: the V4L2 hardware
-/// decoder of the Pi 4 and CM4. The Pi 5 and CM5 have none, so they decode in
-/// software.
-const HARDWARE_DECODERS: &[&str] = &["h264_v4l2m2m"];
+/// Hardware decoders tried before FFmpeg's software one, by codec: the V4L2
+/// H.264 decoder of the Pi 4 and CM4. The Pi 5 and CM5 have none for H.264,
+/// so they decode it in software.
+const HARDWARE_DECODERS: &[(VideoCodec, &str)] = &[(VideoCodec::H264, "h264_v4l2m2m")];
 /// A hardware decoder that takes this many pictures without returning a frame
 /// is given up for the software one.
 const HARDWARE_STALL_PICTURES: u32 = 30;
@@ -43,7 +45,11 @@ pub enum PushResult {
 }
 
 enum VideoCommand {
-    Data { generation: u64, segment: Vec<u8> },
+    Data {
+        generation: u64,
+        codec: VideoCodec,
+        segment: Vec<u8>,
+    },
 }
 
 /// Frames decoded and dropped since the core started. Clones share the counts,
@@ -64,22 +70,25 @@ impl VideoCounters {
     }
 }
 
-/// H.264 projection pipeline: a hardware decoder where the board has one,
-/// FFmpeg's software decoder otherwise or once the hardware one fails.
+/// Projection pipeline for H.264 or H.265, as the phone chose: a hardware
+/// decoder where the board has one, FFmpeg's software decoder otherwise or once
+/// the hardware one fails.
 ///
 /// Android Auto is negotiated at 800x480. Each reassembled video message is one
-/// complete Annex-B access unit (or the SPS/PPS codec configuration), so it goes
-/// to the normal software H.264 decoder as one packet and its frame is published
-/// at once. Frames are scaled to the physical 400x240 NavBridge UI, then
+/// complete Annex-B access unit (or the codec configuration: H.264's SPS/PPS,
+/// H.265's VPS/SPS/PPS), so it goes to the decoder as one packet and its frame
+/// is published at once. Frames are scaled to the physical 400x240 NavBridge UI, then
 /// atomically published as RGBA through tmpfs for the separate Slint process.
 pub struct VideoPipeline {
     tx: Option<SyncSender<VideoCommand>>,
     worker: Option<JoinHandle<()>>,
     counters: VideoCounters,
-    wait_for_idr: Arc<AtomicBool>,
+    wait_for_keyframe: Arc<AtomicBool>,
     frame_path: PathBuf,
     generation: Arc<Mutex<u64>>,
     decoder: DecoderInfo,
+    /// The codec the phone's video comes in.
+    codec: Cell<VideoCodec>,
 }
 
 /// The size frames are published at, which the UI chooses: the panel's
@@ -136,8 +145,9 @@ impl VideoPipeline {
         let _ = fs::remove_file(&frame_path);
 
         // Fail early if the system FFmpeg libraries are unavailable or broken.
+        // H.264 is the codec every phone can send.
         ffmpeg::init().map_err(|e| format!("initialize FFmpeg: {e}"))?;
-        if ffmpeg::decoder::find(ffmpeg::codec::Id::H264).is_none() {
+        if !decodes(VideoCodec::H264) {
             return Err("FFmpeg software H.264 decoder is unavailable".into());
         }
         let candidates = if hardware {
@@ -150,18 +160,19 @@ impl VideoPipeline {
 
         let (tx, rx) = mpsc::sync_channel::<VideoCommand>(VIDEO_QUEUE_DEPTH);
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
-        let wait_for_idr = Arc::new(AtomicBool::new(false));
+        let wait_for_keyframe = Arc::new(AtomicBool::new(false));
 
         let generation = Arc::new(Mutex::new(0));
         let worker_generation = Arc::clone(&generation);
         let worker_counters = counters.clone();
         let worker_frame_path = frame_path.clone();
         let worker = thread::Builder::new()
-            .name("navbridge-h264".into())
+            .name("navbridge-video".into())
             .spawn(move || {
                 let mut engine = match DecoderEngine::new(
                     worker_frame_path,
                     Arc::clone(&worker_counters.decoded),
+                    VideoCodec::H264,
                     candidates,
                     worker_decoder,
                     size,
@@ -184,11 +195,11 @@ impl VideoPipeline {
                     let reset = if engine.on_hardware {
                         engine.give_up_hardware(&err)
                     } else {
-                        warn!(%err, "H.264 decode error; resetting decoder");
+                        warn!(%err, "video decode error; resetting decoder");
                         engine.reset()
                     };
                     reset
-                        .inspect_err(|e| error!(%e, "failed to reset the H.264 decoder; it stops"))
+                        .inspect_err(|e| error!(%e, "failed to reset the video decoder; it stops"))
                         .is_ok()
                 };
                 let mut logged = Instant::now();
@@ -198,15 +209,18 @@ impl VideoPipeline {
                     let waiting = iter::once(next).chain(rx.try_iter().take(VIDEO_QUEUE_DEPTH));
                     for VideoCommand::Data {
                         generation,
+                        codec,
                         segment,
                     } in waiting
                     {
                         if generation != *engine.generation.lock().unwrap() {
                             continue;
                         }
-                        if engine.active_generation != generation {
+                        // A new phone, or the phone's video in another codec.
+                        if engine.active_generation != generation || engine.codec != codec {
+                            engine.codec = codec;
                             if let Err(err) = engine.reset() {
-                                error!(%err, "failed to reset the H.264 decoder; it stops");
+                                error!(%err, "failed to reset the video decoder; it stops");
                                 break 'decode;
                             }
                             engine.active_generation = generation;
@@ -233,7 +247,7 @@ impl VideoPipeline {
                     }
                 }
             })
-            .map_err(|e| format!("start H.264 decoder thread: {e}"))?;
+            .map_err(|e| format!("start video decoder thread: {e}"))?;
 
         match ready_rx.recv_timeout(Duration::from_secs(2)) {
             Ok(Ok(())) => {}
@@ -242,7 +256,7 @@ impl VideoPipeline {
                 return Err(err);
             }
             Err(_) => {
-                return Err("H.264 decoder did not initialize in time".into());
+                return Err("video decoder did not initialize in time".into());
             }
         }
 
@@ -256,10 +270,11 @@ impl VideoPipeline {
             tx: Some(tx),
             worker: Some(worker),
             counters,
-            wait_for_idr,
+            wait_for_keyframe,
             frame_path,
             generation,
             decoder,
+            codec: Cell::new(VideoCodec::H264),
         })
     }
 
@@ -269,7 +284,7 @@ impl VideoPipeline {
         self.worker.as_ref().is_some_and(JoinHandle::is_finished)
     }
 
-    /// The H.264 decoder in use, such as "FFmpeg 7.1.5 h264 (software)".
+    /// The video decoder in use, such as "FFmpeg 7.1.5 h264 (software)".
     pub fn decoder(&self) -> String {
         self.decoder.name.lock().unwrap().clone()
     }
@@ -280,30 +295,42 @@ impl VideoPipeline {
         self.decoder.changed.swap(false, Ordering::Relaxed)
     }
 
+    /// Whether FFmpeg can decode `codec`, in software at least.
+    pub fn decodes(&self, codec: VideoCodec) -> bool {
+        decodes(codec)
+    }
+
+    /// The codec the phone's video comes in, as its setup chose: the decoder
+    /// follows from the next message on.
+    pub fn set_codec(&self, codec: VideoCodec) {
+        self.codec.set(codec);
+    }
+
     /// Queue one Android Auto video message. If decoding falls behind,
-    /// abandon dependent frames until an IDR arrives and ask the caller for a
-    /// fresh keyframe once. Keeping this queue shallow is intentional for live
+    /// abandon dependent frames until a keyframe arrives and ask the caller
+    /// for a fresh one once. Keeping this queue shallow is intentional for live
     /// projection latency.
-    pub fn push_h264(&self, h264: &[u8]) -> PushResult {
-        if h264.is_empty() {
+    pub fn push(&self, video: &[u8]) -> PushResult {
+        if video.is_empty() {
             self.counters.dropped.fetch_add(1, Ordering::Relaxed);
             return PushResult::Dropped;
         }
 
-        let is_idr = contains_idr(h264);
+        let codec = self.codec.get();
+        let is_keyframe = contains_keyframe(codec, video);
         // A new decoder starts from a keyframe: ask the phone for one.
-        if self.decoder.keyframe_wanted.swap(false, Ordering::Relaxed) && !is_idr {
+        if self.decoder.keyframe_wanted.swap(false, Ordering::Relaxed) && !is_keyframe {
             self.counters.dropped.fetch_add(1, Ordering::Relaxed);
-            self.wait_for_idr.store(true, Ordering::Relaxed);
+            self.wait_for_keyframe.store(true, Ordering::Relaxed);
             return PushResult::NeedKeyframe;
         }
-        if self.wait_for_idr.load(Ordering::Relaxed) && !is_idr {
+        if self.wait_for_keyframe.load(Ordering::Relaxed) && !is_keyframe {
             self.counters.dropped.fetch_add(1, Ordering::Relaxed);
             return PushResult::Dropped;
         }
-        if is_idr {
-            debug!("H.264 keyframe from the phone");
-            if self.wait_for_idr.swap(false, Ordering::Relaxed) {
+        if is_keyframe {
+            debug!("keyframe from the phone");
+            if self.wait_for_keyframe.swap(false, Ordering::Relaxed) {
                 info!("keyframe received; video decoding resumes");
             }
         }
@@ -316,12 +343,13 @@ impl VideoPipeline {
         let generation = *self.generation.lock().unwrap();
         match tx.try_send(VideoCommand::Data {
             generation,
-            segment: h264.to_vec(),
+            codec,
+            segment: video.to_vec(),
         }) {
             Ok(()) => PushResult::Accepted,
             Err(TrySendError::Full(_)) => {
                 self.counters.dropped.fetch_add(1, Ordering::Relaxed);
-                let was_waiting = self.wait_for_idr.swap(true, Ordering::Relaxed);
+                let was_waiting = self.wait_for_keyframe.swap(true, Ordering::Relaxed);
                 if was_waiting {
                     PushResult::Dropped
                 } else {
@@ -337,7 +365,7 @@ impl VideoPipeline {
 
     /// Flush decoder state between phone projection sessions.
     pub fn reset(&self) {
-        self.wait_for_idr.store(false, Ordering::Relaxed);
+        self.wait_for_keyframe.store(false, Ordering::Relaxed);
         self.decoder.keyframe_wanted.store(false, Ordering::Relaxed);
         // Also serialize with publication: after reset returns, an old worker
         // cannot put an obsolete frame back, even if it was already decoding.
@@ -359,17 +387,20 @@ impl Drop for VideoPipeline {
 
 struct DecoderEngine {
     decoder: ffmpeg::decoder::Video,
-    /// Hardware decoders still worth trying: none once one has failed, or is
-    /// missing, or when core.toml asks for software.
-    hardware: Vec<&'static str>,
+    /// What `decoder` decodes.
+    codec: VideoCodec,
+    /// Hardware decoders still worth trying, by codec: none once one has
+    /// failed, or is missing, or when core.toml asks for software.
+    hardware: Vec<(VideoCodec, &'static str)>,
     /// Whether `decoder` is one of them.
     on_hardware: bool,
     /// Pictures sent since the last frame came back.
     pending_pictures: u32,
     info: DecoderInfo,
-    // SPS/PPS waiting for the next picture; FFmpeg rejects a packet without one.
+    // The codec configuration (SPS/PPS, and H.265's VPS) waiting for the next
+    // picture; FFmpeg rejects a packet without one.
     codec_config: Vec<u8>,
-    /// The stream's last SPS/PPS, for a decoder that takes over mid-stream.
+    /// The stream's last configuration, for a decoder that takes over mid-stream.
     last_config: Vec<u8>,
     size: FrameSize,
     scaler: Option<Scaler>,
@@ -386,13 +417,15 @@ impl DecoderEngine {
     fn new(
         frame_path: PathBuf,
         decoded_count: Arc<AtomicU64>,
-        hardware: Vec<&'static str>,
+        codec: VideoCodec,
+        mut hardware: Vec<(VideoCodec, &'static str)>,
         info: DecoderInfo,
         size: FrameSize,
     ) -> Result<Self, String> {
-        let (decoder, on_hardware) = open_decoder(&hardware, &info)?;
-        let mut engine = Self {
+        let (decoder, on_hardware) = open_decoder(codec, &mut hardware, &info)?;
+        Ok(Self {
             decoder,
+            codec,
             hardware,
             on_hardware,
             pending_pictures: 0,
@@ -407,31 +440,34 @@ impl DecoderEngine {
             sequence: 0,
             generation: Arc::new(Mutex::new(0)),
             active_generation: 0,
-        };
-        if !on_hardware {
-            // Boards do not grow a decoder: look for one only once.
-            engine.hardware.clear();
-        }
-        Ok(engine)
+        })
     }
 
+    /// Opens a decoder afresh for `codec`.
     fn reset(&mut self) -> Result<(), String> {
-        (self.decoder, self.on_hardware) = open_decoder(&self.hardware, &self.info)?;
+        (self.decoder, self.on_hardware) =
+            open_decoder(self.codec, &mut self.hardware, &self.info)?;
         self.pending_pictures = 0;
         self.codec_config.clear();
         self.last_config.clear();
         self.scaler = None;
         self.newest = None;
         let _ = fs::remove_file(&self.frame_path);
-        debug!("H.264 decoder reset");
+        debug!(codec = ?self.codec, "video decoder reset");
         Ok(())
     }
 
     /// Replaces a failing hardware decoder with the software one for the rest
-    /// of the run. It starts from the stream's SPS/PPS and the next keyframe.
+    /// of the run, for this codec. It starts from the stream's configuration
+    /// and the next keyframe.
     fn give_up_hardware(&mut self, reason: &str) -> Result<(), String> {
-        warn!(%reason, "hardware H.264 decoder failed; decoding in software from now on");
-        self.hardware.clear();
+        warn!(
+            %reason,
+            codec = ?self.codec,
+            "hardware video decoder failed; decoding in software from now on"
+        );
+        let codec = self.codec;
+        self.hardware.retain(|&(decodes, _)| decodes != codec);
         let config = std::mem::take(&mut self.last_config);
         self.reset()?;
         self.codec_config.clone_from(&config);
@@ -443,7 +479,7 @@ impl DecoderEngine {
     fn push(&mut self, access_unit: &[u8]) -> Result<(), String> {
         // Android Auto sends one complete access unit per message, so decode it
         // now. An FFmpeg parser would hold each frame until the next one began.
-        if !contains_picture(access_unit) {
+        if !contains_picture(self.codec, access_unit) {
             if self.codec_config.len() + access_unit.len() > MAX_CODEC_CONFIG_BYTES {
                 self.codec_config.clear();
             }
@@ -461,7 +497,7 @@ impl DecoderEngine {
         self.pending_pictures += 1;
         self.decoder
             .send_packet(&packet)
-            .map_err(|e| format!("send H.264 packet: {e}"))?;
+            .map_err(|e| format!("send video packet: {e}"))?;
         self.drain_frames();
         if self.on_hardware && self.pending_pictures >= HARDWARE_STALL_PICTURES {
             return Err(format!("no frame after {} pictures", self.pending_pictures));
@@ -608,40 +644,66 @@ fn decoder_text(version: &str, name: &str, hardware: bool) -> String {
     format!("FFmpeg {version} {name} ({kind})")
 }
 
-/// Opens the first of the `hardware` decoders that works, else FFmpeg's
-/// software one, and names it in `info`. Returns whether it is a hardware one.
+/// FFmpeg's name for a codec.
+fn codec_id(codec: VideoCodec) -> ffmpeg::codec::Id {
+    match codec {
+        VideoCodec::H264 => ffmpeg::codec::Id::H264,
+        VideoCodec::H265 => ffmpeg::codec::Id::HEVC,
+    }
+}
+
+/// Whether FFmpeg has a software decoder for `codec`.
+fn decodes(codec: VideoCodec) -> bool {
+    ffmpeg::decoder::find(codec_id(codec)).is_some()
+}
+
+/// Opens the first of the `hardware` decoders for `codec` that works, else
+/// FFmpeg's software one, and names it in `info`. Returns whether it is a
+/// hardware one. Boards do not grow a decoder: those that do not open are
+/// taken off `hardware`, so they are tried only once.
 fn open_decoder(
-    hardware: &[&str],
+    codec: VideoCodec,
+    hardware: &mut Vec<(VideoCodec, &'static str)>,
     info: &DecoderInfo,
 ) -> Result<(ffmpeg::decoder::Video, bool), String> {
     let mut opened = None;
-    for &name in hardware {
-        let Some(codec) = ffmpeg::decoder::find_by_name(name) else {
-            info!(decoder = name, "hardware H.264 decoder not in this FFmpeg");
+    let mut missing = Vec::new();
+    for &(decodes, name) in hardware.iter() {
+        if decodes != codec {
+            continue;
+        }
+        let Some(found) = ffmpeg::decoder::find_by_name(name) else {
+            info!(decoder = name, "hardware video decoder not in this FFmpeg");
+            missing.push(name);
             continue;
         };
         // A missing device is expected on boards without one: say so once,
         // without FFmpeg's own error lines.
         let level = ffmpeg::util::log::get_level().unwrap_or(ffmpeg::util::log::Level::Info);
         ffmpeg::util::log::set_level(ffmpeg::util::log::Level::Quiet);
-        let result = open_codec(codec);
+        let result = open_codec(found);
         ffmpeg::util::log::set_level(level);
         match result {
             Ok(decoder) => {
-                opened = Some((decoder, codec, true));
+                opened = Some((decoder, found, true));
                 break;
             }
-            Err(e) => info!(decoder = name, %e, "no hardware H.264 decoder on this board"),
+            Err(e) => {
+                info!(decoder = name, %e, "no hardware video decoder on this board");
+                missing.push(name);
+            }
         }
     }
+    hardware.retain(|(_, name)| !missing.contains(name));
     let (decoder, codec, on_hardware) = match opened {
         Some(opened) => opened,
         None => {
-            let codec = ffmpeg::decoder::find(ffmpeg::codec::Id::H264)
-                .ok_or_else(|| "FFmpeg H.264 decoder not found".to_string())?;
-            let decoder = open_codec(codec)
-                .map_err(|e| format!("open FFmpeg H.264 software decoder: {e}"))?;
-            (decoder, codec, false)
+            let name = codec.name();
+            let found = ffmpeg::decoder::find(codec_id(codec))
+                .ok_or_else(|| format!("FFmpeg {name} decoder not found"))?;
+            let decoder = open_codec(found)
+                .map_err(|e| format!("open FFmpeg {name} software decoder: {e}"))?;
+            (decoder, found, false)
         }
     };
     // SAFETY: av_version_info returns a static string.
@@ -734,21 +796,39 @@ fn publish_frame(
     Ok(())
 }
 
+/// A NAL unit's type, from the first byte of its header.
+fn nal_type(codec: VideoCodec, header: u8) -> u8 {
+    match codec {
+        VideoCodec::H264 => header & 0x1f,
+        VideoCodec::H265 => (header >> 1) & 0x3f,
+    }
+}
+
 /// Annex-B NAL unit types in stream order; covers 3- and 4-byte start codes.
-fn nal_unit_types(data: &[u8]) -> impl Iterator<Item = u8> + '_ {
+fn nal_unit_types(codec: VideoCodec, data: &[u8]) -> impl Iterator<Item = u8> + '_ {
     data.windows(4)
         .filter(|w| w[..3] == [0, 0, 1])
-        .map(|w| w[3] & 0x1f)
+        .map(move |w| nal_type(codec, w[3]))
 }
 
-/// Detect an Annex-B IDR NAL unit (type 5) without parsing the whole stream.
-fn contains_idr(data: &[u8]) -> bool {
-    nal_unit_types(data).any(|nal| nal == 5)
+/// Detect a picture a decoder can start from, without parsing the whole
+/// stream: an H.264 IDR (type 5), or an H.265 random access one (16-21).
+fn contains_keyframe(codec: VideoCodec, data: &[u8]) -> bool {
+    let keyframe = match codec {
+        VideoCodec::H264 => 5..=5,
+        VideoCodec::H265 => 16..=21,
+    };
+    nal_unit_types(codec, data).any(|nal| keyframe.contains(&nal))
 }
 
-/// Coded slices are NAL types 1-5; the SPS/PPS codec configuration has none.
-fn contains_picture(data: &[u8]) -> bool {
-    nal_unit_types(data).any(|nal| (1..=5).contains(&nal))
+/// Coded slices are H.264's NAL types 1-5 and H.265's 0-31; the codec
+/// configuration has none.
+fn contains_picture(codec: VideoCodec, data: &[u8]) -> bool {
+    let picture = match codec {
+        VideoCodec::H264 => 1..=5,
+        VideoCodec::H265 => 0..=31,
+    };
+    nal_unit_types(codec, data).any(|nal| picture.contains(&nal))
 }
 
 #[cfg(test)]
@@ -767,13 +847,25 @@ mod tests {
         );
     }
 
-    /// The fixture split into access units, one per Android Auto video message.
-    fn access_units() -> Vec<&'static [u8]> {
-        let stream: &'static [u8] = include_bytes!("../../tests/fixtures/parser-continuation.h264");
+    /// A codec's fixture split into access units, one per Android Auto video
+    /// message, at its access unit delimiters (H.264 type 9, H.265 type 35).
+    fn units_of(codec: VideoCodec) -> Vec<&'static [u8]> {
+        let (stream, delimiter): (&'static [u8], u8) = match codec {
+            VideoCodec::H264 => (
+                include_bytes!("../../tests/fixtures/parser-continuation.h264"),
+                9,
+            ),
+            VideoCodec::H265 => (
+                include_bytes!("../../tests/fixtures/parser-continuation.h265"),
+                35,
+            ),
+        };
         let mut starts: Vec<usize> = stream
             .windows(5)
             .enumerate()
-            .filter_map(|(i, w)| (w[..4] == [0, 0, 0, 1] && w[4] & 0x1f == 9).then_some(i))
+            .filter_map(|(i, w)| {
+                (w[..4] == [0, 0, 0, 1] && nal_type(codec, w[4]) == delimiter).then_some(i)
+            })
             .collect();
         assert_eq!(starts.len(), 24);
         starts.push(stream.len());
@@ -783,14 +875,24 @@ mod tests {
             .collect()
     }
 
-    /// Split the first unit like Android Auto: SPS/PPS message, then the picture.
-    fn codec_config_and_first_picture() -> (&'static [u8], &'static [u8]) {
-        let first = access_units()[0];
+    /// The H.264 fixture's access units.
+    fn access_units() -> Vec<&'static [u8]> {
+        units_of(VideoCodec::H264)
+    }
+
+    /// Split the first unit like Android Auto: the codec configuration
+    /// message, then the picture.
+    fn config_and_first_picture_of(codec: VideoCodec) -> (&'static [u8], &'static [u8]) {
+        let first = units_of(codec)[0];
         let slice = first
             .windows(4)
-            .position(|w| w[..3] == [0, 0, 1] && (1..=5).contains(&(w[3] & 0x1f)))
+            .position(|w| w[..3] == [0, 0, 1] && contains_picture(codec, w))
             .unwrap();
         first.split_at(slice)
+    }
+
+    fn codec_config_and_first_picture() -> (&'static [u8], &'static [u8]) {
+        config_and_first_picture_of(VideoCodec::H264)
     }
 
     #[test]
@@ -855,9 +957,18 @@ mod tests {
     }
 
     fn software_engine(path: PathBuf, count: Arc<AtomicU64>) -> DecoderEngine {
+        software_engine_for(VideoCodec::H264, path, count)
+    }
+
+    fn software_engine_for(
+        codec: VideoCodec,
+        path: PathBuf,
+        count: Arc<AtomicU64>,
+    ) -> DecoderEngine {
         DecoderEngine::new(
             path,
             count,
+            codec,
             Vec::new(),
             DecoderInfo::default(),
             FrameSize::default(),
@@ -876,6 +987,7 @@ mod tests {
         let mut engine = DecoderEngine::new(
             path.clone(),
             Arc::new(AtomicU64::new(0)),
+            VideoCodec::H264,
             Vec::new(),
             DecoderInfo::default(),
             size.clone(),
@@ -910,7 +1022,8 @@ mod tests {
         let mut engine = DecoderEngine::new(
             path.clone(),
             Arc::clone(&count),
-            vec!["no_such_decoder"],
+            VideoCodec::H264,
+            vec![(VideoCodec::H264, "no_such_decoder")],
             info.clone(),
             FrameSize::default(),
         )
@@ -939,7 +1052,8 @@ mod tests {
         let mut engine = DecoderEngine::new(
             path.clone(),
             Arc::clone(&count),
-            vec!["hevc"],
+            VideoCodec::H264,
+            vec![(VideoCodec::H264, "hevc")],
             info.clone(),
             FrameSize::default(),
         )
@@ -983,51 +1097,52 @@ mod tests {
             tx: Some(tx),
             worker: None,
             counters: VideoCounters::default(),
-            wait_for_idr: Arc::new(AtomicBool::new(false)),
+            wait_for_keyframe: Arc::new(AtomicBool::new(false)),
             frame_path: std::env::temp_dir().join(format!(
                 "navbridge-keyframe-wanted-test-{}.rgba",
                 std::process::id()
             )),
             generation: Arc::new(Mutex::new(0)),
             decoder: decoder.clone(),
+            codec: Cell::new(VideoCodec::H264),
         };
         decoder.keyframe_wanted.store(true, Ordering::Relaxed);
         let picture = [0, 0, 0, 1, 0x41];
-        assert_eq!(pipeline.push_h264(&picture), PushResult::NeedKeyframe);
-        assert_eq!(pipeline.push_h264(&picture), PushResult::Dropped);
-        assert_eq!(
-            pipeline.push_h264(&[0, 0, 0, 1, 0x65]),
-            PushResult::Accepted
-        );
+        assert_eq!(pipeline.push(&picture), PushResult::NeedKeyframe);
+        assert_eq!(pipeline.push(&picture), PushResult::Dropped);
+        assert_eq!(pipeline.push(&[0, 0, 0, 1, 0x65]), PushResult::Accepted);
         assert_eq!(queue.try_iter().count(), 1);
     }
 
     #[test]
     fn every_access_unit_is_published_without_waiting_for_the_next() {
-        let (config, first_picture) = codec_config_and_first_picture();
-        let count = Arc::new(AtomicU64::new(0));
-        let path = std::env::temp_dir().join(format!(
-            "navbridge-access-unit-test-{}.rgba",
-            std::process::id()
-        ));
-        let mut engine = software_engine(path.clone(), Arc::clone(&count));
-        engine.push(config).unwrap();
-        assert_eq!(count.load(Ordering::Relaxed), 0);
-        assert!(!path.exists());
-        let pictures = std::iter::once(first_picture).chain(access_units().into_iter().skip(1));
-        for (index, unit) in pictures.enumerate() {
-            engine.push(unit).unwrap();
-            assert_eq!(
-                count.load(Ordering::Relaxed),
-                index as u64 + 1,
-                "access unit {index} was held back"
-            );
-            engine.show_newest().unwrap();
-            assert_eq!(sequence(&path), index as u64 + 1);
+        for codec in [VideoCodec::H264, VideoCodec::H265] {
+            let (config, first_picture) = config_and_first_picture_of(codec);
+            let count = Arc::new(AtomicU64::new(0));
+            let path = std::env::temp_dir().join(format!(
+                "navbridge-access-unit-test-{codec:?}-{}.rgba",
+                std::process::id()
+            ));
+            let mut engine = software_engine_for(codec, path.clone(), Arc::clone(&count));
+            engine.push(config).unwrap();
+            assert_eq!(count.load(Ordering::Relaxed), 0);
+            assert!(!path.exists());
+            let pictures =
+                std::iter::once(first_picture).chain(units_of(codec).into_iter().skip(1));
+            for (index, unit) in pictures.enumerate() {
+                engine.push(unit).unwrap();
+                assert_eq!(
+                    count.load(Ordering::Relaxed),
+                    index as u64 + 1,
+                    "{codec:?} access unit {index} was held back"
+                );
+                engine.show_newest().unwrap();
+                assert_eq!(sequence(&path), index as u64 + 1);
+            }
+            let frame = fs::read(&path).unwrap();
+            let _ = fs::remove_file(&path);
+            assert_eq!(frame.len(), VIDEO_FRAME_HEADER_SIZE + FRAME_BYTES);
         }
-        let frame = fs::read(&path).unwrap();
-        let _ = fs::remove_file(&path);
-        assert_eq!(frame.len(), VIDEO_FRAME_HEADER_SIZE + FRAME_BYTES);
     }
 
     /// The sequence number in a published frame's header.
@@ -1064,23 +1179,24 @@ mod tests {
             tx: Some(tx),
             worker: None,
             counters: counters.clone(),
-            wait_for_idr: Arc::new(AtomicBool::new(false)),
+            wait_for_keyframe: Arc::new(AtomicBool::new(false)),
             frame_path: std::env::temp_dir().join(format!(
                 "navbridge-keyframe-test-{}.rgba",
                 std::process::id()
             )),
             generation: Arc::new(Mutex::new(0)),
             decoder: DecoderInfo::default(),
+            codec: Cell::new(VideoCodec::H264),
         };
         let (keyframe, frame): (&[u8], &[u8]) = (&[0, 0, 0, 1, 0x65], &[0, 0, 0, 1, 0x41]);
-        assert_eq!(pipeline.push_h264(frame), PushResult::Accepted);
+        assert_eq!(pipeline.push(frame), PushResult::Accepted);
         // The decoder is behind: the next frame is lost, so ask once.
-        assert_eq!(pipeline.push_h264(frame), PushResult::NeedKeyframe);
-        assert_eq!(pipeline.push_h264(frame), PushResult::Dropped);
+        assert_eq!(pipeline.push(frame), PushResult::NeedKeyframe);
+        assert_eq!(pipeline.push(frame), PushResult::Dropped);
         // Once the decoder catches up, only a keyframe can restart the picture.
         queue.recv().unwrap();
-        assert_eq!(pipeline.push_h264(frame), PushResult::Dropped);
-        assert_eq!(pipeline.push_h264(keyframe), PushResult::Accepted);
+        assert_eq!(pipeline.push(frame), PushResult::Dropped);
+        assert_eq!(pipeline.push(keyframe), PushResult::Accepted);
         assert_eq!(counters.dropped(), 3);
     }
 
@@ -1095,7 +1211,7 @@ mod tests {
         let counters = pipeline.counters.clone();
         // One unit at a time, so the shallow queue never overflows.
         for (index, unit) in access_units().into_iter().enumerate() {
-            assert_eq!(pipeline.push_h264(unit), PushResult::Accepted);
+            assert_eq!(pipeline.push(unit), PushResult::Accepted);
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             while counters.decoded() <= index as u64 {
                 assert!(
@@ -1105,9 +1221,43 @@ mod tests {
                 thread::sleep(Duration::from_millis(1));
             }
         }
-        assert_eq!(pipeline.push_h264(&[]), PushResult::Dropped);
+        assert_eq!(pipeline.push(&[]), PushResult::Dropped);
         assert_eq!((counters.decoded(), counters.dropped()), (24, 1));
         assert!(!pipeline.stopped());
+    }
+
+    #[test]
+    fn the_decoder_follows_the_codec_the_phone_chose() {
+        let path =
+            std::env::temp_dir().join(format!("navbridge-codec-test-{}.rgba", std::process::id()));
+        let pipeline = VideoPipeline::start(&path, false, FrameSize::default()).unwrap();
+        let counters = pipeline.counters.clone();
+        assert!(pipeline.decoder().ends_with(" h264 (software)"));
+        pipeline.decoder_changed();
+        let mut decoded = 0;
+        for codec in [VideoCodec::H265, VideoCodec::H264] {
+            pipeline.set_codec(codec);
+            for unit in units_of(codec) {
+                assert_eq!(pipeline.push(unit), PushResult::Accepted);
+                decoded += 1;
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while counters.decoded() < decoded {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "{codec:?} unit {decoded} not decoded"
+                    );
+                    thread::sleep(Duration::from_millis(1));
+                }
+            }
+            let name = if codec == VideoCodec::H265 {
+                "hevc"
+            } else {
+                "h264"
+            };
+            assert!(pipeline.decoder().ends_with(&format!(" {name} (software)")));
+            assert!(pipeline.decoder_changed());
+        }
+        assert_eq!(counters.dropped(), 0);
     }
 
     #[test]
@@ -1126,13 +1276,14 @@ mod tests {
             tx: Some(tx),
             worker: Some(worker),
             counters: VideoCounters::default(),
-            wait_for_idr: Arc::new(AtomicBool::new(false)),
+            wait_for_keyframe: Arc::new(AtomicBool::new(false)),
             frame_path: path,
             generation: Arc::new(Mutex::new(0)),
             decoder: DecoderInfo::default(),
+            codec: Cell::new(VideoCodec::H264),
         };
         assert!(pipeline.stopped());
-        assert_eq!(pipeline.push_h264(&[0, 0, 0, 1, 0x65]), PushResult::Stopped);
+        assert_eq!(pipeline.push(&[0, 0, 0, 1, 0x65]), PushResult::Stopped);
     }
 
     #[test]
@@ -1146,15 +1297,13 @@ mod tests {
             tx: Some(tx),
             worker: None,
             counters: VideoCounters::default(),
-            wait_for_idr: Arc::new(AtomicBool::new(false)),
+            wait_for_keyframe: Arc::new(AtomicBool::new(false)),
             frame_path: path.clone(),
             generation: generation.clone(),
             decoder: DecoderInfo::default(),
+            codec: Cell::new(VideoCodec::H264),
         };
-        assert_eq!(
-            pipeline.push_h264(&[0, 0, 0, 1, 0x65]),
-            PushResult::Accepted
-        );
+        assert_eq!(pipeline.push(&[0, 0, 0, 1, 0x65]), PushResult::Accepted);
         fs::write(&path, b"old frame").unwrap();
         pipeline.reset();
         assert!(!path.exists());
@@ -1207,21 +1356,50 @@ mod tests {
     }
 
     #[test]
-    fn finds_idr_annex_b_nal() {
-        assert!(contains_idr(&[0, 0, 0, 1, 0x65, 1, 2, 3]));
-        assert!(contains_idr(&[9, 9, 0, 0, 1, 0x25, 1]));
-        assert!(!contains_idr(&[0, 0, 0, 1, 0x41, 1, 2]));
+    fn finds_keyframes_annex_b_nal() {
+        use VideoCodec::{H264, H265};
+        // H.264: an IDR (5), not a plain slice (1).
+        assert!(contains_keyframe(H264, &[0, 0, 0, 1, 0x65, 1, 2, 3]));
+        assert!(contains_keyframe(H264, &[9, 9, 0, 0, 1, 0x25, 1]));
+        assert!(!contains_keyframe(H264, &[0, 0, 0, 1, 0x41, 1, 2]));
+        // H.265: IDR (19, 20) and CRA (21), not a trailing picture (1). The
+        // H.264 IDR's byte is an H.265 slice.
+        assert!(contains_keyframe(H265, &[0, 0, 0, 1, 0x26, 1, 2]));
+        assert!(contains_keyframe(H265, &[0, 0, 1, 0x28, 1]));
+        assert!(contains_keyframe(H265, &[0, 0, 1, 0x2a, 1]));
+        assert!(!contains_keyframe(H265, &[0, 0, 0, 1, 0x02, 1, 2]));
+        assert!(!contains_keyframe(H265, &[0, 0, 0, 1, 0x65, 1, 2]));
     }
 
     #[test]
     fn codec_configuration_is_not_a_picture() {
-        assert!(!contains_picture(&[
-            0, 0, 0, 1, 0x67, 1, 2, 0, 0, 0, 1, 0x68, 3
-        ]));
-        assert!(!contains_picture(&[
-            0, 0, 0, 1, 0x09, 0xf0, 0, 0, 1, 0x06, 5
-        ]));
-        assert!(contains_picture(&[0, 0, 0, 1, 0x67, 1, 0, 0, 1, 0x65, 2]));
-        assert!(contains_picture(&[0, 0, 1, 0x41, 1]));
+        use VideoCodec::{H264, H265};
+        assert!(!contains_picture(
+            H264,
+            &[0, 0, 0, 1, 0x67, 1, 2, 0, 0, 0, 1, 0x68, 3]
+        ));
+        assert!(!contains_picture(
+            H264,
+            &[0, 0, 0, 1, 0x09, 0xf0, 0, 0, 1, 0x06, 5]
+        ));
+        assert!(contains_picture(
+            H264,
+            &[0, 0, 0, 1, 0x67, 1, 0, 0, 1, 0x65, 2]
+        ));
+        assert!(contains_picture(H264, &[0, 0, 1, 0x41, 1]));
+        // H.265: VPS, SPS and PPS (32-34), a delimiter (35) and SEI (39).
+        assert!(!contains_picture(
+            H265,
+            &[0, 0, 0, 1, 0x40, 1, 0, 0, 0, 1, 0x42, 1, 0, 0, 0, 1, 0x44, 1]
+        ));
+        assert!(!contains_picture(
+            H265,
+            &[0, 0, 0, 1, 0x46, 1, 0, 0, 1, 0x4e, 1]
+        ));
+        assert!(contains_picture(
+            H265,
+            &[0, 0, 0, 1, 0x44, 1, 0, 0, 1, 0x28, 1]
+        ));
+        assert!(contains_picture(H265, &[0, 0, 1, 0x02, 1]));
     }
 }

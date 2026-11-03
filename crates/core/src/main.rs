@@ -65,11 +65,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         services::calls::CallService::start(config.audio.clone(), settings.load().call_volume_db)
     });
 
-    // The DPI as Settings left it, else core.toml's. The UI's size is logged
-    // if it asks for frames at another size than the panel's.
+    // The DPI and codec as Settings left them, else core.toml's. The UI's size
+    // is logged if it asks for frames at another size than the panel's.
+    let media = projection.snapshot();
     info!(
         media = "800x480",
-        dpi = projection.snapshot().dpi,
+        dpi = media.dpi,
+        codec = ?media.codec,
         "NavBridge core started"
     );
     if let Some(address) = config.android_auto.head_unit_server {
@@ -110,6 +112,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         info!(dpi, "projection DPI for the next phone");
                         projection.set_dpi(dpi);
                     }
+                    next_snapshot = Instant::now();
+                }
+                ClientCommand::SetVideoCodec { codec } => {
+                    info!(?codec, "projection codec for the next phone");
+                    projection.set_codec(codec);
                     next_snapshot = Instant::now();
                 }
                 ClientCommand::SetVolume { percent } => system.set_gain(Gain::Speaker, percent),
@@ -256,7 +263,7 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
             "--wireless" => wireless = true,
             "-h" | "--help" => {
                 println!(
-                    "NavBridge Core\n\nUsage: navbridge-core [--config PATH] [--wireless]\n\n  --wireless  start with wireless Android Auto on (the hotspot replaces the home Wi-Fi)\n\nMedia session: 800x480; DPI from android_auto.dpi (default 160)"
+                    "NavBridge Core\n\nUsage: navbridge-core [--config PATH] [--wireless]\n\n  --wireless  start with wireless Android Auto on (the hotspot replaces the home Wi-Fi)\n\nMedia session: 800x480; DPI from android_auto.dpi (default 160), codec from android_auto.codec (default h264)"
                 );
                 std::process::exit(0);
             }

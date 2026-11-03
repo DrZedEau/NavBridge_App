@@ -1,5 +1,5 @@
 use crate::services::ibus::Button;
-use navbridge_common::{InputAction, DEFAULT_SOCKET_PATH, MEDIA_DPI};
+use navbridge_common::{InputAction, VideoCodec, DEFAULT_SOCKET_PATH, MEDIA_DPI};
 use serde::{de::IgnoredAny, Deserialize};
 use std::{collections::BTreeMap, fs, net::SocketAddr, path::Path};
 // Unknown keys are rejected so that a typo stops the core instead of being ignored.
@@ -43,6 +43,8 @@ pub struct AndroidAutoConfig {
     /// core.toml from before still loads.
     #[serde(rename = "fps")]
     _fps: IgnoredAny,
+    /// The codec the phone is asked for.
+    pub codec: VideoCodec,
     pub decoder: DecoderChoice,
     pub left_hand_drive: bool,
     pub certificate: Option<String>,
@@ -56,6 +58,7 @@ impl Default for AndroidAutoConfig {
         Self {
             dpi: MEDIA_DPI,
             _fps: IgnoredAny,
+            codec: VideoCodec::H264,
             decoder: DecoderChoice::Auto,
             left_hand_drive: true,
             certificate: None,
@@ -64,7 +67,7 @@ impl Default for AndroidAutoConfig {
         }
     }
 }
-/// Which H.264 decoder shows the projection.
+/// Which decoder shows the projection.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum DecoderChoice {
@@ -141,6 +144,7 @@ mod tests {
     fn shipped_config_parses_and_unknown_keys_are_rejected() {
         let c: CoreConfig = toml::from_str(include_str!("../../../config/core.toml")).unwrap();
         assert_eq!(c.android_auto.dpi, 160);
+        assert_eq!(c.android_auto.codec, VideoCodec::H264);
         assert_eq!(c.android_auto.decoder, DecoderChoice::Auto);
         assert!(c.ibus.enabled);
         assert_eq!(c.ibus.device, IbusConfig::default().device);
@@ -155,6 +159,9 @@ mod tests {
         );
         let c: CoreConfig = toml::from_str("[android_auto]\ndecoder = \"software\"").unwrap();
         assert_eq!(c.android_auto.decoder, DecoderChoice::Software);
+        let c: CoreConfig = toml::from_str("[android_auto]\ncodec = \"h265\"").unwrap();
+        assert_eq!(c.android_auto.codec, VideoCodec::H265);
+        assert!(toml::from_str::<CoreConfig>("[android_auto]\ncodec = \"vp9\"").is_err());
         // The frame rate, from before it was always 60, is still accepted.
         assert!(toml::from_str::<CoreConfig>("[android_auto]\nfps = 30").is_ok());
         assert!(toml::from_str::<CoreConfig>("[android_auto]\ndecoder = \"gpu\"").is_err());

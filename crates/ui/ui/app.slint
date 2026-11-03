@@ -427,8 +427,8 @@ export component AppWindow inherits Window {
     // The connected phone's screen: Android Auto, the only projection in this
     // build; CarPlay will show here too.
     if root.screen == 1: Rectangle {
-        // Wired Android Auto is negotiated at 800x480 with configurable DPI. The backend performs
-        // software H.264 decode and publishes this exact 400x240 presentation.
+        // Wired Android Auto is negotiated at 800x480 with configurable DPI. The backend decodes
+        // H.264 or H.265 and publishes this exact 400x240 presentation.
         x: 0px; y: 0px; width: 400px; height: 240px;
         background: Palette.background;
 

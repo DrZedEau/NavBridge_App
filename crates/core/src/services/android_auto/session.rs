@@ -5,7 +5,9 @@ use super::{
 use crate::config::AndroidAutoConfig;
 use crate::services::audio::Stream;
 use crate::services::gnss::Fix;
-use navbridge_common::{NavigationKey, PhoneAction, TouchKind, MEDIA_HEIGHT, MEDIA_WIDTH};
+use navbridge_common::{
+    NavigationKey, PhoneAction, TouchKind, VideoCodec, MEDIA_HEIGHT, MEDIA_WIDTH,
+};
 use protobuf::{Message, MessageField};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -77,6 +79,13 @@ mod msg {
         pub const PAIRING_RESPONSE: u16 = 0x8002;
     }
 }
+/// Media codecs, as discovery offers them and the phone's setup request
+/// chooses one.
+mod codec {
+    pub const PCM: u32 = 1;
+    pub const H264: u32 = 3;
+    pub const H265: u32 = 7;
+}
 /// How phones pair with the car's Bluetooth: comparing the code both show,
 /// as NavBridge's own pairing does.
 const PAIRING_NUMERIC_COMPARISON: u32 = 2;
@@ -145,6 +154,8 @@ pub const KEYS: &[u32] = &[
 ];
 pub enum Action {
     Connected(String),
+    /// The codec the phone's video comes in, before any of it.
+    VideoCodec(VideoCodec),
     Video(Vec<u8>),
     Audio(Stream, Vec<u8>),
     StopAudio(Stream),
@@ -266,7 +277,7 @@ pub fn discovery(
         let mut c = p::Channel::new();
         c.set_channel_id(id as u32);
         let mut av = p::AVChannel::new();
-        av.set_stream_type(if id == VIDEO { 3 } else { 1 });
+        av.set_stream_type(if id == VIDEO { codec::H264 } else { codec::PCM });
         if id == VIDEO {
             let mut vc = p::VideoConfig::new();
             vc.set_video_resolution(1);
@@ -277,6 +288,10 @@ pub fn discovery(
             vc.set_margin_width(0);
             vc.set_margin_height(0);
             vc.set_dpi(config.dpi);
+            // H.264 goes unnamed, as before H.265 was offered.
+            if config.codec == VideoCodec::H265 {
+                vc.set_video_codec_type(codec::H265);
+            }
             av.video_configs.push(vc);
         } else {
             let stream = audio_stream(id).unwrap();
@@ -645,8 +660,21 @@ impl Session {
                 msg::media::SETUP_REQUEST => {
                     let r = parse::<p::SetupRequest>(body)?;
                     let mut m = p::SetupResponse::new();
-                    // Codecs: H.264 video (3) and PCM audio (1).
-                    let supported = r.media_codec_type() == if channel == VIDEO { 3 } else { 1 };
+                    let supported = if channel == VIDEO {
+                        let video = self.video_codec(r.media_codec_type());
+                        if let Some(video) = video {
+                            tracing::info!(codec = ?video, "Android Auto video codec");
+                            actions.push(Action::VideoCodec(video));
+                        } else {
+                            tracing::warn!(
+                                codec = r.media_codec_type(),
+                                "Android Auto asks for a video codec it was not offered"
+                            );
+                        }
+                        video.is_some()
+                    } else {
+                        r.media_codec_type() == codec::PCM
+                    };
                     // Status: ready (2) or failed (1).
                     m.set_media_status(if supported { 2 } else { 1 });
                     m.set_max_unacked(if channel == VIDEO { 2 } else { 10 });
@@ -766,6 +794,15 @@ impl Session {
     }
     pub fn resume(&mut self) -> Result<(), String> {
         self.video_focus(FOCUS_PROJECTED)
+    }
+    /// The codec of the phone's video setup, if discovery offered it: H.264
+    /// always, which a phone without H.265 stays on, and H.265 when chosen.
+    fn video_codec(&self, media_codec_type: u32) -> Option<VideoCodec> {
+        match media_codec_type {
+            codec::H264 => Some(VideoCodec::H264),
+            codec::H265 if self.config.codec == VideoCodec::H265 => Some(VideoCodec::H265),
+            _ => None,
+        }
     }
     /// Android Auto restarts its video with a keyframe when it gets video
     /// focus back, so the decoder can recover after dropping frames.
@@ -1343,27 +1380,60 @@ mod tests {
     }
     #[test]
     fn setup_negotiates_codec_not_legacy_config_index() {
-        let (tls, mut peer) = super::super::tls::tests::pair();
-        let mut s = connected_session();
-        s.tls = tls;
-        s.opened[VIDEO as usize] = true;
-        s.opened[MEDIA as usize] = true;
-        let mut setup = p::SetupRequest::new();
-        for (channel, codec, status) in [(VIDEO, 3, 2), (MEDIA, 1, 2), (MEDIA, 3, 1)] {
-            setup.set_media_codec_type(codec);
-            s.message(channel, 0x8000, &setup.write_to_bytes().unwrap())
-                .unwrap();
-            let mut parser = Parser::default();
-            let frames = parser
-                .feed(&s.outgoing.drain(..).flatten().collect::<Vec<_>>())
-                .unwrap();
-            for (index, frame) in frames.into_iter().enumerate() {
-                let data = super::super::tls::tests::decode(&mut peer, &frame.data);
-                if index == 0 {
-                    assert_eq!(&data[..2], &0x8003u16.to_be_bytes());
-                    let response = parse::<p::SetupResponse>(&data[2..]).unwrap();
-                    assert_eq!(response.media_status(), status);
-                    assert_eq!(response.configs, if status == 2 { vec![0] } else { vec![] });
+        // Each setup's channel and codec, the status answered (2 ready, 1
+        // failed) and the video codec passed on: H.264 always, H.265 only
+        // when it was offered.
+        let h264 = Some(VideoCodec::H264);
+        let h265 = Some(VideoCodec::H265);
+        for (offered, cases) in [
+            (
+                VideoCodec::H264,
+                [
+                    (VIDEO, 3, 2, h264),
+                    (VIDEO, 7, 1, None),
+                    (MEDIA, 1, 2, None),
+                    (MEDIA, 3, 1, None),
+                ],
+            ),
+            (
+                VideoCodec::H265,
+                [
+                    (VIDEO, 7, 2, h265),
+                    (VIDEO, 3, 2, h264),
+                    (MEDIA, 1, 2, None),
+                    (MEDIA, 7, 1, None),
+                ],
+            ),
+        ] {
+            let (tls, mut peer) = super::super::tls::tests::pair();
+            let mut s = connected_session();
+            s.config.codec = offered;
+            s.tls = tls;
+            s.opened[VIDEO as usize] = true;
+            s.opened[MEDIA as usize] = true;
+            let mut setup = p::SetupRequest::new();
+            for (channel, codec, status, video) in cases {
+                setup.set_media_codec_type(codec);
+                let actions = s
+                    .message(channel, 0x8000, &setup.write_to_bytes().unwrap())
+                    .unwrap();
+                let passed = actions.iter().find_map(|action| match action {
+                    Action::VideoCodec(codec) => Some(*codec),
+                    _ => None,
+                });
+                assert_eq!(passed, video, "{offered:?} offered, {codec} asked for");
+                let mut parser = Parser::default();
+                let frames = parser
+                    .feed(&s.outgoing.drain(..).flatten().collect::<Vec<_>>())
+                    .unwrap();
+                for (index, frame) in frames.into_iter().enumerate() {
+                    let data = super::super::tls::tests::decode(&mut peer, &frame.data);
+                    if index == 0 {
+                        assert_eq!(&data[..2], &0x8003u16.to_be_bytes());
+                        let response = parse::<p::SetupResponse>(&data[2..]).unwrap();
+                        assert_eq!(response.media_status(), status);
+                        assert_eq!(response.configs, if status == 2 { vec![0] } else { vec![] });
+                    }
                 }
             }
         }
@@ -1392,6 +1462,27 @@ mod tests {
             .unwrap()
             .video_configs[0];
         assert_eq!(video.video_fps(), 1);
+    }
+    #[test]
+    fn discovery_names_the_codec_only_for_h265() {
+        let codec = |codec| {
+            let mut config = AndroidAutoConfig::default();
+            config.codec = codec;
+            let bytes = discovery(&config, false, false, None)
+                .write_to_bytes()
+                .unwrap();
+            let decoded = p::Discovery::parse_from_bytes(&bytes).unwrap();
+            let channel = decoded.channels[VIDEO as usize - 1]
+                .av_channel
+                .clone()
+                .unwrap();
+            (
+                channel.stream_type(),
+                channel.video_configs[0].video_codec_type,
+            )
+        };
+        assert_eq!(codec(VideoCodec::H264), (3, None));
+        assert_eq!(codec(VideoCodec::H265), (3, Some(7)));
     }
     #[test]
     fn the_cars_bluetooth_is_offered_only_with_an_address() {
