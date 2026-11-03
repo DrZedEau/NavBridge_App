@@ -16,7 +16,7 @@ use config::CoreConfig;
 use ipc::IpcServer;
 use navbridge_common::{video_frame_path, AppSnapshot, ClientCommand, ServerEvent};
 use services::android_auto::{CarBluetooth, ProjectionService};
-use services::codec::Gain;
+use services::audio::mixer::Gain;
 use services::system::SystemService;
 use settings::Settings;
 use tracing::{info, warn};
@@ -68,7 +68,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // While bluez-alsa takes a phone's calls, they play in the car, at the
     // call volume Settings last chose.
     let calls = config.audio.enabled.then(|| {
-        services::calls::CallService::start(config.audio.clone(), settings.load().call_volume_db)
+        services::audio::calls::CallService::start(
+            config.audio.clone(),
+            settings.load().call_volume_db,
+        )
     });
 
     // The DPI and codec as Settings left them, else core.toml's. The UI's size

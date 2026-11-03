@@ -6,10 +6,9 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use navbridge_common::SystemSnapshot;
-use tracing::{info, warn};
 
 use crate::config::AudioConfig;
-use crate::services::codec::{self, Gain};
+use crate::services::audio::mixer::{ChosenLevels, Gain};
 use crate::settings::Settings;
 
 /// How often the module's figures, the codec and the USB devices are read.
@@ -37,36 +36,14 @@ impl SystemService {
 
         let thread = thread::spawn(move || {
             let mut previous_cpu = None;
-            let mut codec_present = false;
-            let saved = settings.load();
-            // The output volume and microphone gain last chosen, in percent.
-            let mut chosen = (saved.volume, saved.microphone);
+            let mut levels = ChosenLevels::new(audio, settings);
             loop {
-                let mut next = collect(&mut previous_cpu, &audio, chosen);
-                let present =
-                    next.audio.volume_percent.is_some() || next.audio.microphone_percent.is_some();
-                if present && !codec_present {
-                    let levels = [(Gain::Speaker, chosen.0), (Gain::Microphone, chosen.1)];
-                    for (gain, percent) in levels {
-                        if let Some(percent) = percent {
-                            apply(&audio, gain, percent);
-                        }
-                    }
-                    next.audio = codec::status(&audio, chosen);
-                }
-                codec_present = present;
+                let next = collect(&mut previous_cpu, &mut levels);
                 if let Ok(mut guard) = snapshot_thread.write() {
                     *guard = next;
                 }
                 match requests.recv_timeout(REFRESH) {
-                    Ok((gain, percent)) => {
-                        apply(&audio, gain, percent);
-                        match gain {
-                            Gain::Speaker => chosen.0 = Some(percent),
-                            Gain::Microphone => chosen.1 = Some(percent),
-                        }
-                        settings.update(|saved| (saved.volume, saved.microphone) = chosen);
-                    }
+                    Ok((gain, percent)) => levels.set(gain, percent),
                     Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => return,
                 }
@@ -103,18 +80,7 @@ impl Drop for SystemService {
     }
 }
 
-fn apply(audio: &AudioConfig, gain: Gain, percent: u8) {
-    match codec::set(audio, gain, percent) {
-        Ok(()) => info!(?gain, percent, "codec level set"),
-        Err(e) => warn!(%e, ?gain, percent, "could not set the codec level"),
-    }
-}
-
-fn collect(
-    previous_cpu: &mut Option<(u64, u64)>,
-    audio: &AudioConfig,
-    chosen: (Option<u8>, Option<u8>),
-) -> SystemSnapshot {
+fn collect(previous_cpu: &mut Option<(u64, u64)>, levels: &mut ChosenLevels) -> SystemSnapshot {
     let current = fs::read_to_string("/proc/stat")
         .ok()
         .and_then(|raw| cpu_times(&raw));
@@ -129,7 +95,7 @@ fn collect(
         cpu_usage,
         memory: read_memory(),
         cpu_temp: read_cpu_temp(),
-        audio: codec::status(audio, chosen),
+        audio: levels.status(),
         usb_devices: usb_devices(Path::new(USB_DEVICES), Path::new(UDEV_DATA)),
     }
 }

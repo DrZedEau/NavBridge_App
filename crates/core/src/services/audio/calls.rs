@@ -4,8 +4,8 @@
 //! to the phone. bluez-alsa is asked four times a second whether a call's
 //! audio runs, as its D-Bus service only announces its devices, not calls.
 //! The caller plays at the call volume, set in Settings over the codec's.
+use super::{open_buffered_pcm, AudioFormat};
 use crate::config::AudioConfig;
-use crate::services::audio::{open_buffered_pcm, AudioFormat};
 use alsa::Direction;
 use navbridge_common::CALL_VOLUME_DB;
 use std::{
