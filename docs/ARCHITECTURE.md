@@ -258,9 +258,41 @@ when pressed, because Android acts on the release; they have no long press.
 
 Both use the same `app.slint`.
 
+## Reverse camera (prepared, not started yet)
+
+`services/camera` captures a V4L2 device: a USB (UVC) camera, giving YUYV, or
+an analog camera through an ADV7280-M decoder on the CSI-2 port (the kernel's
+`adv7180` driver), giving UYVY fields. The device is opened and its format
+agreed as soon as it is there, and looked for again every 2 seconds while it
+is missing; it streams memory-mapped buffers only while the I-Bus reports
+reverse. Each picture is scaled through the projection's scaler
+(`services/frames.rs`) to the UI's frame size and replaces `camera.rgba`,
+beside `video.rgba` and in its format; the file is removed when reverse ends.
+Of an interlaced picture only the top field is shown: it holds the 240 lines
+the UI has, so no deinterlacer is needed and nothing combs.
+
+Still to do: `[camera]` in core.toml, the core starting the service and handing
+it the reverse state and the frame size, and the UI's reverse page showing
+`camera.rgba` (and the System page the camera's state). The capture path has
+not yet run on a camera; the V4L2 structures are checked against the kernel's
+ioctl numbers.
+
+## CarPlay (prepared, not started yet)
+
+Native CarPlay, with Apple's MFi authentication coprocessor on the board's I²C
+(0x10 or 0x11). `services/carplay` has its bottom layers: the coprocessor
+(certificate and challenge signatures), iAP2's link packets and control
+session messages, the authentication exchange, and putting a wired iPhone in
+its CarPlay USB configuration through sysfs, which adds an NCM network link;
+the Pi stays the USB host. Next: iAP2's reliable delivery and identification,
+the wired (usbmux, the iPhone's CarPlay service) and wireless (iAP2 over
+Bluetooth RFCOMM, then the hotspot) transports, and the CarPlay session over
+IP, whose H.264 screen goes into the projection's video pipeline. Android
+Auto's USB discovery must then leave Apple's devices alone.
+
 ## Next
 
 - Bluetooth hands-free (HFP) for call audio.
 - IBUS: on-board computer values (consumption, range), battery voltage and oil
   temperature.
-- iPhone CarPlay.
+- iPhone CarPlay, and the reverse camera: see above.

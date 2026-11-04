@@ -2,9 +2,12 @@
 //! ALSA devices name, the rates its hardware runs at and its mixer levels,
 //! which Settings also changes.
 use crate::config::AudioConfig;
+use crate::settings::Settings;
 use alsa::mixer::{Mixer, Selem, SelemChannelId};
 use navbridge_common::{AudioSnapshot, StreamFormat};
 use std::fs;
+use std::sync::Arc;
+use tracing::{info, warn};
 
 /// A sound card, from a line of /proc/asound/cards such as
 /// ` 0 [CODEC          ]: USB-Audio - USB audio CODEC`.
@@ -136,6 +139,69 @@ pub fn set(config: &AudioConfig, gain: Gain, percent: u8) -> Result<(), String> 
 }
 
 /// The control's value for a percentage of its range.
+/// The levels chosen in Settings. They are set again whenever the codec
+/// appears, as a power cut can lose ALSA's own copy, and kept in `settings`.
+pub struct ChosenLevels {
+    audio: AudioConfig,
+    settings: Arc<Settings>,
+    /// The output volume and microphone gain last chosen, in percent.
+    chosen: (Option<u8>, Option<u8>),
+    /// Whether the codec was there when last looked at.
+    present: bool,
+}
+
+impl ChosenLevels {
+    pub fn new(audio: AudioConfig, settings: Arc<Settings>) -> Self {
+        let saved = settings.load();
+        Self {
+            audio,
+            settings,
+            chosen: (saved.volume, saved.microphone),
+            present: false,
+        }
+    }
+
+    /// The codec as the System page and Settings show it; a codec that has
+    /// just appeared gets the chosen levels first.
+    pub fn status(&mut self) -> AudioSnapshot {
+        let mut snapshot = status(&self.audio, self.chosen);
+        let present = snapshot.volume_percent.is_some() || snapshot.microphone_percent.is_some();
+        if present && !self.present {
+            let levels = [
+                (Gain::Speaker, self.chosen.0),
+                (Gain::Microphone, self.chosen.1),
+            ];
+            for (gain, percent) in levels {
+                if let Some(percent) = percent {
+                    apply(&self.audio, gain, percent);
+                }
+            }
+            snapshot = status(&self.audio, self.chosen);
+        }
+        self.present = present;
+        snapshot
+    }
+
+    /// Sets a level chosen in Settings, and keeps it.
+    pub fn set(&mut self, gain: Gain, percent: u8) {
+        apply(&self.audio, gain, percent);
+        match gain {
+            Gain::Speaker => self.chosen.0 = Some(percent),
+            Gain::Microphone => self.chosen.1 = Some(percent),
+        }
+        let chosen = self.chosen;
+        self.settings
+            .update(|saved| (saved.volume, saved.microphone) = chosen);
+    }
+}
+
+fn apply(audio: &AudioConfig, gain: Gain, percent: u8) {
+    match set(audio, gain, percent) {
+        Ok(()) => info!(?gain, percent, "codec level set"),
+        Err(e) => warn!(%e, ?gain, percent, "could not set the codec level"),
+    }
+}
+
 fn raw(percent: u8, (min, max): (i64, i64)) -> i64 {
     min + ((max - min) as f64 * f64::from(percent.min(100)) / 100.0).round() as i64
 }

@@ -32,6 +32,21 @@ phone joined the hotspot) follow aa-proxy/aa-proxy-rs, checked on 16 October
 https://github.com/nisargjhaveri/WirelessAndroidAutoDongle
 https://github.com/aa-proxy/aa-proxy-rs
 
+## CarPlay protocol facts
+
+The MFi coprocessor's registers and timings, the iAP2 link and control session
+framing, the authentication message ids, the iPhone's CarPlay USB
+configuration and the iAP2 Bluetooth service UUID in
+`crates/core/src/services/carplay` follow LIVI by Lasse Heitgres
+(GPL-3.0-or-later), checked on 3 November 2026. No code was copied; the
+protocol facts were reimplemented. LIVI's NOTICE adds a term under GPL section
+7(b): a work containing LIVI code, modified, unmodified or translated, must
+show "Based on LIVI by Lasse Heitgres (https://github.com/f-io/LIVI)" in its
+legal notices (such as an About screen) and its documentation. Should LIVI code
+be ported, that line goes in the README and in the UI.
+
+https://github.com/f-io/LIVI
+
 ## Menu icons
 
 The menu's icons in `crates/ui/ui/icons`, a phone, a settings gear and a

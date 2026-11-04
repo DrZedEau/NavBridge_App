@@ -1,12 +1,13 @@
 pub mod android_auto;
 pub mod audio;
 pub mod bluetooth;
-pub mod calls;
-pub mod codec;
+pub mod camera;
+pub mod carplay;
 pub mod events;
+pub mod frames;
 pub mod gnss;
 pub mod ibus;
-pub mod media;
 pub mod power;
 pub mod system;
+pub mod video;
 pub mod wifi;

@@ -19,6 +19,11 @@ pub const MEDIA_DPI: u32 = 160;
 pub fn video_frame_path(socket_path: impl AsRef<Path>) -> PathBuf {
     socket_path.as_ref().with_file_name("video.rgba")
 }
+
+/// The reverse camera's frame, beside the projection's and in the same format.
+pub fn camera_frame_path(socket_path: impl AsRef<Path>) -> PathBuf {
+    socket_path.as_ref().with_file_name("camera.rgba")
+}
 pub const VIDEO_FRAME_MAGIC: [u8; 4] = *b"NBRG";
 pub const VIDEO_FRAME_HEADER_SIZE: usize = 20;
 
@@ -487,6 +492,18 @@ mod tests {
         assert_eq!(
             video_frame_path("/run/user/1000/navbridge-run.x/core.sock"),
             Path::new("/run/user/1000/navbridge-run.x/video.rgba")
+        );
+    }
+
+    #[test]
+    fn the_camera_frame_sits_beside_the_projection_frame() {
+        assert_eq!(
+            camera_frame_path(DEFAULT_SOCKET_PATH),
+            Path::new("/run/navbridge/camera.rgba")
+        );
+        assert_eq!(
+            camera_frame_path(DEFAULT_SOCKET_PATH).parent(),
+            video_frame_path(DEFAULT_SOCKET_PATH).parent()
         );
     }
 

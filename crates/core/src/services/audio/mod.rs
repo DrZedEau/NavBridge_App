@@ -1,6 +1,12 @@
-//! Transport-neutral signed 16-bit little-endian PCM workers. Both threads
+//! Sound through the USB codec. This module holds Android Auto's
+//! transport-neutral signed 16-bit little-endian PCM workers. Both threads
 //! sleep until there is work: playback in poll() on a doorbell and its ALSA
-//! buffers, capture in blocking reads while the phone listens.
+//! buffers, capture in blocking reads while the phone listens. Phone calls
+//! are in `calls`, and the codec's levels and status in `mixer`.
+
+pub mod calls;
+pub mod mixer;
+
 use crate::config::AudioConfig;
 use alsa::{
     pcm::{Access, Format, HwParams, PCM},
