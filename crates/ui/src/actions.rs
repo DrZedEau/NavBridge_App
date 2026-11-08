@@ -4,7 +4,7 @@ use crate::input::KeyAction;
 use crate::render::pair_option;
 use crate::settings_page::{change_setting, selected_setting, settings_index, Setting, SETTINGS};
 use crate::state::{Commands, Screen, UiState, MENU_ITEMS, SYSTEM_PAGES};
-use navbridge_common::{ClientCommand, NavigationKey, TouchKind};
+use navbridge_common::{AspectRatio, ClientCommand, NavigationKey, TouchKind};
 
 pub(crate) fn navigation_key(action: KeyAction) -> Option<NavigationKey> {
     match action {
@@ -16,6 +16,20 @@ pub(crate) fn navigation_key(action: KeyAction) -> Option<NavigationKey> {
         KeyAction::Back => Some(NavigationKey::Back),
         _ => None,
     }
+}
+
+/// The core's hello: the shape Settings chose, kept by the core, replaces
+/// frontend.toml's; then the core learns the size frames are wanted at.
+pub(crate) fn core_hello(
+    state: &mut UiState,
+    aspect_ratio: Option<AspectRatio>,
+    commands: &Commands,
+) {
+    if let Some(aspect_ratio) = aspect_ratio {
+        state.set_aspect_ratio(aspect_ratio);
+    }
+    let (width, height) = state.frame_size;
+    let _ = commands.send(ClientCommand::SetFrameSize { width, height });
 }
 
 /// The keyboard acts only while the core reads no I-Bus, as on a PC: in the
@@ -94,9 +108,9 @@ pub(crate) fn answer_pairing(state: &mut UiState, accept: bool, commands: &Comma
 }
 
 /// A Settings row tapped, its place in `SETTINGS`: the hotspot, the default
-/// phone, the theme, the DPI and the codec change at once, and Disconnect acts;
-/// a level opens, then its value's halves (`half` -1 and 1) step it down and
-/// up, and a tap on its label closes it.
+/// phone, the theme, the aspect ratio, the DPI and the codec change at once,
+/// and Disconnect acts; a level opens, then its value's halves (`half` -1 and
+/// 1) step it down and up, and a tap on its label closes it.
 pub(crate) fn tap_setting(state: &mut UiState, index: usize, half: i32, commands: &Commands) {
     if state.screen != Screen::Settings || pairing_shown(state) {
         return;
@@ -120,7 +134,8 @@ pub(crate) fn tap_setting(state: &mut UiState, index: usize, half: i32, commands
         | Setting::Disconnect
         | Setting::Dpi
         | Setting::Codec
-        | Setting::Theme => change_setting(state, true, commands),
+        | Setting::Theme
+        | Setting::AspectRatio => change_setting(state, true, commands),
         Setting::Volume | Setting::CallVolume | Setting::Microphone => {
             state.settings_editing = true
         }

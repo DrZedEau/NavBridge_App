@@ -69,7 +69,7 @@ Installed layout:
 
 Systemd units are installed in `/etc/systemd/system/` with the invoking account as `User` and its primary group as `Group`, including when invoked through sudo. Direct root logins are rejected. Hardware groups are assigned through the services.
 
-The installer also adds `/etc/polkit-1/rules.d/50-navbridge-wifi.rules`, which lets that account switch the Wi-Fi between the wireless Android Auto hotspot and the home network through NetworkManager, and `51-navbridge-power.rules`, which lets it shut the Pi down once the car's ignition stays off. Settings that survive a restart (wireless mode, the projection's DPI and video codec, the audio codec's volume and microphone gain, the call volume, the theme and the default phone) are kept in `/var/lib/navbridge`.
+The installer also adds `/etc/polkit-1/rules.d/50-navbridge-wifi.rules`, which lets that account switch the Wi-Fi between the wireless Android Auto hotspot and the home network through NetworkManager, and `51-navbridge-power.rules`, which lets it shut the Pi down once the car's ignition stays off. Settings that survive a restart (wireless mode, the projection's DPI and video codec, the audio codec's volume and microphone gain, the call volume, the theme, the aspect ratio and the default phone) are kept in `/var/lib/navbridge`.
 
 Existing config under `/opt/navbridge/config` is preserved. For upgrades from the previous layout, existing `/etc/navbridge/*.toml` files are copied into the new directory if it has no corresponding file. Future edits belong under `/opt/navbridge/config`. Both core and frontend socket paths must be `/run/navbridge/core.sock`. Previous installed binaries and units are saved under `/var/backups/navbridge/`.
 
@@ -87,7 +87,7 @@ systemctl status navbridge-core navbridge-ui
 journalctl -u navbridge-core -u navbridge-ui -f
 ```
 
-Dry runs do not install or activate anything. `--no-start` enables the app for next boot without restarting existing app processes; GPSD's socket is still enabled immediately. Stop manually launched apps before starting services. Optional Slint display settings belong in `/opt/navbridge/config/display.env`.
+On a 4:3 panel of 320x240, choose 4:3 with Aspect ratio in Settings; to start in that shape before Settings has chosen one, set `width = 320` in `/opt/navbridge/config/frontend.toml`. Dry runs do not install or activate anything. `--no-start` enables the app for next boot without restarting existing app processes; GPSD's socket is still enabled immediately. Stop manually launched apps before starting services. Optional Slint display settings belong in `/opt/navbridge/config/display.env`.
 
 To restore the tty1 login console:
 

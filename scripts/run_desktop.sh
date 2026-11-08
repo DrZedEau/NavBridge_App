@@ -3,12 +3,14 @@
 # both as your account. On the Pi's display itself, use run_kms.sh.
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-CODEC=0 SCALE=1
+CODEC=0 SCALE=1 WIDTH=400
 for arg in "$@"; do
   case $arg in
-    --help|-h) echo "Usage: $0 [--codec] [--800x480] (runs the built core and UI in a window; --codec plays and records through the USB codec of config/core.toml instead of the desktop's default sound device; --800x480 draws the UI twice as large, with Android Auto's video at its full size)"; exit 0 ;;
+    --help|-h) echo "Usage: $0 [--codec] [--800x480 | --320x240 | --640x480] (runs the built core and UI in a window; --codec plays and records through the USB codec of config/core.toml instead of the desktop's default sound device; --800x480 draws the UI twice as large, with Android Auto's video at its full size; --320x240 lays it out for a 4:3 panel, and --640x480 draws that twice as large)"; exit 0 ;;
     --codec) CODEC=1 ;;
-    --800x480) SCALE=2 ;;
+    --800x480) SCALE=2 WIDTH=400 ;;
+    --320x240) SCALE=1 WIDTH=320 ;;
+    --640x480) SCALE=2 WIDTH=320 ;;
     *) echo "Unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -42,6 +44,7 @@ sed -e "s|^socket_path = .*|socket_path = \"$RUN_DIR/core.sock\"|" "${AUDIO[@]}"
   -e 's|^shutdown = .*|shutdown = false|' "$ROOT/config/core.toml" > "$RUN_DIR/core.toml"
 sed -e "s|^socket_path = .*|socket_path = \"$RUN_DIR/core.sock\"|" \
   -e 's|^fullscreen = .*|fullscreen = false|' -e "s|^scale = .*|scale = $SCALE|" \
+  -e "s|^width = .*|width = $WIDTH|" \
   "$ROOT/config/frontend.toml" > "$RUN_DIR/frontend.toml"
 export SLINT_BACKEND=${SLINT_BACKEND:-winit-software}
 "$ROOT/target/release/navbridge-core" --config "$RUN_DIR/core.toml" & CORE_PID=$!

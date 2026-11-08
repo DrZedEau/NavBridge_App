@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 /// Physical/logical dimensions of the NavBridge shell UI.
 pub const UI_WIDTH: u32 = 400;
 pub const UI_HEIGHT: u32 = 240;
+/// The UI's width on a 4:3 panel, which Settings or frontend.toml can choose:
+/// the same height.
+pub const UI_WIDTH_4_3: u32 = 320;
 
 /// Dimensions advertised to Android Auto and used by the media pipeline.
 pub const MEDIA_WIDTH: u32 = 800;
@@ -322,6 +325,37 @@ pub enum Theme {
     Green,
 }
 
+/// The UI's shape, as Settings offers it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AspectRatio {
+    /// The 400x240 layout, which Settings calls 16:9, though it is 5:3 like
+    /// Android Auto's 800x480.
+    #[default]
+    #[serde(rename = "16:9")]
+    Wide,
+    /// The 320x240 layout.
+    #[serde(rename = "4:3")]
+    FourThree,
+}
+
+impl AspectRatio {
+    /// As Settings shows it: "16:9" or "4:3".
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Wide => "16:9",
+            Self::FourThree => "4:3",
+        }
+    }
+
+    /// The UI's layout width in this shape, at its UI_HEIGHT.
+    pub fn ui_width(self) -> u32 {
+        match self {
+            Self::Wide => UI_WIDTH,
+            Self::FourThree => UI_WIDTH_4_3,
+        }
+    }
+}
+
 /// A finger or the mouse on the projection: x and y are in Android Auto's
 /// 800x480 pixels, whatever size the UI shows it at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -413,6 +447,11 @@ pub enum ClientCommand {
     SetTheme {
         theme: Theme,
     },
+    /// Keeps the UI's shape, for the hello of a UI that connects later. The
+    /// frames' size follows from SetFrameSize.
+    SetAspectRatio {
+        aspect_ratio: AspectRatio,
+    },
     StartPairing,
     StopPairing,
     ConfirmPairing {
@@ -438,6 +477,8 @@ pub enum ServerEvent {
         media_width: u32,
         media_height: u32,
         media_dpi: u32,
+        /// The UI's shape as Settings chose it; until then, frontend.toml's.
+        aspect_ratio: Option<AspectRatio>,
     },
     Snapshot {
         snapshot: AppSnapshot,
@@ -513,6 +554,23 @@ mod tests {
         assert_eq!((MEDIA_WIDTH, MEDIA_HEIGHT, MEDIA_DPI), (800, 480, 160));
         assert_eq!(MEDIA_WIDTH, UI_WIDTH * 2);
         assert_eq!(MEDIA_HEIGHT, UI_HEIGHT * 2);
+        assert_eq!(UI_WIDTH_4_3 * 3, UI_HEIGHT * 4);
+    }
+
+    #[test]
+    fn aspect_ratios_are_saved_as_settings_names_them() {
+        for (aspect_ratio, json, width) in [
+            (AspectRatio::Wide, "\"16:9\"", UI_WIDTH),
+            (AspectRatio::FourThree, "\"4:3\"", UI_WIDTH_4_3),
+        ] {
+            assert_eq!(serde_json::to_string(&aspect_ratio).unwrap(), json);
+            assert_eq!(
+                serde_json::from_str::<AspectRatio>(json).unwrap(),
+                aspect_ratio
+            );
+            assert_eq!(format!("\"{}\"", aspect_ratio.name()), json);
+            assert_eq!(aspect_ratio.ui_width(), width);
+        }
     }
 
     #[test]

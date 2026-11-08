@@ -7,10 +7,11 @@ use crate::settings_page::{
 };
 use crate::state::{Screen, UiState, VideoSettings, USB_ROWS};
 use crate::{AppWindow, LedState, Palette, SettingsRow, SettingsSection, Theme};
-use navbridge_common::{AppSnapshot, StreamFormat, VehicleSnapshot, UI_HEIGHT, UI_WIDTH};
+use navbridge_common::{AppSnapshot, StreamFormat, VehicleSnapshot, UI_HEIGHT};
 use slint::{ComponentHandle, Image};
 
 pub(crate) fn render_state(ui: &AppWindow, state: &UiState) {
+    ui.set_page_width(state.ui_width() as f32);
     if ui.get_screen() != state.screen as i32 {
         ui.set_video_active(false);
         ui.set_projection_frame(Image::default());
@@ -59,7 +60,7 @@ pub(crate) fn render_state(ui: &AppWindow, state: &UiState) {
     let (width, height) = if size.width > 0 && size.height > 0 {
         (size.width, size.height)
     } else {
-        (UI_WIDTH, UI_HEIGHT)
+        (state.ui_width(), UI_HEIGHT)
     };
     ui.set_ui_resolution(format!("{width}x{height}").into());
     ui.set_projection_resolution(projection_resolution(state.video).into());

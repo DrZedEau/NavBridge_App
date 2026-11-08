@@ -33,9 +33,10 @@ pub fn discovery(
     input.set_channel_id(INPUT as u32);
     let mut ic = p::InputChannel::new();
     ic.supported_keycodes = KEYS.to_vec();
-    // Touch and the mouse work on the projection, in its own pixels.
+    // Touch and the mouse work on the projection, in its own pixels: the part
+    // the phone draws in, between its margins.
     let mut touch = p::TouchConfig::new();
-    touch.set_width(MEDIA_WIDTH);
+    touch.set_width(MEDIA_WIDTH - config.margin_width);
     touch.set_height(MEDIA_HEIGHT);
     ic.touch_screen = MessageField::some(touch);
     input.input_channel = MessageField::some(ic);
@@ -73,7 +74,7 @@ pub fn discovery(
             // Android Auto), where 30 is 2; older AASDK definitions reverse
             // them. The serialized discovery test keeps it.
             vc.set_video_fps(1);
-            vc.set_margin_width(0);
+            vc.set_margin_width(config.margin_width);
             vc.set_margin_height(0);
             vc.set_dpi(config.dpi);
             // H.264 goes unnamed, as before H.265 was offered.

@@ -25,7 +25,7 @@ the car's panel shows the same layout at 400x240. The data is sample data.
 
 | Settings | A phone asking to pair |
 | --- | --- |
-| ![Settings: the Wireless, Audio, Video and UI boxes](docs/screenshots/settings.png) | ![The Bluetooth pairing code to compare, with Pair and Refuse](docs/screenshots/pairing.png) |
+| ![Settings: the Wireless, Audio, Projection and UI boxes](docs/screenshots/settings.png) | ![The Bluetooth pairing code to compare, with Pair and Refuse](docs/screenshots/pairing.png) |
 
 | System: Compute Module and USB devices | System: video and audio |
 | --- | --- |
@@ -34,6 +34,28 @@ the car's panel shows the same layout at 400x240. The data is sample data.
 | System: GNSS | System: the car, from its I-Bus |
 | --- | --- |
 | ![The GNSS receiver, fix, satellites, position, altitude, speed, HDOP and time](docs/screenshots/system-gnss.png) | ![Speed, engine speed, coolant and outside temperatures, range and consumption](docs/screenshots/system-ibus.png) |
+
+## A 4:3 panel
+
+NavBridge also runs on a 4:3 panel of 320x240. Choose it with Aspect ratio, in
+Settings' UI box: it switches at once between 4:3 and 16:9, the name Settings
+gives the 400x240 layout (which is really 5:3), and the choice survives a
+restart. The panel's timing stays in the Pi's `/boot/firmware/config.txt`, which
+NavBridge never changes.
+
+Until Settings has chosen one, the UI starts in frontend.toml's shape, so that a
+4:3 panel shows the whole layout from its first start:
+
+```toml
+width = 320
+```
+
+At 4:3, every screen is laid out 320 wide. Android Auto is asked for margins of
+160 columns, 80 on each side of its 800x480 picture, so that the phone draws in
+the 640x480 between them, and circles stay round; the core publishes only that
+part, averaged 2:1 like the 5:3 panel's. A phone in a session when the shape
+changes starts that session again, to get the margins. On the 400x240 panel, 4:3
+draws the layout on the left, with black on the right.
 
 ## Architecture
 
@@ -107,7 +129,8 @@ the KMS backend. `run_desktop.sh` runs both as your account and sends sound
 through the desktop's default device; `--codec` uses core.toml's USB codec
 instead. `--800x480` draws the UI twice as large, at 800x480, and the core then
 publishes Android Auto's video at its full 800x480 instead of downscaling it
-(frontend.toml's `scale = 2`; the panel keeps `scale = 1`). A phone plugged into
+(frontend.toml's `scale = 2`; the panel keeps `scale = 1`). `--320x240` lays the
+UI out for a 4:3 panel, and `--640x480` draws that twice as large. A phone plugged into
 the PC starts Android Auto as on the Pi. Settings
 cannot be kept there, as `/var/lib/navbridge` belongs to root: changes last
 until the core stops, with a warning in its log. Wireless mode switches `wlan0`,
@@ -254,9 +277,10 @@ PC window works alongside the keyboard:
 - **Page titles** (‹ Phone, ‹ Settings, ‹ System): a tap returns to the menu.
 - **Phone**: a tap switches Enable pairing. Android Auto's screen takes one
   finger's taps and drags, as the core declares an 800x480 touchscreen to the
-  phone; Exit in Android Auto's launcher returns to the menu.
+  phone (640x480, the part it draws in, on a 4:3 panel); Exit in Android Auto's
+  launcher returns to the menu.
 - **Settings**: every row is on screen. A tap switches Hotspot, Default
-  phone, Theme, DPI and Codec, and Disconnect or Connect acts at once. A tap
+  phone, Theme, Aspect ratio, DPI and Codec, and Disconnect or Connect acts at once. A tap
   opens a level (Speakers, Calls, Microphone); then a tap on
   the left or right half of its value steps it (by 1%, or 1 dB for Calls),
   repeating while held, and a tap on its label closes it.
@@ -277,7 +301,7 @@ returns:
   phone's name), "Disconnected" once Settings disconnected the phone, or while
   pairing is open, the name to pair with and the time left.
 - **Settings**: the hotspot for wireless Android Auto, the phone it connects
-  and the end of its session, the UI's theme, the
+  and the end of its session, the UI's theme and aspect ratio, the
   projection's DPI and video codec, the audio codec's speaker volume and
   microphone gain, and the call volume (see below).
 - **System**: the System pages.
@@ -290,7 +314,7 @@ The time is the Pi's local time. The tiles' icons are in `crates/ui/ui/icons`.
 ## Settings
 
 One page of four boxes of equal size, one per section, two by two: Wireless
-above Video on the left, Audio above UI on the right. Left/Right (or Up/Down)
+above Projection on the left, Audio above UI on the right. Left/Right (or Up/Down)
 choose a row, down the left column, then the right. Enter flips
 the Hotspot switch, and disconnects or connects the phone, at once; on the
 other rows, it opens the row: it is outlined
@@ -302,12 +326,13 @@ at once, and Enter or Back close the row again.
 | Wireless | Hotspot | Switch, on / off | Wireless Android Auto (see below) |
 | | Default phone | Any / each paired phone | The only phone NavBridge calls; Any calls them all |
 | | Disconnect | The phone in a wireless session, else n/a | Ends its session; the row then reads Connect, which calls the phones again |
-| Video | DPI | 160 / 140 | The phone gets it when it next connects |
+| Projection | DPI | 160 / 140 | The phone gets it when it next connects |
 | | Codec | H.264 / H.265 | The phone is asked for it when it next connects |
 | Audio | Speakers | 0-100%, 1% steps | The codec's `Speaker` level; held keys repeat |
 | | Calls | -12 to +18 dB, 1 dB steps | How much louder than Speakers calls play, 0 dB at first; held keys repeat |
 | | Microphone | 0-100%, 1% steps | The codec's `Mic` capture gain; held keys repeat |
 | UI | Theme | Amber / Blue / Green | The UI's colours, on black; at once |
+| | Aspect ratio | 16:9 / 4:3 | The UI's shape, 400x240 or 320x240, at once; a phone in a session starts it again (see [A 4:3 panel](#a-43-panel)) |
 
 The DPI and the codec apply when a phone next connects. A phone that cannot
 encode H.265 stays on H.264; System's Video box shows the decoder that runs
@@ -583,7 +608,7 @@ cargo test -p navbridge-ui --features navbridge-ui/direct-kms -- --ignored previ
 ```
 
 The `*-800x480.ppm` renders, converted to PNG, are the screenshots in
-`docs/screenshots`.
+`docs/screenshots`. The `*-320x240.ppm` renders show a 4:3 panel.
 
 Useful milestones: `Android accessory connected`, `Android Auto TLS authenticated`,
 `projection video format established`, `PCM playback opened`. At debug level the

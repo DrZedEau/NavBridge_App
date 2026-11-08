@@ -1,6 +1,7 @@
 use navbridge_common::ipc_output::{OutputQueue, MAX_COMMAND_BYTES, MAX_EVENT_BYTES};
 use navbridge_common::{
-    AppSnapshot, ClientCommand, ServerEvent, MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH,
+    AppSnapshot, AspectRatio, ClientCommand, ServerEvent, MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT,
+    UI_WIDTH,
 };
 use std::fs;
 use std::io::{ErrorKind, Read};
@@ -39,6 +40,7 @@ fn append_commands(input: &mut Vec<u8>, bytes: &[u8], commands: &mut Vec<ClientC
 
 pub struct IpcServer {
     media_dpi: u32,
+    aspect_ratio: Option<AspectRatio>,
     listener: UnixListener,
     clients: Vec<Client>,
     socket_path: String,
@@ -59,10 +61,15 @@ impl IpcServer {
         info!(socket = socket_path, "IPC server listening");
         Ok(Self {
             media_dpi,
+            aspect_ratio: None,
             listener,
             clients: Vec::new(),
             socket_path: socket_path.into(),
         })
+    }
+    /// The UI's shape as Settings chose it, sent in each hello from now on.
+    pub fn set_aspect_ratio(&mut self, aspect_ratio: Option<AspectRatio>) {
+        self.aspect_ratio = aspect_ratio;
     }
     pub fn accept_pending(&mut self) {
         for _ in 0..MAX_CLIENTS {
@@ -87,6 +94,7 @@ impl IpcServer {
                         media_width: MEDIA_WIDTH,
                         media_height: MEDIA_HEIGHT,
                         media_dpi: self.media_dpi,
+                        aspect_ratio: self.aspect_ratio,
                     };
                     if client.output.enqueue(&hello, MAX_EVENT_BYTES).is_ok() {
                         self.clients.push(client);
@@ -219,6 +227,30 @@ mod tests {
         }
         assert_eq!(server.clients.len(), MAX_CLIENTS);
         server.flush_pending();
+    }
+    #[test]
+    fn each_hello_has_the_shape_settings_last_chose() {
+        use std::io::{BufRead, BufReader};
+        fn hello(server: &mut IpcServer, path: &str) -> Option<AspectRatio> {
+            let client = UnixStream::connect(path).unwrap();
+            server.accept_pending();
+            server.flush_pending();
+            let mut line = String::new();
+            BufReader::new(client).read_line(&mut line).unwrap();
+            match serde_json::from_str(&line).unwrap() {
+                ServerEvent::Hello { aspect_ratio, .. } => aspect_ratio,
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        let path = format!("/tmp/navbridge-ipc-shape-{}.sock", std::process::id());
+        let mut server = IpcServer::bind(&path, 160).unwrap();
+        assert_eq!(hello(&mut server, &path), None);
+        server.set_aspect_ratio(Some(AspectRatio::FourThree));
+        assert_eq!(
+            hello(&mut server, &path),
+            Some(AspectRatio::FourThree),
+            "a UI that restarts keeps the choice"
+        );
     }
     fn woke_early(server: &IpcServer, wake: &[BorrowedFd<'_>]) -> bool {
         let started = std::time::Instant::now();

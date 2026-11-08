@@ -349,7 +349,7 @@ fn settings_rows_are_chosen_with_left_right_and_enter_opens_or_switches_them() {
     assert_eq!(selected_setting(&state), Setting::DefaultPhone);
     press(&mut state, KeyAction::Left, false);
     press(&mut state, KeyAction::Left, false);
-    assert_eq!(selected_setting(&state), Setting::Theme);
+    assert_eq!(selected_setting(&state), Setting::AspectRatio);
     press(&mut state, KeyAction::Right, false);
     assert_eq!(selected_setting(&state), Setting::Hotspot);
     assert!(rx.try_recv().is_err(), "choosing a row changed it");
@@ -774,9 +774,9 @@ fn settings_fill_four_boxes_in_the_keys_order() {
         sections,
         [
             ("WIRELESS", vec![Hotspot, DefaultPhone, Disconnect]),
-            ("VIDEO", vec![Dpi, Codec]),
+            ("PROJECTION", vec![Dpi, Codec]),
             ("AUDIO", vec![Volume, CallVolume, Microphone]),
-            ("UI", vec![Theme]),
+            ("UI", vec![Theme, AspectRatio]),
         ]
     );
 }
@@ -851,6 +851,97 @@ fn the_theme_steps_through_amber_blue_and_green_and_outlasts_the_core() {
 }
 
 #[test]
+fn the_aspect_ratio_switches_the_layout_and_the_frames_at_once() {
+    use navbridge_common::AspectRatio::{FourThree, Wide};
+    let (tx, rx) = mpsc::channel();
+    let mut state = UiState {
+        screen: Screen::Settings,
+        core_connected: true,
+        ..UiState::default()
+    };
+    let sent = |rx: &mpsc::Receiver<ClientCommand>| -> (u32, u32, navbridge_common::AspectRatio) {
+        match (rx.try_recv(), rx.try_recv(), rx.try_recv()) {
+            (
+                Ok(ClientCommand::SetFrameSize { width, height }),
+                Ok(ClientCommand::SetAspectRatio { aspect_ratio }),
+                Err(_),
+            ) => (width, height, aspect_ratio),
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    assert_eq!(section(Setting::AspectRatio), "UI");
+    let text = |state: &UiState| setting_text(state, Setting::AspectRatio);
+    assert_eq!(text(&state), ("Aspect ratio", "16:9".into()));
+    // A tap switches it at once, and the touches follow.
+    tap_setting(&mut state, place(Setting::AspectRatio), 0, &tx);
+    assert_eq!(selected_setting(&state), Setting::AspectRatio);
+    assert!(!state.settings_editing, "a tap changes it at once");
+    assert_eq!(sent(&rx), (320, 240, FourThree));
+    assert_eq!(text(&state).1, "4:3");
+    assert_eq!(state.ui_width(), 320);
+    // Enter opens it; then Left or Right switches it, once for a held key.
+    let press = |state: &mut UiState, action, repeat| {
+        handle_key_event(state, action, true, repeat, &tx);
+    };
+    press(&mut state, KeyAction::Select, false);
+    assert!(state.settings_editing);
+    press(&mut state, KeyAction::Right, false);
+    assert_eq!(sent(&rx), (400, 240, Wide));
+    press(&mut state, KeyAction::Right, true);
+    assert!(rx.try_recv().is_err(), "a held key switched it again");
+    press(&mut state, KeyAction::Left, false);
+    assert_eq!(sent(&rx), (320, 240, FourThree));
+    press(&mut state, KeyAction::Back, false);
+    // Drawn twice as large, it stays twice as large.
+    let mut double = UiState {
+        frame_size: (800, 480),
+        ..UiState::default()
+    };
+    double.set_aspect_ratio(FourThree);
+    assert_eq!(
+        (double.frame_size, double.aspect_ratio()),
+        ((640, 480), FourThree)
+    );
+    double.set_aspect_ratio(Wide);
+    assert_eq!(
+        (double.frame_size, double.aspect_ratio()),
+        ((800, 480), Wide)
+    );
+    // It waits for a core to keep the choice.
+    state.core_connected = false;
+    tap_setting(&mut state, place(Setting::AspectRatio), 0, &tx);
+    assert_eq!(state.frame_size, (320, 240));
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn the_cores_hello_brings_the_shape_settings_chose_over_frontend_toml() {
+    use navbridge_common::AspectRatio::{FourThree, Wide};
+    let (tx, rx) = mpsc::channel();
+    let size = |rx: &mpsc::Receiver<ClientCommand>| match rx.try_recv() {
+        Ok(ClientCommand::SetFrameSize { width, height }) => (width, height),
+        other => panic!("unexpected {other:?}"),
+    };
+    // Nothing chosen yet: frontend.toml's, whichever it is.
+    let mut state = UiState {
+        frame_size: (320, 240),
+        ..UiState::default()
+    };
+    core_hello(&mut state, None, &tx);
+    assert_eq!((state.frame_size, size(&rx)), ((320, 240), (320, 240)));
+    // Settings' choice replaces it, once, with no frames asked in the old shape.
+    core_hello(&mut state, Some(Wide), &tx);
+    assert_eq!((state.frame_size, size(&rx)), ((400, 240), (400, 240)));
+    assert!(rx.try_recv().is_err());
+    let mut state = UiState {
+        frame_size: (800, 480),
+        ..UiState::default()
+    };
+    core_hello(&mut state, Some(FourThree), &tx);
+    assert_eq!((state.frame_size, size(&rx)), ((640, 480), (640, 480)));
+}
+
+#[test]
 fn touches_on_the_projection_reach_the_phone_in_its_pixels() {
     let (tx, rx) = mpsc::channel();
     let mut state = connected_projection();
@@ -883,6 +974,28 @@ fn touches_on_the_projection_reach_the_phone_in_its_pixels() {
     // Without the projection on screen, touches go nowhere.
     touch_projection(&mut state, 0, 10.0, 10.0, &tx);
     assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn on_a_4_3_panel_touches_stay_between_the_phones_margins() {
+    let (tx, rx) = mpsc::channel();
+    let touch = |rx: &mpsc::Receiver<ClientCommand>| match rx.try_recv() {
+        Ok(ClientCommand::Touch { kind, x, y }) => Some((kind, x, y)),
+        _ => None,
+    };
+    // The same points, at the panel's scale and twice it.
+    for frame_size in [(320, 240), (640, 480)] {
+        let mut state = UiState {
+            frame_size,
+            ..connected_projection()
+        };
+        assert_eq!(state.ui_width(), 320);
+        touch_projection(&mut state, 0, 160.0, 120.0, &tx);
+        assert_eq!(touch(&rx), Some((TouchKind::Down, 320, 240)));
+        // The release, past the edge, stays on the part the phone draws in.
+        touch_projection(&mut state, 2, 330.0, 250.0, &tx);
+        assert_eq!(touch(&rx), Some((TouchKind::Up, 639, 479)));
+    }
 }
 
 #[test]

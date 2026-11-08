@@ -44,6 +44,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut server = IpcServer::bind(&config.socket_path, config.android_auto.dpi)?;
     // Choices made in Settings, which survive a restart.
     let settings = Arc::new(Settings::new(settings::PATH));
+    server.set_aspect_ratio(settings.load().aspect_ratio);
     let system = SystemService::start(config.audio.clone(), settings.clone());
     // Started first, so it stops last: a phone's session ends before the
     // Wi-Fi goes back to the home network.
@@ -145,6 +146,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     theme = chosen;
                     settings.update(|saved| saved.theme = chosen);
                     next_snapshot = Instant::now();
+                }
+                // Kept, and told to a UI that connects later; the UI has
+                // already asked for its frames in this shape.
+                ClientCommand::SetAspectRatio { aspect_ratio } => {
+                    info!(?aspect_ratio, "UI aspect ratio");
+                    settings.update(|saved| saved.aspect_ratio = Some(aspect_ratio));
+                    server.set_aspect_ratio(Some(aspect_ratio));
                 }
                 ClientCommand::StartPairing => {
                     bluetooth.start_pairing();

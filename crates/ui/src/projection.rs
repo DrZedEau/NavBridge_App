@@ -8,8 +8,7 @@ use crate::actions::release_navigation;
 use crate::state::{Commands, UiState};
 use crate::AppWindow;
 use navbridge_common::{
-    ClientCommand, TouchKind, MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH,
-    VIDEO_FRAME_HEADER_SIZE, VIDEO_FRAME_MAGIC,
+    ClientCommand, TouchKind, MEDIA_HEIGHT, UI_HEIGHT, VIDEO_FRAME_HEADER_SIZE, VIDEO_FRAME_MAGIC,
 };
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
@@ -17,8 +16,9 @@ use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 /// point still goes out with the release.
 pub(crate) const TOUCH_MOVE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(15);
 
-/// A finger or the mouse on the projection, at a point of the 400x240 window
-/// (whatever its scale), passed to the phone in Android Auto's 800x480.
+/// A finger or the mouse on the projection, at a point of the window's layout
+/// (whatever its scale), passed to the phone in Android Auto's pixels: the
+/// 800x480 it declares as its touchscreen, or 640x480 on a 4:3 panel.
 pub(crate) fn touch_projection(
     state: &mut UiState,
     kind: i32,
@@ -34,8 +34,9 @@ pub(crate) fn touch_projection(
             .round()
             .min((media - 1) as f32) as u32
     };
+    let ui_width = state.ui_width();
     let point = (
-        scale(x, UI_WIDTH, MEDIA_WIDTH),
+        scale(x, ui_width, ui_width * MEDIA_HEIGHT / UI_HEIGHT),
         scale(y, UI_HEIGHT, MEDIA_HEIGHT),
     );
     let kind = match kind {

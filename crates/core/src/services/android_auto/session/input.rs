@@ -59,13 +59,14 @@ impl Session {
         self.key(keycode, pressed)
     }
 
-    /// One finger, or the mouse, at a point of the 800x480 projection.
+    /// One finger, or the mouse, at a point of the projection between its
+    /// margins.
     pub fn touch(&mut self, kind: TouchKind, x: u32, y: u32) -> Result<(), String> {
         if !self.opened[INPUT as usize] {
             return Ok(());
         }
         let mut location = p::TouchLocation::new();
-        location.set_x(x.min(MEDIA_WIDTH - 1));
+        location.set_x(x.min(MEDIA_WIDTH - self.config.margin_width - 1));
         location.set_y(y.min(MEDIA_HEIGHT - 1));
         location.set_pointer_id(0);
         let mut touch = p::TouchEvent::new();

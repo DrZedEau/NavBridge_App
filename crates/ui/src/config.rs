@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use navbridge_common::DEFAULT_SOCKET_PATH;
+use navbridge_common::{DEFAULT_SOCKET_PATH, UI_WIDTH, UI_WIDTH_4_3};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -11,7 +11,10 @@ pub struct UiConfig {
     pub socket_path: String,
     pub fullscreen: bool,
     pub reconnect_ms: u64,
-    /// 1 for the panel's 400x240; 2 draws the UI at 800x480 on a PC, with
+    /// The UI's width until Settings' Aspect ratio chooses one: 400, or 320 for
+    /// a 4:3 panel. It is 240 high either way.
+    pub width: u32,
+    /// 1 for the panel's own size; 2 draws the UI twice as large on a PC, with
     /// Android Auto's video at its full size.
     pub scale: u32,
 }
@@ -22,6 +25,7 @@ impl Default for UiConfig {
             socket_path: DEFAULT_SOCKET_PATH.into(),
             fullscreen: false,
             reconnect_ms: 1_000,
+            width: UI_WIDTH,
             scale: 1,
         }
     }
@@ -31,6 +35,13 @@ impl UiConfig {
     pub fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let raw = fs::read_to_string(path)?;
         let config: Self = toml::from_str(&raw)?;
+        if ![UI_WIDTH, UI_WIDTH_4_3].contains(&config.width) {
+            return Err(format!(
+                "width must be {UI_WIDTH} or {UI_WIDTH_4_3}, not {}",
+                config.width
+            )
+            .into());
+        }
         if !matches!(config.scale, 1 | 2) {
             return Err(format!("scale must be 1 or 2, not {}", config.scale).into());
         }

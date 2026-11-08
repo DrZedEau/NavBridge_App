@@ -10,13 +10,13 @@ use super::decoders::{from_hardware, open_decoder, show_decoder, Hardware};
 use super::nal::contains_picture;
 use super::DecoderInfo;
 use crate::services::frames::{
-    configure_colors, normalize_full_range, publish_frame, FrameSize, Scaler,
+    configure_colors, normalize_full_range, publish_middle, FrameSize, Scaler,
 };
 use ffmpeg::software::scaling::context::Context as ScalingContext;
 use ffmpeg::software::scaling::flag::Flags as ScalingFlags;
 use ffmpeg::util::format::Pixel;
 use ffmpeg_next as ffmpeg;
-use navbridge_common::VideoCodec;
+use navbridge_common::{VideoCodec, MEDIA_HEIGHT, MEDIA_WIDTH};
 use tracing::{debug, info, warn};
 
 pub(super) const MAX_CODEC_CONFIG_BYTES: usize = 64 * 1024;
@@ -187,13 +187,16 @@ impl DecoderEngine {
         }
         normalize_full_range(&mut decoded);
         let (width, height) = self.size.get();
+        // The whole picture, of which a 4:3 UI gets the middle: cropping it
+        // here works whatever format the decoder gives.
+        let scaled_width = height * MEDIA_WIDTH / MEDIA_HEIGHT;
         let spec = (
             decoded.format(),
             decoded.width(),
             decoded.height(),
             decoded.color_range(),
             decoded.color_space(),
-            width,
+            scaled_width,
             height,
         );
         let rebuild = self.scaler.as_ref().map(|s| s.spec != spec).unwrap_or(true);
@@ -203,7 +206,7 @@ impl DecoderEngine {
                 decoded.width(),
                 decoded.height(),
                 Pixel::RGBA,
-                width,
+                scaled_width,
                 height,
                 // 2:1 averaging for the panel, a plain conversion at 800x480.
                 // Full chroma keeps a dark line off saturated colour edges.
@@ -224,7 +227,7 @@ impl DecoderEngine {
             );
         }
 
-        let mut rgba = ffmpeg::frame::Video::new(Pixel::RGBA, width, height);
+        let mut rgba = ffmpeg::frame::Video::new(Pixel::RGBA, scaled_width, height);
         self.scaler
             .as_mut()
             .expect("scaler was initialized")
@@ -237,7 +240,7 @@ impl DecoderEngine {
         if *generation != self.active_generation {
             return Ok(());
         }
-        publish_frame(&self.frame_path, self.sequence, &rgba)
+        publish_middle(&self.frame_path, self.sequence, &rgba, width)
             .map_err(|e| format!("publish projection frame: {e}"))?;
         Ok(())
     }

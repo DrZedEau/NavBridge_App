@@ -2,7 +2,7 @@
 //! sends the core.
 
 use crate::state::UiState;
-use navbridge_common::{ClientCommand, VideoCodec, CALL_VOLUME_DB};
+use navbridge_common::{AspectRatio, ClientCommand, VideoCodec, CALL_VOLUME_DB, UI_WIDTH};
 
 /// The projection DPIs Settings offers.
 pub(crate) const DPI_CHOICES: [u32; 2] = [160, 140];
@@ -18,6 +18,8 @@ pub(crate) enum Setting {
     Disconnect,
     /// The UI's colours.
     Theme,
+    /// The UI's shape: 400x240, or 320x240 for a 4:3 panel.
+    AspectRatio,
     Dpi,
     /// The video codec the phone is asked for.
     Codec,
@@ -27,7 +29,7 @@ pub(crate) enum Setting {
     Microphone,
 }
 
-pub(crate) const SETTINGS: [Setting; 9] = [
+pub(crate) const SETTINGS: [Setting; 10] = [
     Setting::Hotspot,
     Setting::DefaultPhone,
     Setting::Disconnect,
@@ -37,6 +39,7 @@ pub(crate) const SETTINGS: [Setting; 9] = [
     Setting::CallVolume,
     Setting::Microphone,
     Setting::Theme,
+    Setting::AspectRatio,
 ];
 
 /// The themes Settings offers, in the order it steps through them.
@@ -74,8 +77,9 @@ pub(crate) fn settings_sections() -> Vec<(&'static str, std::ops::Range<usize>)>
 
 /// Changes the open row's value, up or down: the hotspot, the DPI and the
 /// video codec switch, the audio codec's levels move by 1%, the call volume by
-/// 1 dB, the theme and the default phone step to the next or previous one, and
-/// Disconnect ends the wireless session, or once ended calls phones again.
+/// 1 dB, the theme and the default phone step to the next or previous one, the
+/// aspect ratio switches, and Disconnect ends the wireless session, or once
+/// ended calls phones again.
 pub(crate) fn change_setting(
     state: &mut UiState,
     up: bool,
@@ -165,6 +169,18 @@ pub(crate) fn change_setting(
             let _ = commands.send(ClientCommand::SetTheme { theme });
             snapshot.theme = theme;
         }
+        // The next render lays the page out in the other shape; a phone in a
+        // session starts it again, to get the margins.
+        Setting::AspectRatio => {
+            let aspect_ratio = match state.aspect_ratio() {
+                AspectRatio::Wide => AspectRatio::FourThree,
+                AspectRatio::FourThree => AspectRatio::Wide,
+            };
+            state.set_aspect_ratio(aspect_ratio);
+            let (width, height) = state.frame_size;
+            let _ = commands.send(ClientCommand::SetFrameSize { width, height });
+            let _ = commands.send(ClientCommand::SetAspectRatio { aspect_ratio });
+        }
     }
 }
 
@@ -199,9 +215,9 @@ pub(crate) fn louder(db: Option<i8>, up: bool) -> Option<i8> {
 pub(crate) fn section(row: Setting) -> &'static str {
     match row {
         Setting::Hotspot | Setting::DefaultPhone | Setting::Disconnect => "WIRELESS",
-        Setting::Dpi | Setting::Codec => "VIDEO",
+        Setting::Dpi | Setting::Codec => "PROJECTION",
         Setting::Volume | Setting::CallVolume | Setting::Microphone => "AUDIO",
-        Setting::Theme => "UI",
+        Setting::Theme | Setting::AspectRatio => "UI",
     }
 }
 
@@ -227,7 +243,12 @@ pub(crate) fn setting_text(state: &UiState, row: Setting) -> (&'static str, Stri
     match row {
         Setting::Hotspot => ("Hotspot", String::new()),
         Setting::DefaultPhone => (
-            "Default phone",
+            // A 4:3 panel's narrower box leaves the phone's name the room.
+            if state.ui_width() < UI_WIDTH {
+                "Default"
+            } else {
+                "Default phone"
+            },
             default_phone(state).unwrap_or("Any").into(),
         ),
         // A wireless session's phone, to disconnect; once disconnected, the
@@ -269,6 +290,7 @@ pub(crate) fn setting_text(state: &UiState, row: Setting) -> (&'static str, Stri
             }
             .into(),
         ),
+        Setting::AspectRatio => ("Aspect ratio", state.aspect_ratio().name().into()),
     }
 }
 

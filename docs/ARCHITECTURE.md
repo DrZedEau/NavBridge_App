@@ -8,9 +8,12 @@
    phone.
 3. Control and state travel over a Unix domain socket as newline-delimited JSON.
 4. Projection frames travel through tmpfs, never through the JSON socket.
-5. The NavBridge UI is laid out at **400x240**, the panel's size; in a PC
-   window, frontend.toml's `scale = 2` draws it at 800x480. Android Auto runs
-   at **800x480**; its DPI is configurable (default 160).
+5. The NavBridge UI is laid out at **400x240**, the panel's size, or at
+   **320x240** for a 4:3 panel (Settings' Aspect ratio, or until it has chosen,
+   frontend.toml's `width`); in a PC window, frontend.toml's `scale = 2` draws
+   it twice as large. Android Auto runs at
+   **800x480**, between margins of 80 columns on a 4:3 panel, so that the phone
+   draws at 640x480; its DPI is configurable (default 160).
 6. Video is H.264, or H.265 when chosen, decoded with FFmpeg: H.264 on the
    board's hardware decoder where there is one (Pi 4 / CM4), in software
    otherwise (Pi 5 / CM5); H.265 on the HEVC hardware of the Pi 4 and 5, in
@@ -49,18 +52,20 @@ restarts, so the UI's inotify watch on it holds. The run scripts use a private
 temporary directory in tmpfs instead.
 
 - UI to core: `hello`, `set_frame_size` (the size the UI shows projection
-  frames at), `request_snapshot`, `set_night_mode`, `set_parking_brake`,
+  frames at, in answer to the core's hello and at each change of shape),
+  `request_snapshot`, `set_night_mode`, `set_parking_brake`,
   `hide_projection`, `resume_projection`, `navigation_input`, `touch`,
   `phone_action`, `set_wireless`, `set_dpi`, `set_video_codec`, `set_volume`,
-  `set_microphone`, `set_call_volume`, `set_theme`, `start_pairing`,
-  `stop_pairing`, `confirm_pairing`, `set_default_phone`, `disconnect_phone`
-  and `connect_phone`. Settings' choices (wireless mode, DPI,
+  `set_microphone`, `set_call_volume`, `set_theme`, `set_aspect_ratio`,
+  `start_pairing`, `stop_pairing`, `confirm_pairing`, `set_default_phone`,
+  `disconnect_phone` and `connect_phone`. Settings' choices (wireless mode, DPI,
   the video codec, the audio codec's levels,
-  the call volume, the UI's theme, the default phone) are kept in
+  the call volume, the UI's theme and aspect ratio, the default phone) are kept in
   `/var/lib/navbridge/settings.toml`, which each service changes without
   touching the others' keys. Hiding and resuming move the phone's video
   focus, so the phone stops sending video while the NavBridge menu is shown.
-- Core to UI: `hello` (geometry check, and the DPI requested from the phone),
+- Core to UI: `hello` (geometry check, the DPI requested from the phone, and the
+  UI's shape as Settings chose it),
   `snapshot` (every 500 ms, on request, and when an I-Bus reading changes),
   `projection_event` (phone connected
   or disconnected, streaming started, phone asked for the NavBridge menu) and
@@ -133,7 +138,8 @@ the last configuration and a new keyframe
     |
     v
 libswscale (area, 2:1 averaging, full chroma): 800x480 -> 400x240 RGBA, for the newest
-decoded picture only when several queued up
+decoded picture only when several queued up; a 4:3 UI gets the middle 320
+columns of it, between the phone's margins
     |
     v
 /run/navbridge/video.rgba: header + pixels, replaced atomically

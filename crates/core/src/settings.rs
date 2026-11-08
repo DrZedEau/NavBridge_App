@@ -1,6 +1,6 @@
 //! Choices made in Settings that survive a restart, kept together in one
 //! file. Each service changes only its own, and the others stay as they were.
-use navbridge_common::{Theme, VideoCodec};
+use navbridge_common::{AspectRatio, Theme, VideoCodec};
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
@@ -25,6 +25,8 @@ pub struct Saved {
     pub call_volume_db: i8,
     /// The UI's colours.
     pub theme: Theme,
+    /// The UI's shape, instead of frontend.toml's width.
+    pub aspect_ratio: Option<AspectRatio>,
     /// The one phone called for wireless Android Auto, by its Bluetooth
     /// address; without one, every paired phone is called.
     pub default_phone: Option<String>,
@@ -96,6 +98,7 @@ mod tests {
         settings.update(|saved| saved.video_codec = Some(VideoCodec::H265));
         settings.update(|saved| saved.volume = Some(70));
         settings.update(|saved| saved.theme = Theme::Blue);
+        settings.update(|saved| saved.aspect_ratio = Some(AspectRatio::FourThree));
         settings.update(|saved| saved.call_volume_db = 6);
         settings.update(|saved| saved.default_phone = Some("64:9D:38:E1:B6:24".into()));
         assert_eq!(
@@ -108,12 +111,14 @@ mod tests {
                 microphone: None,
                 call_volume_db: 6,
                 theme: Theme::Blue,
+                aspect_ratio: Some(AspectRatio::FourThree),
                 default_phone: Some("64:9D:38:E1:B6:24".into()),
             }
         );
         let file = fs::read_to_string(&path).unwrap();
         assert!(file.contains("theme = \"blue\""));
         assert!(file.contains("video_codec = \"h265\""));
+        assert!(file.contains("aspect_ratio = \"4:3\""));
         // A file from before, with wireless mode and the frame rate it no
         // longer keeps, still reads.
         fs::write(&path, "wireless_android_auto = true\nfps = 30\n").unwrap();
@@ -129,6 +134,7 @@ mod tests {
             (None, None, None, 0)
         );
         assert_eq!(saved.theme, Theme::Amber);
+        assert_eq!(saved.aspect_ratio, None);
         assert_eq!(saved.default_phone, None);
         fs::remove_dir_all(dir).unwrap();
     }

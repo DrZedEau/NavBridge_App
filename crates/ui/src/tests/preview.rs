@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::{render::*, settings_page::*, state::*, AppWindow};
-use navbridge_common::{StreamFormat, VehicleSnapshot, UI_HEIGHT, UI_WIDTH};
+use navbridge_common::{StreamFormat, VehicleSnapshot, UI_HEIGHT, UI_WIDTH, UI_WIDTH_4_3};
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Platform, WindowAdapter};
 use slint::ComponentHandle;
@@ -123,6 +123,7 @@ fn preview() {
         ("system-gnss", Screen::System, 2),
         ("system-ibus", Screen::System, 3),
         ("settings-theme", Screen::Settings, 0),
+        ("settings-aspect", Screen::Settings, 0),
         ("settings-phone", Screen::Settings, 0),
         ("menu-blue", Screen::Menu, 0),
         ("settings-green", Screen::Settings, 0),
@@ -134,7 +135,7 @@ fn preview() {
         state.screen = screen;
         state.system_page = page;
         render_state(&ui, &state);
-        capture(&ui, &window, name, 1);
+        capture(&ui, &window, name, (UI_WIDTH, UI_HEIGHT));
     }
     // Taps reach their callbacks: a menu tile, a page's title, a row.
     let taps = Rc::new(RefCell::new(Vec::new()));
@@ -163,8 +164,8 @@ fn preview() {
     state.settings_editing = false;
     render_state(&ui, &state);
     tap(40.0, 15.0);
-    // Every row of the first box, and a row in each other: the
-    // microphone, the codec, the theme.
+    // Every row of the first box, and rows in each other: the microphone,
+    // the codec, the theme and the aspect ratio.
     for (x, y) in [
         (100.0, 60.0),
         (100.0, 89.0),
@@ -172,6 +173,7 @@ fn preview() {
         (250.0, 113.0),
         (100.0, 190.0),
         (250.0, 167.0),
+        (250.0, 191.0),
     ] {
         tap(x, y);
     }
@@ -186,7 +188,7 @@ fn preview() {
         *taps.borrow(),
         [
             "tile 1", "back", "row 0 0", "row 1 0", "row 2 0", "row 7 0", "row 4 0", "row 8 0",
-            "row 5 0", "row 5 -1", "row 5 1"
+            "row 9 0", "row 5 0", "row 5 -1", "row 5 1"
         ]
     );
     state.settings_editing = false;
@@ -210,8 +212,69 @@ fn preview() {
         state.screen = screen;
         state.system_page = page;
         render_state(&ui, &state);
-        capture(&ui, &window, &format!("{name}-800x480"), 2);
+        capture(
+            &ui,
+            &window,
+            &format!("{name}-800x480"),
+            (UI_WIDTH * 2, UI_HEIGHT * 2),
+        );
     }
+
+    // On a 4:3 panel, as Settings' Aspect ratio chooses: every screen, and
+    // the taps that reach the right of the narrower layout.
+    window.dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged { scale_factor: 1.0 });
+    window.set_size(slint::PhysicalSize::new(UI_WIDTH_4_3, UI_HEIGHT));
+    ui.set_double_size(false);
+    state.set_aspect_ratio(navbridge_common::AspectRatio::FourThree);
+    for (name, screen, page) in [
+        ("menu", Screen::Menu, 0),
+        ("phone", Screen::Phone, 0),
+        ("settings", Screen::Settings, 0),
+        ("phone-off", Screen::Phone, 0),
+        ("settings-open", Screen::Settings, 0),
+        ("settings-phone", Screen::Settings, 0),
+        ("settings-theme", Screen::Settings, 0),
+        ("settings-aspect", Screen::Settings, 0),
+        ("system-module", Screen::System, 0),
+        ("system-video", Screen::System, 1),
+        ("system-gnss", Screen::System, 2),
+        ("system-ibus", Screen::System, 3),
+        ("reverse", Screen::Phone, 0),
+        ("pairing", Screen::Menu, 0),
+    ] {
+        stage(&mut state, name);
+        state.screen = screen;
+        state.system_page = page;
+        render_state(&ui, &state);
+        capture(
+            &ui,
+            &window,
+            &format!("{name}-320x240"),
+            (UI_WIDTH_4_3, UI_HEIGHT),
+        );
+    }
+    stage(&mut state, "menu");
+    state.screen = Screen::Menu;
+    render_state(&ui, &state);
+    taps.borrow_mut().clear();
+    tap(30.0, 120.0);
+    tap(160.0, 120.0);
+    tap(290.0, 120.0);
+    state.screen = Screen::Settings;
+    render_state(&ui, &state);
+    // The left column's first box, then the right column's two.
+    for (x, y) in [(80.0, 60.0), (240.0, 60.0), (240.0, 167.0), (240.0, 191.0)] {
+        tap(x, y);
+    }
+    assert_eq!(
+        *taps.borrow(),
+        ["tile 0", "tile 1", "tile 2", "row 0 0", "row 5 0", "row 8 0", "row 9 0"]
+    );
+
+    // And back while the UI runs: the page's width follows the state.
+    state.set_aspect_ratio(navbridge_common::AspectRatio::Wide);
+    render_state(&ui, &state);
+    assert_eq!(ui.get_page_width(), UI_WIDTH as f32);
 }
 
 /// Sets up the sample state a preview `name` shows, beyond its screen and
@@ -223,6 +286,7 @@ fn stage(state: &mut UiState, name: &str) {
         "settings-open" => Setting::Volume,
         "settings-dpi" => Setting::Dpi,
         "settings-theme" => Setting::Theme,
+        "settings-aspect" => Setting::AspectRatio,
         // The default phone, opened, with a long name; and Connect,
         // once Disconnect has ended the session.
         "settings-phone" => Setting::DefaultPhone,
@@ -258,9 +322,9 @@ fn stage(state: &mut UiState, name: &str) {
         });
 }
 
-/// Draws the window, `scale` times the UI's size, into /tmp/navbridge-NAME.ppm.
-fn capture(ui: &AppWindow, window: &MinimalSoftwareWindow, name: &str, scale: u32) {
-    let (width, height) = (UI_WIDTH * scale, UI_HEIGHT * scale);
+/// Draws the window, at its `size` in pixels, into /tmp/navbridge-NAME.ppm.
+fn capture(ui: &AppWindow, window: &MinimalSoftwareWindow, name: &str, size: (u32, u32)) {
+    let (width, height) = size;
     ui.set_clock("14:05".into());
     ui.window().request_redraw();
     let mut pixels = vec![slint::Rgb8Pixel::default(); (width * height) as usize];

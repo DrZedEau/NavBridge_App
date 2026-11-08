@@ -10,7 +10,7 @@ use super::engine::DecoderEngine;
 use super::nal::{contains_keyframe, contains_picture, nal_type};
 use super::*;
 use crate::services::frames::{
-    configure_colors, normalize_full_range, publish_frame, RGBA_BYTES_PER_PIXEL,
+    configure_colors, normalize_full_range, publish_frame, publish_middle, RGBA_BYTES_PER_PIXEL,
 };
 use ffmpeg::software::scaling::context::Context as ScalingContext;
 use ffmpeg::software::scaling::flag::Flags as ScalingFlags;
@@ -218,6 +218,17 @@ fn frames_follow_the_size_the_ui_asks_for() {
     engine.push(units.next().unwrap()).unwrap();
     engine.show_newest().unwrap();
     assert_eq!(header(&path), (800, 480, 800 * 480 * 4));
+    // A 4:3 UI: the phone's margins are left out, at either scale.
+    for (width, height) in [(320, 240), (640, 480)] {
+        assert!(size.set(width, height));
+        assert_eq!(size.margin_width(), 160);
+        engine.push(units.next().unwrap()).unwrap();
+        engine.show_newest().unwrap();
+        assert_eq!(
+            header(&path),
+            (width, height, (width * height * 4) as usize)
+        );
+    }
     let _ = fs::remove_file(&path);
 }
 
@@ -650,6 +661,34 @@ fn publication_writes_rgba_rows_without_stride_padding() {
     for (y, row) in pixels.chunks_exact(width * 4).enumerate() {
         assert!(row.iter().all(|&b| b == y as u8), "row {y} has padding");
     }
+}
+
+#[test]
+fn the_middle_of_a_picture_is_published_without_its_margins() {
+    // Each column holds its own number.
+    let (width, height) = (400usize, 240usize);
+    let mut frame = ffmpeg::frame::Video::new(Pixel::RGBA, width as u32, height as u32);
+    let stride = frame.stride(0);
+    for y in 0..height {
+        for x in 0..width {
+            frame.data_mut(0)[y * stride + x * 4..][..4].fill(x as u8);
+        }
+    }
+    let path =
+        std::env::temp_dir().join(format!("navbridge-middle-test-{}.rgba", std::process::id()));
+    publish_middle(&path, 3, &frame, 320).unwrap();
+    let published = fs::read(&path).unwrap();
+    assert_eq!(&published[4..8], &320u32.to_le_bytes());
+    assert_eq!(&published[8..12], &240u32.to_le_bytes());
+    let pixels = &published[VIDEO_FRAME_HEADER_SIZE..];
+    assert_eq!(pixels.len(), 320 * 240 * 4);
+    for row in pixels.chunks_exact(320 * 4) {
+        assert_eq!(row[0], 40, "the first column shown");
+        assert_eq!(row[319 * 4], (359 % 256) as u8, "the last column shown");
+    }
+    // Wider than the picture, there is no middle.
+    assert!(publish_middle(&path, 4, &frame, 401).is_err());
+    fs::remove_file(path).unwrap();
 }
 
 #[test]

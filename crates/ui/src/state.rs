@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use navbridge_common::{
-    video_frame_path, AppSnapshot, ClientCommand, NavigationKey, DEFAULT_SOCKET_PATH, UI_HEIGHT,
-    UI_WIDTH,
+    video_frame_path, AppSnapshot, AspectRatio, ClientCommand, NavigationKey, DEFAULT_SOCKET_PATH,
+    UI_HEIGHT, UI_WIDTH, UI_WIDTH_4_3,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,8 +49,8 @@ pub(crate) struct UiState {
     pub(crate) video: Option<VideoSettings>,
     pub(crate) held_navigation: Option<NavigationKey>,
     pub(crate) video_sequence: std::cell::Cell<Option<u64>>,
-    /// The size projection frames come in: the panel's 400x240, or 800x480
-    /// for a UI drawn twice as large.
+    /// The size projection frames come in, and with it the UI's shape: the
+    /// panel's 400x240 or 320x240, or twice that for a UI drawn twice as large.
     pub(crate) frame_size: (u32, u32),
     /// The core's projection frames, beside its socket.
     pub(crate) frame_path: PathBuf,
@@ -83,6 +83,25 @@ impl Default for UiState {
 }
 
 impl UiState {
+    /// The UI's layout width, whatever its scale: 400, or 320 on a 4:3 panel.
+    pub(crate) fn ui_width(&self) -> u32 {
+        self.frame_size.0 * UI_HEIGHT / self.frame_size.1
+    }
+
+    pub(crate) fn aspect_ratio(&self) -> AspectRatio {
+        if self.ui_width() == UI_WIDTH_4_3 {
+            AspectRatio::FourThree
+        } else {
+            AspectRatio::Wide
+        }
+    }
+
+    /// Lays the UI out in this shape, at the same scale.
+    pub(crate) fn set_aspect_ratio(&mut self, aspect_ratio: AspectRatio) {
+        let height = self.frame_size.1;
+        self.frame_size = (aspect_ratio.ui_width() * height / UI_HEIGHT, height);
+    }
+
     pub(crate) fn disconnect_projection(&mut self) {
         self.core_connected = false;
         self.held_navigation = None;

@@ -117,7 +117,7 @@ pub(super) fn runner(
     let video = VideoPipeline::start(
         frame_path,
         config.decoder == DecoderChoice::Auto,
-        frame_size,
+        frame_size.clone(),
     )?;
     video.decoder_changed();
     state.write().unwrap().projection.decoder = video.decoder();
@@ -195,11 +195,13 @@ pub(super) fn runner(
             );
             VideoCodec::H264
         };
+        let margin_width = frame_size.margin_width();
         let result = (|| -> Result<(), String> {
             let config = {
                 let mut config = config.clone();
                 config.dpi = dpi;
                 config.codec = codec;
+                config.margin_width = margin_width;
                 config
             };
             // Asked of BlueZ at each phone, as bluez-alsa may have started.
@@ -239,6 +241,11 @@ pub(super) fn runner(
                 session.tick()?;
                 if video.stopped() {
                     return Err(DECODER_STOPPED.into());
+                }
+                // A phone can connect before a 4:3 UI has said its size: it
+                // is asked again, with the margins that shape needs.
+                if frame_size.margin_width() != margin_width {
+                    return Err("the UI's shape changed: the phone starts again".into());
                 }
                 if video.decoder_changed() {
                     state.write().unwrap().projection.decoder = video.decoder();

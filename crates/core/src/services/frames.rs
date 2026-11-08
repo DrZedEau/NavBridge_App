@@ -12,14 +12,15 @@ use ffmpeg::util::color::{Range, Space};
 use ffmpeg::util::format::Pixel;
 use ffmpeg_next as ffmpeg;
 use navbridge_common::{
-    MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH, VIDEO_FRAME_HEADER_SIZE, VIDEO_FRAME_MAGIC,
+    MEDIA_HEIGHT, MEDIA_WIDTH, UI_HEIGHT, UI_WIDTH, UI_WIDTH_4_3, VIDEO_FRAME_HEADER_SIZE,
+    VIDEO_FRAME_MAGIC,
 };
 
 pub(crate) const RGBA_BYTES_PER_PIXEL: usize = 4;
 
 /// The size frames are published at, which the UI chooses: the panel's
-/// 400x240, or Android Auto's own 800x480 for a UI drawn twice as large on a
-/// PC. It can change while video plays.
+/// 400x240 or a 4:3 panel's 320x240, or twice either for a UI drawn twice as
+/// large on a PC. It can change while video plays.
 #[derive(Clone)]
 pub struct FrameSize(Arc<AtomicU64>);
 
@@ -31,7 +32,12 @@ impl Default for FrameSize {
 
 impl FrameSize {
     /// The sizes a UI can ask for; any other is refused.
-    pub const CHOICES: [(u32, u32); 2] = [(UI_WIDTH, UI_HEIGHT), (MEDIA_WIDTH, MEDIA_HEIGHT)];
+    pub const CHOICES: [(u32, u32); 4] = [
+        (UI_WIDTH, UI_HEIGHT),
+        (MEDIA_WIDTH, MEDIA_HEIGHT),
+        (UI_WIDTH_4_3, UI_HEIGHT),
+        (UI_WIDTH_4_3 * 2, UI_HEIGHT * 2),
+    ];
 
     fn pack(width: u32, height: u32) -> u64 {
         u64::from(width) << 32 | u64::from(height)
@@ -45,6 +51,13 @@ impl FrameSize {
     pub fn get(&self) -> (u32, u32) {
         let packed = self.0.load(Ordering::Relaxed);
         ((packed >> 32) as u32, packed as u32)
+    }
+
+    /// The columns of Android Auto's picture the phone is to leave black, half
+    /// on each side, so that it draws in the UI's shape: 160 for a 4:3 UI.
+    pub fn margin_width(&self) -> u32 {
+        let (width, height) = self.get();
+        MEDIA_WIDTH - width * MEDIA_HEIGHT / height
     }
 }
 
@@ -104,11 +117,26 @@ pub(crate) fn publish_frame(
     sequence: u64,
     frame: &ffmpeg::frame::Video,
 ) -> Result<(), std::io::Error> {
-    let (width, height) = (frame.width(), frame.height());
+    publish_middle(path, sequence, frame, frame.width())
+}
+
+/// Publishes the middle `width` columns of `frame`, the part of the projection
+/// between the margins a 4:3 UI asks the phone for.
+pub(crate) fn publish_middle(
+    path: &Path,
+    sequence: u64,
+    frame: &ffmpeg::frame::Video,
+    width: u32,
+) -> Result<(), std::io::Error> {
+    let height = frame.height();
     let row_bytes = width as usize * RGBA_BYTES_PER_PIXEL;
+    let whole_row = frame.width() as usize * RGBA_BYTES_PER_PIXEL;
     let stride = frame.stride(0);
     let data = frame.data(0);
-    if stride < row_bytes || data.len() < stride.saturating_mul(height as usize) {
+    if width > frame.width()
+        || stride < whole_row
+        || data.len() < stride.saturating_mul(height as usize)
+    {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "invalid RGBA stride or buffer",
@@ -124,9 +152,13 @@ pub(crate) fn publish_frame(
     if stride == row_bytes {
         file.write_all(&data[..row_bytes * height as usize])?;
     } else {
+        // One write for the file, not one for each row.
+        let left = (whole_row - row_bytes) / 2;
+        let mut rows = Vec::with_capacity(row_bytes * height as usize);
         for row in data.chunks_exact(stride).take(height as usize) {
-            file.write_all(&row[..row_bytes])?;
+            rows.extend_from_slice(&row[left..][..row_bytes]);
         }
+        file.write_all(&rows)?;
     }
     file.flush()?;
     drop(file);

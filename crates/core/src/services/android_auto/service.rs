@@ -18,7 +18,7 @@ use crate::services::gnss::GnssUpdate;
 use crate::settings::Settings;
 use navbridge_common::{
     NavigationKey, PhoneAction, ProjectionEvent, ProjectionPhase, ProjectionSnapshot, TouchKind,
-    UsbSnapshot, VehicleSnapshot, VideoCodec,
+    UsbSnapshot, VehicleSnapshot, VideoCodec, UI_HEIGHT,
 };
 use tracing::{debug, error, info, warn};
 
@@ -46,7 +46,8 @@ pub struct ProjectionService {
 
 impl ProjectionService {
     /// The DPI and codec chosen in Settings, kept in `settings`, replace
-    /// core.toml's. Decoded video goes to `frame_path`, for the UI.
+    /// core.toml's, and its aspect ratio the size frames start at. Decoded
+    /// video goes to `frame_path`, for the UI.
     pub fn start(
         config: AndroidAutoConfig,
         audio: AudioConfig,
@@ -81,7 +82,12 @@ impl ProjectionService {
             woken,
         };
         let (s, end) = (state.clone(), stop.clone());
+        // In the shape Settings chose, so that a phone that connects before
+        // the UI gets its margins at once.
         let frame_size = FrameSize::default();
+        if let Some(aspect_ratio) = saved.aspect_ratio {
+            frame_size.set(aspect_ratio.ui_width(), UI_HEIGHT);
+        }
         let video_size = frame_size.clone();
         let worker = thread::spawn(move || {
             let setup = Setup {
@@ -134,8 +140,9 @@ impl ProjectionService {
         self.settings
             .update(|saved| saved.video_codec = Some(codec));
     }
-    /// The size the UI shows projection frames at: 400x240, or 800x480 for a
-    /// UI drawn twice as large.
+    /// The size the UI shows projection frames at: 400x240 or, on a 4:3 panel,
+    /// 320x240, or twice either for a UI drawn twice as large. A change of
+    /// shape starts a running session again, as the phone's margins must follow.
     pub fn set_frame_size(&self, width: u32, height: u32) {
         if !FrameSize::CHOICES.contains(&(width, height)) {
             warn!(

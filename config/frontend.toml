@@ -1,7 +1,12 @@
-# Slint frontend configuration. The UI is laid out at 400x240.
+# Slint frontend configuration.
 socket_path = "/run/navbridge/core.sock"
 fullscreen = false
 reconnect_ms = 1000
-# 1 for the panel. 2 draws the UI at 800x480, with Android Auto's video at its
-# full size, for testing in a PC window (./scripts/run_desktop.sh --800x480).
+# The UI's width, 240 high, until Settings' Aspect ratio chooses one, which then
+# replaces this: 400, or 320 for a 4:3 panel. The panel's own timing stays in
+# the Pi's /boot/firmware/config.txt.
+width = 400
+# 1 for the panel. 2 draws the UI twice as large, with Android Auto's video at
+# its full size, for testing in a PC window (./scripts/run_desktop.sh --800x480
+# or --640x480).
 scale = 1

@@ -52,6 +52,10 @@ pub struct AndroidAutoConfig {
     /// Development: the phone's head unit server (Android Auto developer
     /// settings) as IP:port, used while no phone is plugged in by USB.
     pub head_unit_server: Option<SocketAddr>,
+    /// Not from core.toml: the columns the phone leaves black for the UI's
+    /// shape, set for each session from the size the UI asks for.
+    #[serde(skip)]
+    pub margin_width: u32,
 }
 impl Default for AndroidAutoConfig {
     fn default() -> Self {
@@ -64,6 +68,7 @@ impl Default for AndroidAutoConfig {
             certificate: None,
             private_key: None,
             head_unit_server: None,
+            margin_width: 0,
         }
     }
 }

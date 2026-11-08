@@ -237,7 +237,6 @@ component MenuTile inherits Rectangle {
     in property <string> label;
     in property <bool> selected;
     callback tapped();
-    width: 112px;
     height: 124px;
     border-radius: 8px;
     background: root.selected ? Palette.selected-surface : Palette.surface;
@@ -265,7 +264,12 @@ component MenuTile inherits Rectangle {
 }
 
 export component AppWindow inherits Window {
-    width: 400px;
+    // The UI's width (Settings' Aspect ratio): 400px, or 320px on a 4:3 panel,
+    // where boxes are narrower and their large text smaller.
+    in property <length> page-width: 400px;
+    property <bool> narrow: root.page-width < 400px;
+    property <length> settings-font: root.narrow ? 12px : 13px;
+    width: root.page-width;
     height: 240px;
     title: "NavBridge";
     background: Palette.background;
@@ -371,7 +375,7 @@ export component AppWindow inherits Window {
     }
 
     if root.screen == 0: Rectangle {
-        x: 0px; y: 0px; width: 400px; height: 240px;
+        x: 0px; y: 0px; width: root.page-width; height: 240px;
         background: Palette.background;
 
         Text {
@@ -383,7 +387,7 @@ export component AppWindow inherits Window {
             vertical-alignment: center;
         }
         HorizontalLayout {
-            x: 200px; y: 6px; width: 188px; height: 26px;
+            x: root.page-width - 200px; y: 6px; width: 188px; height: 26px;
             alignment: end;
             Indicator {
                 label: "CORE";
@@ -391,7 +395,7 @@ export component AppWindow inherits Window {
             }
         }
         Rectangle {
-            x: 12px; y: 38px; width: 376px; height: 1px;
+            x: 12px; y: 38px; width: root.page-width - 24px; height: 1px;
             background: Palette.border;
         }
 
@@ -400,7 +404,8 @@ export component AppWindow inherits Window {
             { label: "Settings", icon: root.double-size ? @image-url("icons/settings@2x.png") : @image-url("icons/settings.png") },
             { label: "System", icon: root.double-size ? @image-url("icons/system@2x.png") : @image-url("icons/system.png") },
         ]: MenuTile {
-            x: 12px + index * 132px;
+            width: root.narrow ? 92px : 112px;
+            x: 12px + index * (root.page-width - 24px - self.width) / 2;
             y: 58px;
             icon: tile.icon;
             label: tile.label;
@@ -409,11 +414,11 @@ export component AppWindow inherits Window {
         }
 
         Rectangle {
-            x: 12px; y: 202px; width: 376px; height: 1px;
+            x: 12px; y: 202px; width: root.page-width - 24px; height: 1px;
             background: Palette.border;
         }
         HorizontalLayout {
-            x: 12px; y: 208px; width: 260px; height: 26px;
+            x: 12px; y: 208px; width: root.page-width - 140px; height: 26px;
             alignment: start;
             spacing: 14px;
             Indicator { label: "BT"; level: root.bt-led; }
@@ -421,7 +426,7 @@ export component AppWindow inherits Window {
             Indicator { label: "GNSS"; level: root.gnss-led; }
         }
         Text {
-            x: 288px; y: 208px; width: 100px; height: 26px;
+            x: root.page-width - 112px; y: 208px; width: 100px; height: 26px;
             text: root.clock;
             color: Palette.text;
             font-size: 15px;
@@ -435,17 +440,17 @@ export component AppWindow inherits Window {
     // build; CarPlay will show here too.
     if root.screen == 1: Rectangle {
         // Wired Android Auto is negotiated at 800x480 with configurable DPI. The backend decodes
-        // H.264 or H.265 and publishes this exact 400x240 presentation.
-        x: 0px; y: 0px; width: 400px; height: 240px;
+        // H.264 or H.265 and publishes this exact presentation, at the panel's size.
+        x: 0px; y: 0px; width: root.page-width; height: 240px;
         background: Palette.background;
 
         if root.video-active: Image {
-            x: 0px; y: 0px; width: 400px; height: 240px;
+            x: 0px; y: 0px; width: root.page-width; height: 240px;
             source: root.projection-frame;
         }
         // A finger or the left mouse button, passed on to the phone.
         if root.video-active: TouchArea {
-            x: 0px; y: 0px; width: 400px; height: 240px;
+            x: 0px; y: 0px; width: root.page-width; height: 240px;
             pointer-event(event) => {
                 if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
                     root.projection-touch(0, self.mouse-x, self.mouse-y);
@@ -458,7 +463,7 @@ export component AppWindow inherits Window {
         }
 
         if !root.video-active: Rectangle {
-            x: 0px; y: 0px; width: 400px; height: 240px;
+            x: 0px; y: 0px; width: root.page-width; height: 240px;
             background: Palette.background;
             BackTitle {
                 x: 12px; y: 2px; width: 100px; height: 29px;
@@ -466,21 +471,21 @@ export component AppWindow inherits Window {
                 tapped => { root.back-tapped(); }
             }
             Text {
-                x: 100px; y: 5px; width: 288px; height: 23px;
-                text: "Android Auto · CarPlay is not in this build yet";
+                x: 100px; y: 5px; width: root.page-width - 112px; height: 23px;
+                text: root.narrow ? "Android Auto" : "Android Auto · CarPlay is not in this build yet";
                 color: Palette.muted; font-size: 11px;
                 horizontal-alignment: right; vertical-alignment: center;
                 wrap: no-wrap; overflow: elide;
             }
             PairSwitch {
-                x: 12px; y: 36px; width: 376px;
+                x: 12px; y: 36px; width: root.page-width - 24px;
                 enabled: root.pair-option;
                 on: root.pairing;
                 tapped => { root.pair-tapped(); }
             }
             // How far a phone has got, in the middle of the screen.
             Text {
-                x: 12px; y: 84px; width: 376px; height: 72px;
+                x: 12px; y: 84px; width: root.page-width - 24px; height: 72px;
                 text: root.phone-message;
                 color: Palette.text;
                 font-size: 16px;
@@ -492,7 +497,7 @@ export component AppWindow inherits Window {
     }
 
     if root.screen == 2: Rectangle {
-        x: 0px; y: 0px; width: 400px; height: 240px;
+        x: 0px; y: 0px; width: root.page-width; height: 240px;
         background: Palette.background;
         BackTitle {
             x: 12px; y: 2px; width: 120px; height: 29px;
@@ -502,7 +507,7 @@ export component AppWindow inherits Window {
         // Below the title, a swipe turns the page its way, and a tap towards
         // its side.
         TouchArea {
-            x: 0px; y: 32px; width: 400px; height: 208px;
+            x: 0px; y: 32px; width: root.page-width; height: 208px;
             pointer-event(event) => {
                 if (event.kind == PointerEventKind.up) {
                     root.system-swiped(
@@ -513,7 +518,7 @@ export component AppWindow inherits Window {
             }
         }
         PageLeds {
-            x: 0px; y: 5px; width: 400px; height: 23px;
+            x: 0px; y: 5px; width: root.page-width; height: 23px;
             alignment: center;
             count: 4;
             current: root.system-page;
@@ -522,8 +527,9 @@ export component AppWindow inherits Window {
         // layout: a box of three rows above one of four, every row 20px.
         // Page 1: the module, and the USB devices NavBridge uses.
         if root.system-page == 0: InfoBox {
-            x: 8px; y: 32px; width: 384px; height: 88px;
+            x: 8px; y: 32px; width: root.page-width - 16px; height: 88px;
             title: "Compute Module";
+            label-width: root.narrow ? 110px : 140px;
             rows: [
                 { label: "CPU Usage", value: root.cpu-usage },
                 { label: "RAM Usage", value: root.ram-usage },
@@ -531,7 +537,7 @@ export component AppWindow inherits Window {
             ];
         }
         if root.system-page == 0: InfoBox {
-            x: 8px; y: 124px; width: 384px; height: 108px;
+            x: 8px; y: 124px; width: root.page-width - 16px; height: 108px;
             title: "USB Devices";
             // Short labels leave room for lsusb's long names.
             label-width: 50px;
@@ -544,8 +550,9 @@ export component AppWindow inherits Window {
         }
         // Page 2: video and audio.
         if root.system-page == 1: InfoBox {
-            x: 8px; y: 32px; width: 384px; height: 88px;
+            x: 8px; y: 32px; width: root.page-width - 16px; height: 88px;
             title: "Video";
+            label-width: root.narrow ? 110px : 140px;
             rows: [
                 { label: "UI resolution", value: root.ui-resolution },
                 { label: "Projection resolution", value: root.projection-resolution },
@@ -553,8 +560,9 @@ export component AppWindow inherits Window {
             ];
         }
         if root.system-page == 1: InfoBox {
-            x: 8px; y: 124px; width: 384px; height: 108px;
+            x: 8px; y: 124px; width: root.page-width - 16px; height: 108px;
             title: "Audio";
+            label-width: root.narrow ? 125px : 140px;
             rows: [
                 { label: "Output type", value: root.audio-output-type },
                 { label: "Output sampling rate", value: root.audio-output-rate },
@@ -564,9 +572,9 @@ export component AppWindow inherits Window {
         }
         // Page 3: the GNSS receiver.
         if root.system-page == 2: InfoBox {
-            x: 8px; y: 32px; width: 384px; height: 200px;
+            x: 8px; y: 32px; width: root.page-width - 16px; height: 200px;
             title: "GNSS Signal";
-            label-width: 150px;
+            label-width: root.narrow ? 125px : 150px;
             rows: [
                 { label: "Receiver", value: root.gnss-receiver },
                 { label: "Status / Fix", value: root.gnss-status },
@@ -580,10 +588,10 @@ export component AppWindow inherits Window {
         }
         // Page 4: the car, from its I-Bus.
         if root.system-page == 3: Rectangle {
-            x: 0px; y: 0px; width: 400px; height: 240px;
+            x: 0px; y: 0px; width: root.page-width; height: 240px;
             // Below the readings, the link to the car.
             Text {
-                x: 12px; y: 212px; width: 376px; height: 20px;
+                x: 12px; y: 212px; width: root.page-width - 24px; height: 20px;
                 text: "IBUS · " + root.vehicle-status;
                 color: Palette.muted; font-size: 11px;
                 horizontal-alignment: center; vertical-alignment: center;
@@ -598,24 +606,25 @@ export component AppWindow inherits Window {
                 { label: "RANGE", value: root.vehicle-range, note: "" },
                 { label: "CONSUMPTION", value: root.vehicle-consumption, note: "" },
             ]: Rectangle {
-                x: index == 0 || index == 2 || index == 4 ? 8px : 204px;
+                x: index == 0 || index == 2 || index == 4 ? 8px : root.page-width / 2 + 4px;
                 y: 32px + (index < 2 ? 0px : index < 4 ? 60px : 120px);
-                width: 188px; height: 56px;
+                width: root.page-width / 2 - 12px; height: 56px;
                 border-radius: 4px;
                 background: Palette.surface;
                 border-width: 1px; border-color: Palette.border;
                 Text {
-                    x: 8px; y: 4px; width: 172px; height: 16px;
+                    x: 8px; y: 4px; width: parent.width - 16px; height: 16px;
                     text: tile.label; color: Palette.accent; font-size: 11px; font-weight: 700;
                 }
                 Text {
-                    x: 8px; y: 20px; width: 172px; height: 32px;
-                    text: tile.value; color: Palette.text; font-size: 22px; font-weight: 700;
+                    x: 8px; y: 20px; width: parent.width - 16px; height: 32px;
+                    text: tile.value; color: Palette.text; font-weight: 700;
+                    font-size: root.narrow ? 17px : 22px;
                     vertical-alignment: center;
                     wrap: no-wrap; overflow: elide;
                 }
                 Text {
-                    x: 96px; y: 4px; width: 84px; height: 16px;
+                    x: parent.width - 92px; y: 4px; width: 84px; height: 16px;
                     text: tile.note; color: Palette.muted; font-size: 10px;
                     horizontal-alignment: right;
                     wrap: no-wrap; overflow: elide;
@@ -625,7 +634,7 @@ export component AppWindow inherits Window {
     }
 
     if root.screen == 3: Rectangle {
-        x: 0px; y: 0px; width: 400px; height: 240px;
+        x: 0px; y: 0px; width: root.page-width; height: 240px;
         background: Palette.background;
         BackTitle {
             x: 12px; y: 2px; width: 130px; height: 29px;
@@ -638,9 +647,9 @@ export component AppWindow inherits Window {
         // outlined and its value takes arrows, as Left/Right, or a tap or hold
         // on the value's halves, then change it.
         for section[box] in root.settings-sections: Rectangle {
-            x: box < 2 ? 8px : 202px;
+            x: box < 2 ? 8px : root.page-width / 2 + 2px;
             y: box == 0 || box == 2 ? 32px : 134px;
-            width: 190px; height: 98px;
+            width: root.page-width / 2 - 10px; height: 98px;
             border-radius: 4px;
             background: Palette.surface;
             border-width: 1px; border-color: Palette.border;
@@ -665,20 +674,21 @@ export component AppWindow inherits Window {
                 // The label, then the value on the right, cut short where a
                 // long one, such as a phone's name, would reach the label.
                 HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px;
-                    spacing: 8px;
+                    padding-left: root.narrow ? 6px : 8px;
+                    padding-right: root.narrow ? 6px : 8px;
+                    spacing: root.narrow ? 4px : 8px;
                     Text {
                         text: row.label;
                         color: line.ink;
-                        font-size: 13px;
+                        font-size: root.settings-font;
                         vertical-alignment: center;
                     }
                     HorizontalLayout {
                         alignment: end;
-                        spacing: 5px;
+                        spacing: root.narrow ? 2px : 5px;
                         if line.open: Text {
                             text: "‹";
-                            color: line.ink; font-size: 13px; font-weight: 700;
+                            color: line.ink; font-size: root.settings-font; font-weight: 700;
                             vertical-alignment: center;
                         }
                         if row.toggle: VerticalLayout {
@@ -690,14 +700,14 @@ export component AppWindow inherits Window {
                         }
                         if !row.toggle: Text {
                             text: row.value;
-                            color: line.ink; font-size: 13px; font-weight: 700;
+                            color: line.ink; font-size: root.settings-font; font-weight: 700;
                             horizontal-alignment: right;
                             vertical-alignment: center;
                             overflow: elide;
                         }
                         if line.open: Text {
                             text: "›";
-                            color: line.ink; font-size: 13px; font-weight: 700;
+                            color: line.ink; font-size: root.settings-font; font-weight: 700;
                             vertical-alignment: center;
                         }
                     }
@@ -729,28 +739,28 @@ export component AppWindow inherits Window {
     }
 
     if root.pairing-request: Rectangle {
-        x: 0px; y: 0px; width: 400px; height: 240px;
+        x: 0px; y: 0px; width: root.page-width; height: 240px;
         background: Palette.background;
         // Taps reach its two answers only, never the page beneath.
         TouchArea { }
         Rectangle {
-            x: 12px; y: 12px; width: 376px; height: 216px;
+            x: 12px; y: 12px; width: root.page-width - 24px; height: 216px;
             border-radius: 8px;
             background: Palette.surface;
             border-width: 2px; border-color: Palette.accent;
             Text {
-                x: 16px; y: 12px; width: 344px; height: 24px;
+                x: 16px; y: 12px; width: parent.width - 32px; height: 24px;
                 text: "BLUETOOTH PAIRING";
                 color: Palette.accent; font-size: 18px; font-weight: 700;
             }
             Text {
-                x: 16px; y: 42px; width: 344px; height: 36px;
+                x: 16px; y: 42px; width: parent.width - 32px; height: 36px;
                 text: root.pairing-device + " asks to pair. Pair only if the phone shows this code:";
                 color: Palette.text; font-size: 12px;
                 wrap: word-wrap;
             }
             Text {
-                x: 16px; y: 82px; width: 344px; height: 76px;
+                x: 16px; y: 82px; width: parent.width - 32px; height: 76px;
                 text: root.pairing-code;
                 color: Palette.accent; font-size: 48px; font-weight: 700;
                 horizontal-alignment: center; vertical-alignment: center;
@@ -760,7 +770,7 @@ export component AppWindow inherits Window {
                 { label: "PAIR", accept: true },
                 { label: "REFUSE", accept: false },
             ]: Rectangle {
-                x: 16px + index * 180px; y: 168px; width: 164px; height: 32px;
+                width: (parent.width - 48px) / 2; x: 16px + index * (self.width + 16px); y: 168px; height: 32px;
                 border-radius: 6px;
                 background: answer.accept ? Palette.accent : transparent;
                 border-width: 1px;
@@ -781,22 +791,22 @@ export component AppWindow inherits Window {
     // Reverse gear: the reverse camera, until the board that takes one, a
     // placeholder. Drawn last, over every screen and the pairing code.
     if root.reversing: Rectangle {
-        x: 0px; y: 0px; width: 400px; height: 240px;
+        x: 0px; y: 0px; width: root.page-width; height: 240px;
         background: Palette.background;
         // Taps reach nothing beneath.
         TouchArea { }
         Text {
-            x: 12px; y: 6px; width: 376px; height: 26px;
+            x: 12px; y: 6px; width: root.page-width - 24px; height: 26px;
             text: "REVERSE";
             color: Palette.accent; font-size: 20px; font-weight: 700;
             vertical-alignment: center;
         }
         Rectangle {
-            x: 12px; y: 38px; width: 376px; height: 1px;
+            x: 12px; y: 38px; width: root.page-width - 24px; height: 1px;
             background: Palette.border;
         }
         Text {
-            x: 12px; y: 39px; width: 376px; height: 201px;
+            x: 12px; y: 39px; width: root.page-width - 24px; height: 201px;
             text: "No reverse camera function yet";
             color: Palette.text; font-size: 17px; font-weight: 700;
             horizontal-alignment: center; vertical-alignment: center;

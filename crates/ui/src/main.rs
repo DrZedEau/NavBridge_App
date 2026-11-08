@@ -17,8 +17,8 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use crate::actions::{
-    answer_pairing, handle_key_event, keyboard_active, swipe_system, tap_back, tap_pair,
-    tap_setting, tap_tile,
+    answer_pairing, core_hello, handle_key_event, keyboard_active, swipe_system, tap_back,
+    tap_pair, tap_setting, tap_tile,
 };
 use crate::config::{KeyboardConfig, UiConfig};
 use crate::input::KeyMap;
@@ -54,12 +54,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let keyboard_config = KeyboardConfig::load(&keyboard_path)?;
     let keymap = Rc::new(KeyMap::new(&keyboard_config)?);
 
-    // Twice as large: the same 400x240 layout drawn at 800x480. The window
-    // reads this as it opens, before any other thread runs.
+    // Twice as large: the same layout drawn at twice the panel's size. The
+    // window reads this as it opens, before any other thread runs.
     if ui_config.scale > 1 {
         env::set_var("SLINT_SCALE_FACTOR", ui_config.scale.to_string());
     }
-    let frame_size = (UI_WIDTH * ui_config.scale, UI_HEIGHT * ui_config.scale);
+    let frame_size = (
+        ui_config.width * ui_config.scale,
+        UI_HEIGHT * ui_config.scale,
+    );
 
     let ui = AppWindow::new()?;
     ui.window().set_fullscreen(ui_config.fullscreen);
@@ -96,7 +99,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (command_tx, event_rx) = ipc::spawn(
         ui_config.socket_path.clone(),
         ui_config.reconnect_ms,
-        frame_size,
         move || {
             let _ = weak.upgrade_in_event_loop(|ui| ui.invoke_core_message());
         },
@@ -196,10 +198,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         media_width,
                         media_height,
                         media_dpi,
+                        aspect_ratio,
                         ..
                     }) => {
-                        // Reject an incompatible backend early: the frontend can
-                        // be 400x240, while media stays 800x480 with configurable density.
+                        // Reject an incompatible backend early: whatever panel this
+                        // UI has, the core names the same sizes, and media stays
+                        // 800x480 with configurable density.
                         if (ui_width, ui_height) != (UI_WIDTH, UI_HEIGHT)
                             || (media_width, media_height) != (MEDIA_WIDTH, MEDIA_HEIGHT)
                             || media_dpi == 0
@@ -211,6 +215,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 width: media_width,
                                 height: media_height,
                             });
+                            core_hello(&mut state, aspect_ratio, &commands);
                         }
                     }
                     IpcEvent::Server(ServerEvent::Snapshot { snapshot }) => {
@@ -261,8 +266,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Projection frames are exchanged out-of-band through tmpfs. The USB/backend
-    // session remains 800x480; FFmpeg publishes an exact 400x240 RGBA view for
-    // Slint so video never travels through the JSON control socket. Each frame
+    // session remains 800x480; FFmpeg publishes an RGBA view at the panel's exact
+    // size for Slint so video never travels through the JSON control socket. Each frame
     // is loaded as soon as the core publishes it; LinuxKMS shows it at the
     // next vblank.
     {
@@ -311,7 +316,7 @@ fn parse_args() -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
             "--keyboard" => keyboard = PathBuf::from(args.next().ok_or("--keyboard needs a path")?),
             "-h" | "--help" => {
                 println!(
-                    "NavBridge UI\n\nUsage: navbridge-ui [--config PATH] [--keyboard PATH]\n\nUI: 400x240; media session: 800x480; DPI configured in core.toml"
+                    "NavBridge UI\n\nUsage: navbridge-ui [--config PATH] [--keyboard PATH]\n\nUI: 400x240, or 320x240 by Settings' Aspect ratio or frontend.toml's width; media session: 800x480; DPI configured in core.toml"
                 );
                 std::process::exit(0);
             }

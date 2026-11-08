@@ -339,6 +339,34 @@ fn discovery_asks_for_60_frames_a_second() {
     assert_eq!(video.video_fps(), 1);
 }
 #[test]
+fn a_4_3_ui_has_the_phone_draw_between_margins() {
+    let decode = |config: &AndroidAutoConfig| {
+        let bytes = discovery(config, false, false, None)
+            .write_to_bytes()
+            .unwrap();
+        let decoded = p::Discovery::parse_from_bytes(&bytes).unwrap();
+        let video = decoded.channels[VIDEO as usize - 1]
+            .av_channel
+            .as_ref()
+            .unwrap()
+            .video_configs[0]
+            .clone();
+        let touch = decoded.channels[INPUT as usize - 1]
+            .input_channel
+            .as_ref()
+            .unwrap()
+            .touch_screen
+            .as_ref()
+            .unwrap()
+            .clone();
+        (video.margin_width(), touch.width(), touch.height())
+    };
+    let mut config = AndroidAutoConfig::default();
+    assert_eq!(decode(&config), (0, 800, 480));
+    config.margin_width = 160;
+    assert_eq!(decode(&config), (160, 640, 480));
+}
+#[test]
 fn discovery_names_the_codec_only_for_h265() {
     let codec = |codec| {
         let mut config = AndroidAutoConfig::default();
