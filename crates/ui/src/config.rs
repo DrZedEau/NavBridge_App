@@ -97,6 +97,24 @@ pub struct KeyboardBindings {
     pub open_media: Vec<String>,
     #[serde(default = "default_play_pause_keys")]
     pub play_pause: Vec<String>,
+    #[serde(default)]
+    pub phone_menu: Vec<String>,
+    #[serde(default)]
+    pub phone_music: Vec<String>,
+    #[serde(default)]
+    pub phone_contacts: Vec<String>,
+    #[serde(default)]
+    pub phone_calendar: Vec<String>,
+    #[serde(default)]
+    pub phone_settings: Vec<String>,
+    #[serde(default)]
+    pub phone_notification: Vec<String>,
+    #[serde(default)]
+    pub phone_app_switch: Vec<String>,
+    #[serde(default)]
+    pub phone_radio: Vec<String>,
+    #[serde(default)]
+    pub phone_tel: Vec<String>,
 }
 
 // Defaults keep older keyboard.toml files working: these actions replaced

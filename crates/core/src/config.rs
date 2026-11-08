@@ -162,6 +162,26 @@ mod tests {
             c.ibus.buttons,
             BTreeMap::from([(Button::Preset1, InputAction::Home)])
         );
+        // The phone's further keys can go on any button.
+        for (name, action) in [
+            ("phone_menu", InputAction::PhoneMenu),
+            ("phone_music", InputAction::PhoneMusic),
+            ("phone_contacts", InputAction::PhoneContacts),
+            ("phone_calendar", InputAction::PhoneCalendar),
+            ("phone_settings", InputAction::PhoneSettings),
+            ("phone_notification", InputAction::PhoneNotification),
+            ("phone_app_switch", InputAction::PhoneAppSwitch),
+            ("phone_radio", InputAction::PhoneRadio),
+            ("phone_tel", InputAction::PhoneTel),
+        ] {
+            let c: CoreConfig =
+                toml::from_str(&format!("[ibus.buttons]\ninfo = \"{name}\"")).unwrap();
+            assert_eq!(
+                c.ibus.buttons,
+                BTreeMap::from([(Button::Info, action)]),
+                "{name}"
+            );
+        }
         let c: CoreConfig = toml::from_str("[android_auto]\ndecoder = \"software\"").unwrap();
         assert_eq!(c.android_auto.decoder, DecoderChoice::Software);
         let c: CoreConfig = toml::from_str("[android_auto]\ncodec = \"h265\"").unwrap();

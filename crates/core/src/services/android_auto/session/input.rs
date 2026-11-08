@@ -17,6 +17,15 @@ pub fn phone_key(action: PhoneAction) -> u32 {
         PhoneAction::OpenMedia => keycode::MEDIA,
         PhoneAction::OpenMaps => keycode::NAVIGATION,
         PhoneAction::PlayPause => keycode::MEDIA_PLAY_PAUSE,
+        PhoneAction::PhoneMenu => keycode::MENU,
+        PhoneAction::PhoneMusic => keycode::MUSIC,
+        PhoneAction::PhoneContacts => keycode::CONTACTS,
+        PhoneAction::PhoneCalendar => keycode::CALENDAR,
+        PhoneAction::PhoneSettings => keycode::SETTINGS,
+        PhoneAction::PhoneNotification => keycode::NOTIFICATION,
+        PhoneAction::PhoneAppSwitch => keycode::APP_SWITCH,
+        PhoneAction::PhoneRadio => keycode::RADIO,
+        PhoneAction::PhoneTel => keycode::TEL,
     }
 }
 

@@ -393,6 +393,17 @@ pub enum PhoneAction {
     OpenMedia,
     /// Pauses or resumes, as the phone knows whether music is playing.
     PlayPause,
+    // Further keys, sent as they are: what the phone does with each is not
+    // documented, and may be nothing.
+    PhoneMenu,
+    PhoneMusic,
+    PhoneContacts,
+    PhoneCalendar,
+    PhoneSettings,
+    PhoneNotification,
+    PhoneAppSwitch,
+    PhoneRadio,
+    PhoneTel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -518,6 +529,15 @@ pub enum InputAction {
     OpenMaps,
     OpenMedia,
     PlayPause,
+    PhoneMenu,
+    PhoneMusic,
+    PhoneContacts,
+    PhoneCalendar,
+    PhoneSettings,
+    PhoneNotification,
+    PhoneAppSwitch,
+    PhoneRadio,
+    PhoneTel,
 }
 
 #[cfg(test)]

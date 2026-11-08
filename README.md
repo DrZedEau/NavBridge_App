@@ -458,6 +458,11 @@ firmware typed Tab, which NavBridge no longer uses.
 - Each detent of the knob is one Left or Right.
 - Telephone and the radio's own buttons switch the screen on the board; they
   stay unmapped.
+- Nine commands send the phone further keys: `phone_menu`, `phone_music`,
+  `phone_contacts`, `phone_calendar`, `phone_settings`, `phone_notification`,
+  `phone_app_switch`, `phone_radio` and `phone_tel`. They have no button or
+  keyboard key until you give them one. What the phone does with each is not
+  documented, and may be nothing.
 
 The keyboard acts only while the core reads no I-Bus, as on a PC without the
 board: in the car, the board's firmware still types keys for the same buttons,

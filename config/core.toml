@@ -63,6 +63,18 @@ shutdown_delay_s = 0
 #   phone_home                  Android Auto's own home screen
 #   open_maps                   the phone's navigation app, such as Google Maps
 #   open_media                  the phone's media screen
+# More keys for the phone, sent as they are, once per press, also only while
+# its screen shows. What the phone does with each is not documented, and may be
+# nothing, so try them:
+#   phone_menu                  the MENU key
+#   phone_music                 the MUSIC key
+#   phone_contacts              the CONTACTS key
+#   phone_calendar              the CALENDAR key
+#   phone_settings              the SETTINGS key
+#   phone_notification          the NOTIFICATION key
+#   phone_app_switch            the APP_SWITCH key
+#   phone_radio                 Android Auto's RADIO car key
+#   phone_tel                   Android Auto's TEL car key
 #
 # Commands that move around, on Android Auto's screen and on NavBridge's pages:
 #   up, down        Android Auto: to another region of its screen. NavBridge:

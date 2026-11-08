@@ -29,3 +29,14 @@ open_maps = ["M"]
 open_media = ["S"]
 # Pauses or resumes, depending on whether music is playing.
 play_pause = ["P"]
+# Further keys for the phone, with no keyboard key until you give them one. What
+# the phone does with each is not documented, and may be nothing.
+phone_menu = []
+phone_music = []
+phone_contacts = []
+phone_calendar = []
+phone_settings = []
+phone_notification = []
+phone_app_switch = []
+phone_radio = []
+phone_tel = []

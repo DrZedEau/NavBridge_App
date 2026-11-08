@@ -733,4 +733,19 @@ fn discovery_has_wired_channels_and_consistent_pcm_formats() {
         assert!(keycodes.contains(&phone_key(action)), "{action:?}");
     }
     assert_eq!(phone_key(PhoneAction::PlayPause), 85);
+    // The further keys, by the codes of Android and of Android Auto.
+    for (action, code) in [
+        (PhoneAction::PhoneMenu, 82),
+        (PhoneAction::PhoneNotification, 83),
+        (PhoneAction::PhoneSettings, 176),
+        (PhoneAction::PhoneAppSwitch, 187),
+        (PhoneAction::PhoneContacts, 207),
+        (PhoneAction::PhoneCalendar, 208),
+        (PhoneAction::PhoneMusic, 209),
+        (PhoneAction::PhoneRadio, 65539),
+        (PhoneAction::PhoneTel, 65540),
+    ] {
+        assert_eq!(phone_key(action), code, "{action:?}");
+        assert!(keycodes.contains(&code), "{action:?}");
+    }
 }

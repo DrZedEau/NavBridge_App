@@ -942,6 +942,53 @@ fn the_cores_hello_brings_the_shape_settings_chose_over_frontend_toml() {
 }
 
 #[test]
+fn the_phones_further_keys_act_as_its_other_commands_do() {
+    use navbridge_common::{InputAction as Input, PhoneAction as Phone};
+    let shipped = include_str!("../../../../config/keyboard.toml");
+    for (name, input, phone) in [
+        ("phone_menu", Input::PhoneMenu, Phone::PhoneMenu),
+        ("phone_music", Input::PhoneMusic, Phone::PhoneMusic),
+        ("phone_contacts", Input::PhoneContacts, Phone::PhoneContacts),
+        ("phone_calendar", Input::PhoneCalendar, Phone::PhoneCalendar),
+        ("phone_settings", Input::PhoneSettings, Phone::PhoneSettings),
+        (
+            "phone_notification",
+            Input::PhoneNotification,
+            Phone::PhoneNotification,
+        ),
+        (
+            "phone_app_switch",
+            Input::PhoneAppSwitch,
+            Phone::PhoneAppSwitch,
+        ),
+        ("phone_radio", Input::PhoneRadio, Phone::PhoneRadio),
+        ("phone_tel", Input::PhoneTel, Phone::PhoneTel),
+    ] {
+        // No key until keyboard.toml gives one.
+        let config: KeyboardConfig = toml::from_str(shipped).unwrap();
+        assert_eq!(KeyMap::new(&config).unwrap().action_for("t"), None);
+        let bound = shipped.replace(&format!("{name} = []"), &format!("{name} = [\"T\"]"));
+        let config: KeyboardConfig = toml::from_str(&bound).unwrap();
+        let key = KeyMap::new(&config).unwrap().action_for("t");
+        assert_eq!(key, Some(KeyAction::Phone(phone)), "{name}");
+        // A car button sends it once, while Android Auto's screen shows.
+        let (tx, rx) = mpsc::channel();
+        let mut state = connected_projection();
+        handle_key_event(&mut state, input.into(), true, false, &tx);
+        handle_key_event(&mut state, input.into(), false, false, &tx);
+        assert!(
+            matches!(rx.try_recv(), Ok(ClientCommand::PhoneAction { action }) if action == phone),
+            "{name}"
+        );
+        assert!(rx.try_recv().is_err(), "{name}");
+        // Elsewhere, it does nothing.
+        state.screen = Screen::Menu;
+        handle_key_event(&mut state, input.into(), true, false, &tx);
+        assert!(rx.try_recv().is_err(), "{name}");
+    }
+}
+
+#[test]
 fn touches_on_the_projection_reach_the_phone_in_its_pixels() {
     let (tx, rx) = mpsc::channel();
     let mut state = connected_projection();
@@ -1046,6 +1093,15 @@ fn car_buttons_act_as_the_keyboard_bindings_of_the_same_name() {
         OpenMaps,
         OpenMedia,
         PlayPause,
+        PhoneMenu,
+        PhoneMusic,
+        PhoneContacts,
+        PhoneCalendar,
+        PhoneSettings,
+        PhoneNotification,
+        PhoneAppSwitch,
+        PhoneRadio,
+        PhoneTel,
     ] {
         let name = serde_json::to_value(action).unwrap();
         let name = name.as_str().unwrap();

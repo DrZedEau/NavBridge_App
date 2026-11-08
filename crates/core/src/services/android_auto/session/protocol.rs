@@ -128,6 +128,17 @@ pub(super) mod keycode {
     pub const ROTARY_CONTROLLER: u32 = 65536;
     pub const MEDIA: u32 = 65537;
     pub const NAVIGATION: u32 = 65538;
+    // Further keys for core.toml's buttons, sent as they are: what the phone
+    // does with each is not documented, and may be nothing.
+    pub const MENU: u32 = 82;
+    pub const NOTIFICATION: u32 = 83;
+    pub const SETTINGS: u32 = 176;
+    pub const APP_SWITCH: u32 = 187;
+    pub const CONTACTS: u32 = 207;
+    pub const CALENDAR: u32 = 208;
+    pub const MUSIC: u32 = 209;
+    pub const RADIO: u32 = 65539;
+    pub const TEL: u32 = 65540;
 }
 
 /// The keys the car tells the phone it has.
@@ -148,6 +159,15 @@ pub const KEYS: &[u32] = &[
     keycode::ROTARY_CONTROLLER,
     keycode::MEDIA,
     keycode::NAVIGATION,
+    keycode::MENU,
+    keycode::NOTIFICATION,
+    keycode::SETTINGS,
+    keycode::APP_SWITCH,
+    keycode::CONTACTS,
+    keycode::CALENDAR,
+    keycode::MUSIC,
+    keycode::RADIO,
+    keycode::TEL,
 ];
 
 pub(super) fn parse<M: Message>(data: &[u8]) -> Result<M, String> {

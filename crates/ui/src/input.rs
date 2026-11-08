@@ -47,6 +47,15 @@ impl From<InputAction> for KeyAction {
             InputAction::OpenMaps => Self::Phone(PhoneAction::OpenMaps),
             InputAction::OpenMedia => Self::Phone(PhoneAction::OpenMedia),
             InputAction::PlayPause => Self::Phone(PhoneAction::PlayPause),
+            InputAction::PhoneMenu => Self::Phone(PhoneAction::PhoneMenu),
+            InputAction::PhoneMusic => Self::Phone(PhoneAction::PhoneMusic),
+            InputAction::PhoneContacts => Self::Phone(PhoneAction::PhoneContacts),
+            InputAction::PhoneCalendar => Self::Phone(PhoneAction::PhoneCalendar),
+            InputAction::PhoneSettings => Self::Phone(PhoneAction::PhoneSettings),
+            InputAction::PhoneNotification => Self::Phone(PhoneAction::PhoneNotification),
+            InputAction::PhoneAppSwitch => Self::Phone(PhoneAction::PhoneAppSwitch),
+            InputAction::PhoneRadio => Self::Phone(PhoneAction::PhoneRadio),
+            InputAction::PhoneTel => Self::Phone(PhoneAction::PhoneTel),
         }
     }
 }
@@ -124,6 +133,19 @@ impl KeyMap {
             &b.play_pause,
             KeyAction::Phone(PhoneAction::PlayPause),
         )?;
+        for (names, action) in [
+            (&b.phone_menu, PhoneAction::PhoneMenu),
+            (&b.phone_music, PhoneAction::PhoneMusic),
+            (&b.phone_contacts, PhoneAction::PhoneContacts),
+            (&b.phone_calendar, PhoneAction::PhoneCalendar),
+            (&b.phone_settings, PhoneAction::PhoneSettings),
+            (&b.phone_notification, PhoneAction::PhoneNotification),
+            (&b.phone_app_switch, PhoneAction::PhoneAppSwitch),
+            (&b.phone_radio, PhoneAction::PhoneRadio),
+            (&b.phone_tel, PhoneAction::PhoneTel),
+        ] {
+            add(&mut bindings, names, KeyAction::Phone(action))?;
+        }
         Ok(Self { bindings })
     }
 
