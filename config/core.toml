@@ -29,11 +29,60 @@ device = "/dev/serial/by-id/usb-Arduino_LLC_Arduino_Micro_HIDPC-if00"
 shutdown = true
 shutdown_delay_s = 0
 
-# What each of the car's buttons does, named as keyboard.toml names the
-# actions; a button left out does nothing. Buttons: preset_1 to preset_6,
-# next, previous, am, fm, mode, tone, menu, radio_menu, telephone, knob_press,
-# knob_left, knob_right, select, info, wheel_next, wheel_previous,
-# wheel_send_end, wheel_rt. These are the keys the firmware types.
+# What each of the car's buttons does, as button = "command", while the core
+# reads the I-Bus. A button left out does nothing. A button takes one command,
+# but a command can be on several buttons, and a misspelt name stops the core
+# at start. The commands are named as in keyboard.toml, which alone has quit.
+# The table below is the keys the firmware types.
+#
+# A button acts once, when it is pressed: holding it or letting it go does
+# nothing more. Each detent of the knob counts as one press.
+#
+# The car's buttons. On the board monitor:
+#   preset_1 to preset_6        the six preset keys
+#   next, previous              the arrows, > and <
+#   am, fm, mode, tone          the radio's keys of those names
+#   radio_menu, menu            the RADIO and MENU keys
+#   telephone                   the telephone key
+#   knob_press                  pressing the knob
+#   knob_left, knob_right       turning the knob anticlockwise or clockwise
+#   select, info                the SELECT and INFO soft keys
+# On the steering wheel:
+#   wheel_next, wheel_previous  the + and - keys
+#   wheel_send_end              the send/end key
+#   wheel_rt                    the R/T key
+# The board itself uses telephone and the radio's own buttons to switch the
+# screen, which is why the table leaves them out.
+#
+# Commands for Android Auto, which act only while its screen shows a phone:
+#   next_track, previous_track  the next or previous track
+#   play_pause                  pauses or resumes
+#   voice_assistant             opens the phone's assistant
+#   answer_call                 answers a call
+#   end_call                    hangs up, or rejects an incoming call
+#   phone_home                  Android Auto's own home screen
+#   open_maps                   the phone's navigation app, such as Google Maps
+#   open_media                  the phone's media screen
+#
+# Commands that move around, on Android Auto's screen and on NavBridge's pages:
+#   up, down        Android Auto: to another region of its screen. NavBridge:
+#                   up the previous, down the next tile, row or page.
+#   left, right     Android Auto: the previous or next item within a region, as
+#                   a rotary controller does. NavBridge: as up and down.
+#   select          Android Auto: clicks the chosen item. NavBridge: opens a
+#                   tile or row, or accepts a phone's pairing.
+#   back            Android Auto: goes back on the phone. NavBridge: back to
+#                   the menu, or refuses a phone's pairing.
+# On a row opened in Settings, right and up raise its value, left and down
+# lower it.
+#
+# Commands for NavBridge itself, on any page:
+#   home                NavBridge's menu, with a phone's session still running
+#   normal_mode         Android Auto's day mode, until the low beam changes
+#   night_mode          Android Auto's night mode, until the low beam changes
+#   parking_brake_on, parking_brake_off
+#                       no effect here: while the I-Bus is read, the car's
+#                       handbrake is the parking brake
 [ibus.buttons]
 preset_1 = "phone_home"
 preset_2 = "back"
