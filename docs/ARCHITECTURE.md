@@ -2,7 +2,7 @@
 
 ## Design rules
 
-1. `navbridge-core` owns USB, the Android Auto session, media and future vehicle state.
+1. `navbridge-core` owns USB, the Android Auto session, media and vehicle state.
 2. `navbridge-ui` owns Slint presentation and keyboard and touch navigation
    only; touches on the projection go to the core, which passes them to the
    phone.
@@ -148,8 +148,10 @@ columns of it, between the phone's margins
 Slint image, loaded as soon as inotify reports the new file
 ```
 
-The two geometries share the same aspect ratio, so no crop or letterbox is
-needed. The decoder queue is shallow: if it overflows, frames are dropped until
+The 400x240 UI and Android Auto's 800x480 share the same aspect ratio, so the
+whole picture is scaled with no crop or letterbox. For a 4:3 UI, the scaled
+picture is cropped to the 640x480 the phone draws in, between its margins. The
+decoder queue is shallow: if it overflows, frames are dropped until
 the next keyframe (H.264 IDR, H.265 IDR or CRA), which the core requests by
 taking the phone's video focus
 away and giving it back.
@@ -298,7 +300,5 @@ Auto's USB discovery must then leave Apple's devices alone.
 
 ## Next
 
-- Bluetooth hands-free (HFP) for call audio.
-- IBUS: on-board computer values (consumption, range), battery voltage and oil
-  temperature.
+- IBUS: battery voltage and oil temperature.
 - iPhone CarPlay, and the reverse camera: see above.

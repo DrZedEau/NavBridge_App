@@ -15,7 +15,8 @@ the protocol research and implementation on 13 October 2026.
 
 Legacy `config_index` in AV setup field 1 is interpreted as the media codec type
 following the current Open Android Auto verified schema. Supported codecs are
-H.264 (3) and PCM (1). Only the implemented wired channels are advertised.
+H.264 (3), H.265 (7) when chosen in Settings, and PCM (1). Only the implemented
+channels are advertised.
 
 ## Wireless Android Auto setup
 
