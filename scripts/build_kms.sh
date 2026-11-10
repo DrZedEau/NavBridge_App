@@ -50,6 +50,13 @@ if [[ -e $ROOT/dist/navbridge ]]; then
   mv -- "$ROOT/dist/navbridge" "$ROOT/dist/navbridge.previous.$(date +%Y%m%d-%H%M%S).$$"
 fi
 mv -- "$STAGE" "$ROOT/dist/navbridge"
+# Of the bundles moved aside, the three newest stay; their names sort by date.
+shopt -s nullglob
+PREVIOUS=("$ROOT"/dist/navbridge.previous.*)
+shopt -u nullglob
+for (( i = 0; i < ${#PREVIOUS[@]} - 3; i++ )); do
+  rm -rf -- "${PREVIOUS[i]}"
+done
 tar -czf "$ROOT/dist/navbridge-${CODENAME}-${ARCH}.tar.gz" -C "$ROOT/dist" navbridge
 echo "Release: $ROOT/dist/navbridge-${CODENAME}-${ARCH}.tar.gz"
 if [[ $TARGET == desktop ]]; then

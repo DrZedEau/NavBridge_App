@@ -2,6 +2,7 @@
 //! the Wi-Fi is a 5 GHz hotspot; otherwise NetworkManager keeps it on the saved
 //! home network. The choice is kept across restarts, and the home network comes
 //! back whenever NavBridge stops, as the hotspot is no use without it.
+use crate::config::WirelessConfig;
 use crate::settings::Settings;
 use navbridge_common::WirelessSnapshot;
 use std::{
@@ -21,10 +22,8 @@ use tracing::{debug, info, warn};
 
 /// The hotspot's NetworkManager profile. It never connects on its own, so
 /// after a crash or a reboot the Wi-Fi is back on the home network.
+/// Its interface and channel are core.toml's `[wireless]`.
 const PROFILE: &str = "navbridge-hotspot";
-const INTERFACE: &str = "wlan0";
-/// 5 GHz, and usable in the EU without radar detection.
-const CHANNEL: &str = "36";
 /// The hotspot's own address, where phones open the Android Auto session.
 /// They get theirs over DHCP.
 pub const HOTSPOT_IP: Ipv4Addr = Ipv4Addr::new(10, 42, 0, 1);
@@ -45,43 +44,52 @@ pub struct Hotspot {
     pub bssid: String,
 }
 
-/// The hotspot's details as NetworkManager has them.
-pub fn hotspot() -> Result<Hotspot, String> {
-    let nmcli = Nmcli(vec!["nmcli".into()]);
-    let fields = "802-11-wireless.ssid,802-11-wireless-security.psk";
-    let values = nmcli.run(&["-s", "-t", "-g", fields, "connection", "show", PROFILE])?;
-    let mut lines = values.lines();
-    let (Some(ssid), Some(key)) = (lines.next(), lines.next()) else {
-        return Err("the hotspot has no network name or password".into());
-    };
-    // While the hotspot is up, the interface's address is its BSSID.
-    let mac = fs::read_to_string(format!("/sys/class/net/{INTERFACE}/address"))
-        .map_err(|e| format!("read {INTERFACE} address: {e}"))?;
-    Ok(Hotspot {
-        address: HOTSPOT_IP,
-        ssid: ssid.into(),
-        key: key.into(),
-        bssid: mac.trim().into(),
-    })
+/// The Wi-Fi interface's own address, as "2c:cf:67:e1:98:4b".
+fn mac_address(interface: &str) -> io::Result<String> {
+    fs::read_to_string(format!("/sys/class/net/{interface}/address"))
 }
 
-/// The name NavBridge goes by on Wi-Fi and Bluetooth, such as NavBridge-984B.
-pub fn unit_name() -> String {
-    hotspot_ssid(
-        &fs::read_to_string(format!("/sys/class/net/{INTERFACE}/address")).unwrap_or_default(),
-    )
-}
-
-/// Whether the hotspot is up, as the Wi-Fi thread last saw it: for a phone's
-/// Bluetooth setup, which must not send it to the hotspot any sooner.
+/// The hotspot for a phone's Bluetooth setup: whether it is up, as the Wi-Fi
+/// thread last saw it, since the setup must not send the phone there any
+/// sooner, and then its details.
 #[derive(Clone, Default)]
-pub struct HotspotWatch(Arc<RwLock<WirelessSnapshot>>);
+pub struct HotspotWatch {
+    shared: Arc<RwLock<WirelessSnapshot>>,
+    /// The Wi-Fi interface, from core.toml.
+    interface: String,
+}
 
 impl HotspotWatch {
+    /// The hotspot's details as NetworkManager has them.
+    pub fn details(&self) -> Result<Hotspot, String> {
+        let nmcli = Nmcli(vec!["nmcli".into()]);
+        let fields = "802-11-wireless.ssid,802-11-wireless-security.psk";
+        let values = nmcli.run(&["-s", "-t", "-g", fields, "connection", "show", PROFILE])?;
+        let mut lines = values.lines();
+        let (Some(ssid), Some(key)) = (lines.next(), lines.next()) else {
+            return Err("the hotspot has no network name or password".into());
+        };
+        // While the hotspot is up, the interface's address is its BSSID.
+        let mac = mac_address(&self.interface)
+            .map_err(|e| format!("read {} address: {e}", self.interface))?;
+        Ok(Hotspot {
+            address: HOTSPOT_IP,
+            ssid: ssid.into(),
+            key: key.into(),
+            bssid: mac.trim().into(),
+        })
+    }
+
+    /// The name NavBridge goes by on Wi-Fi and Bluetooth, such as
+    /// NavBridge-984B.
+    pub fn unit_name(&self) -> String {
+        hotspot_ssid(&mac_address(&self.interface).unwrap_or_default())
+    }
+
     /// Waits up to `limit` for the hotspot; returns whether it is up.
     pub fn wait(&self, limit: Duration) -> bool {
         let deadline = Instant::now() + limit;
-        while !self.0.read().unwrap().hotspot {
+        while !self.shared.read().unwrap().hotspot {
             if Instant::now() >= deadline {
                 return false;
             }
@@ -94,17 +102,19 @@ impl HotspotWatch {
 pub struct WifiService {
     requests: Option<Sender<bool>>,
     shared: Arc<RwLock<WirelessSnapshot>>,
+    interface: String,
     worker: Option<JoinHandle<()>>,
 }
 
 impl WifiService {
     /// With `wireless` (`--wireless`), wireless mode starts on whatever the
-    /// saved choice; the saved choice itself only changes from the UI.
-    pub fn start(wireless: bool, settings: Arc<Settings>) -> Self {
-        Self::with(Nmcli(vec!["nmcli".into()]), settings, wireless)
+    /// saved choice; the saved choice itself only changes from the UI. The
+    /// hotspot runs on `config`'s interface and channel.
+    pub fn start(wireless: bool, settings: Arc<Settings>, config: WirelessConfig) -> Self {
+        Self::with(Nmcli(vec!["nmcli".into()]), settings, wireless, config)
     }
 
-    fn with(nmcli: Nmcli, settings: Arc<Settings>, wireless: bool) -> Self {
+    fn with(nmcli: Nmcli, settings: Arc<Settings>, wireless: bool, config: WirelessConfig) -> Self {
         let saved = settings.load().wireless_android_auto;
         if wireless && !saved {
             info!("wireless Android Auto on from the command line");
@@ -116,8 +126,10 @@ impl WifiService {
             status: String::new(),
         }));
         let (requests, received) = mpsc::channel();
+        let interface = config.interface.clone();
         let wifi = Wifi {
             nmcli,
+            config,
             shared: shared.clone(),
             settings,
             enabled,
@@ -135,6 +147,7 @@ impl WifiService {
         Self {
             requests: Some(requests),
             shared,
+            interface,
             worker: Some(worker),
         }
     }
@@ -161,7 +174,10 @@ impl WifiService {
     }
 
     pub fn watch(&self) -> HotspotWatch {
-        HotspotWatch(self.shared.clone())
+        HotspotWatch {
+            shared: self.shared.clone(),
+            interface: self.interface.clone(),
+        }
     }
 }
 
@@ -177,6 +193,8 @@ impl Drop for WifiService {
 
 struct Wifi {
     nmcli: Nmcli,
+    /// The interface and channel of the hotspot, from core.toml.
+    config: WirelessConfig,
     shared: Arc<RwLock<WirelessSnapshot>>,
     settings: Arc<Settings>,
     /// The latest choice: while it is on, the hotspot is kept up.
@@ -286,17 +304,51 @@ impl Wifi {
         if let Ok(ssid) = self.nmcli.run(&existing) {
             let ssid = ssid.trim().to_string();
             self.ssid = Some(ssid.clone());
+            self.follow_config();
             return Ok(ssid);
         }
-        let mac = fs::read_to_string(format!("/sys/class/net/{INTERFACE}/address"));
-        let ssid = hotspot_ssid(&mac.unwrap_or_default());
+        let ssid = hotspot_ssid(&mac_address(&self.config.interface).unwrap_or_default());
         // The passphrase is on nmcli's command line for this one call: only
         // local users could see it, and the phone gets it over Bluetooth.
         let password = password().map_err(|e| format!("hotspot password: {e}"))?;
-        self.nmcli.run(&profile_args(&ssid, &password))?;
+        self.nmcli
+            .run(&profile_args(&self.config, &ssid, &password))?;
         info!(%ssid, "created the wireless Android Auto hotspot");
         self.ssid = Some(ssid.clone());
         Ok(ssid)
+    }
+
+    /// Moves a profile created earlier to core.toml's interface and channel,
+    /// if they have changed since. Its network name and password stay.
+    fn follow_config(&self) {
+        let (interface, channel) = (&self.config.interface, self.config.channel.to_string());
+        let fields = "connection.interface-name,802-11-wireless.channel";
+        let Ok(kept) = self
+            .nmcli
+            .run(&["-t", "-g", fields, "connection", "show", PROFILE])
+        else {
+            return;
+        };
+        // In whichever order nmcli lists them: a name is never a number.
+        let kept: Vec<&str> = kept.lines().map(str::trim).collect();
+        if kept.contains(&interface.as_str()) && kept.contains(&channel.as_str()) {
+            return;
+        }
+        let changed = [
+            "connection",
+            "modify",
+            PROFILE,
+            "connection.interface-name",
+            interface,
+            "802-11-wireless.channel",
+            &channel,
+        ];
+        match self.nmcli.run(&changed) {
+            Ok(_) => info!(%interface, %channel, "the hotspot follows core.toml"),
+            Err(e) => {
+                warn!(%e, %interface, %channel, "the hotspot keeps its old interface and channel")
+            }
+        }
     }
 
     /// The NetworkManager connection on the interface, if any.
@@ -307,7 +359,7 @@ impl Wifi {
             "GENERAL.CONNECTION",
             "device",
             "show",
-            INTERFACE,
+            &self.config.interface,
         ];
         let name = self.nmcli.run(&args).ok()?;
         let name = name.trim();
@@ -343,6 +395,7 @@ impl Wifi {
             self.enabled,
             hotspot,
             ssid,
+            self.config.channel,
             home.as_deref(),
             self.error.as_deref(),
             settling,
@@ -361,12 +414,13 @@ fn describe(
     enabled: bool,
     hotspot: bool,
     ssid: &str,
+    channel: u32,
     home: Option<&str>,
     error: Option<&str>,
     settling: bool,
 ) -> String {
     match (enabled, hotspot) {
-        (true, true) => format!("Hotspot {ssid} is on (5 GHz, channel {CHANNEL})"),
+        (true, true) => format!("Hotspot {ssid} is on (5 GHz, channel {channel})"),
         (true, false) => match error {
             Some(e) => format!("Hotspot failed: {e}"),
             None => "Starting the hotspot…".into(),
@@ -380,14 +434,15 @@ fn describe(
     }
 }
 
-fn profile_args(ssid: &str, password: &str) -> Vec<String> {
+fn profile_args(config: &WirelessConfig, ssid: &str, password: &str) -> Vec<String> {
+    let channel = config.channel.to_string();
     [
         "connection",
         "add",
         "type",
         "wifi",
         "ifname",
-        INTERFACE,
+        &config.interface,
         "con-name",
         PROFILE,
         "autoconnect",
@@ -399,7 +454,7 @@ fn profile_args(ssid: &str, password: &str) -> Vec<String> {
         "802-11-wireless.band",
         "a",
         "802-11-wireless.channel",
-        CHANNEL,
+        &channel,
         "wifi-sec.key-mgmt",
         "wpa-psk",
         "wifi-sec.proto",
@@ -479,11 +534,12 @@ mod tests {
 
     #[test]
     fn the_hotspot_is_a_5_ghz_wpa2_network_that_never_starts_on_its_own() {
-        let args = profile_args("NavBridge-984B", "secret");
+        let args = profile_args(&WirelessConfig::default(), "NavBridge-984B", "secret");
         let value = |key: &str| {
             let at = args.iter().position(|arg| arg == key).unwrap();
             args[at + 1].as_str()
         };
+        assert_eq!(value("ifname"), "wlan0");
         assert_eq!(value("autoconnect"), "no");
         assert_eq!(value("mode"), "ap");
         assert_eq!(value("802-11-wireless.band"), "a");
@@ -502,31 +558,39 @@ mod tests {
 
     #[test]
     fn the_status_says_what_the_wifi_does() {
-        let on = describe(true, true, "NavBridge-984B", None, None, false);
+        let on = describe(true, true, "NavBridge-984B", 36, None, None, false);
         assert_eq!(on, "Hotspot NavBridge-984B is on (5 GHz, channel 36)");
+        let other = describe(true, true, "NavBridge-984B", 149, None, None, false);
+        assert_eq!(other, "Hotspot NavBridge-984B is on (5 GHz, channel 149)");
         let failed = describe(
             true,
             false,
             "NavBridge",
+            36,
             None,
             Some("No suitable device"),
             false,
         );
         assert_eq!(failed, "Hotspot failed: No suitable device");
-        let home = describe(false, false, "", Some("Freebox"), None, false);
+        let home = describe(false, false, "", 36, Some("Freebox"), None, false);
         assert_eq!(home, "Home Wi-Fi: Freebox");
-        let settling = describe(false, false, "", None, None, true);
+        let settling = describe(false, false, "", 36, None, None, true);
         assert_eq!(settling, "Returning to the home Wi-Fi…");
-        let away = describe(false, false, "", None, None, false);
+        let away = describe(false, false, "", 36, None, None, false);
         assert_eq!(away, "Wi-Fi not connected");
     }
 
     /// Stands in for nmcli: logs each call and keeps the interface's
-    /// connection in a file, as NetworkManager would.
+    /// connection in a file, as NetworkManager would. Its hotspot profile is
+    /// on wlan0 and channel 36.
     const FAKE_NMCLI: &str = r#"cd "$(dirname "$0")"
 echo "$*" >> calls
 case "$*" in
   "-t -g GENERAL.CONNECTION device show wlan0") cat active ;;
+  "-t -g GENERAL.CONNECTION device show wlan1") cat active ;;
+  "-t -g connection.interface-name,802-11-wireless.channel connection show navbridge-hotspot")
+    printf 'wlan0\n36\n' ;;
+  "connection modify navbridge-hotspot "*) ;;
   "-t -g 802-11-wireless.ssid connection show home") echo "Home Net" ;;
   "-t -g 802-11-wireless.ssid connection show navbridge-hotspot")
     if [ -f created ]; then echo NavBridge-TEST; else
@@ -557,7 +621,7 @@ esac
             let script = dir.join("nmcli").into_os_string();
             let nmcli = Nmcli(vec!["sh".into(), script]);
             let settings = Arc::new(Settings::new(dir.join("state/settings.toml")));
-            WifiService::with(nmcli, settings, false)
+            WifiService::with(nmcli, settings, false, WirelessConfig::default())
         };
         let hotspot_on = |s: &WirelessSnapshot| s.status.starts_with("Hotspot NavBridge");
         let at_home = |s: &WirelessSnapshot| s.status == "Home Wi-Fi: Home Net";
@@ -586,6 +650,8 @@ esac
 
         let calls = fs::read_to_string(dir.join("calls")).unwrap();
         assert_eq!(calls.matches("connection add ").count(), 1, "{calls}");
+        // The profile is where core.toml puts it: left as it is.
+        assert!(!calls.contains("connection modify"), "{calls}");
         assert_eq!(calls.matches("connection up navbridge-hotspot").count(), 3);
         assert_eq!(
             calls.matches("connection down navbridge-hotspot").count(),
@@ -608,7 +674,7 @@ esac
         let start = |wireless| {
             let script = dir.join("nmcli").into_os_string();
             let nmcli = Nmcli(vec!["sh".into(), script]);
-            WifiService::with(nmcli, settings.clone(), wireless)
+            WifiService::with(nmcli, settings.clone(), wireless, WirelessConfig::default())
         };
         let hotspot_on = |s: &WirelessSnapshot| s.status.starts_with("Hotspot NavBridge");
         let at_home = |s: &WirelessSnapshot| s.status == "Home Wi-Fi: Home Net";
@@ -637,6 +703,39 @@ esac
         assert!(wifi.snapshot().enabled);
         wait_for(&wifi, hotspot_on);
         drop(wifi);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_hotspot_created_earlier_follows_core_toml() {
+        let dir =
+            std::env::temp_dir().join(format!("navbridge-wifi-move-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("nmcli"), FAKE_NMCLI).unwrap();
+        fs::write(dir.join("active"), "home\n").unwrap();
+        // The profile exists, on wlan0 and channel 36.
+        fs::write(dir.join("created"), "").unwrap();
+        let script = dir.join("nmcli").into_os_string();
+        let settings = Arc::new(Settings::new(dir.join("state/settings.toml")));
+        let config = WirelessConfig {
+            interface: "wlan1".into(),
+            channel: 149,
+        };
+        let wifi = WifiService::with(Nmcli(vec!["sh".into(), script]), settings, true, config);
+        wait_for(&wifi, |s| {
+            s.status == "Hotspot NavBridge-TEST is on (5 GHz, channel 149)"
+        });
+        drop(wifi);
+
+        let calls = fs::read_to_string(dir.join("calls")).unwrap();
+        // Moved, not created again: phones keep its name and password.
+        assert!(!calls.contains("connection add "), "{calls}");
+        let moved = "connection modify navbridge-hotspot connection.interface-name wlan1 \
+                     802-11-wireless.channel 149\n";
+        assert_eq!(calls.matches(moved).count(), 1, "{calls}");
+        assert!(calls.contains("device show wlan1"), "{calls}");
+        assert!(!calls.contains("unexpected"), "{calls}");
         fs::remove_dir_all(dir).unwrap();
     }
 }

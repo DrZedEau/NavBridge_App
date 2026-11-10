@@ -133,8 +133,8 @@ publishes Android Auto's video at its full 800x480 instead of downscaling it
 UI out for a 4:3 panel, and `--640x480` draws that twice as large. A phone plugged into
 the PC starts Android Auto as on the Pi. Settings
 cannot be kept there, as `/var/lib/navbridge` belongs to root: changes last
-until the core stops, with a warning in its log. Wireless mode switches `wlan0`,
-which most PCs do not have. `run_kms.sh` refuses to start inside the desktop,
+until the core stops, with a warning in its log. Wireless mode switches `wlan0`
+(core.toml's `[wireless] interface`), which most PCs do not have. `run_kms.sh` refuses to start inside the desktop,
 which owns the display, and `install_systemd.sh` refuses to take tty1 from a
 display manager unless given `--force`, for a dedicated kiosk PC.
 
@@ -167,11 +167,21 @@ left_hand_drive = true
 enabled = true
 device = "/dev/serial/by-id/usb-Arduino_LLC_Arduino_Micro_HIDPC-if00"
 
+[wireless]
+interface = "wlan0"
+channel = 36
+
 [audio]
 enabled = true
 playback_device = 'plug:SLAVE="dmix:CARD=CODEC,DEV=0"'
 capture_device = "plughw:CARD=CODEC,DEV=0"
 ```
+
+`[wireless]` names the Wi-Fi interface that becomes the hotspot for wireless
+Android Auto, and its 5 GHz channel: 36, 40, 44 and 48 need no radar detection,
+and which others an access point may use depends on the country. A hotspot
+created earlier moves to a changed interface or channel at its next start,
+keeping its name and password; the core logs `the hotspot follows core.toml`.
 
 `codec` is the video codec the phone is asked for: `"h264"`, which every phone
 encodes, or `"h265"`. A phone without H.265 stays on H.264, and video decodes
@@ -217,7 +227,9 @@ replace the built-in accessory identity. The phone certificate chain is checked
 against the Google Automotive Link CA. Unknown settings are rejected, so a
 misspelled key stops the core with an error instead of being silently ignored.
 
-Android USB rules cover AOA and common phone vendors. For a vendor absent from
+Android USB rules cover AOA, any device that shows a file-transfer (MTP or PTP)
+or ADB interface, whoever made it, and common phone vendors. For a phone that
+shows neither and whose vendor is absent from
 `packaging/70-navbridge-android.rules`, add an equivalent vendor rule, reload
 udev and replug the phone. A phone-like device that cannot be opened or does not
 support AOA is skipped until it is replugged, so it cannot hide a phone on
@@ -341,7 +353,8 @@ encode H.265 stays on H.264; System's Video box shows the decoder that runs
 The Calls level applies at once, during a call too (see Calls); it shows n/a while
 calls do not play in the car (`[audio] enabled = false`).
 Choices are kept in
-`/var/lib/navbridge/settings.toml`; the levels are set again whenever the codec
+`/var/lib/navbridge/settings.toml`, a level half a second after its last step,
+so that a held key writes once; the levels are set again whenever the codec
 appears, as a power cut can lose ALSA's own copy.
 
 ## System pages
@@ -504,7 +517,8 @@ The phone needs Android 11 or later with 5 GHz Wi-Fi; on some phones
 NavBridge:
 
 - **Hotspot**, the switch in Settings' Wireless section. On: the built-in Wi-Fi becomes the hotspot
-  `NavBridge-XXXX` (5 GHz, channel 36, WPA2, address 10.42.0.1) and Bluetooth
+  `NavBridge-XXXX` (5 GHz, channel 36 unless core.toml's `[wireless]` names
+  another, WPA2, address 10.42.0.1) and Bluetooth
   takes the same name. NetworkManager's profile `navbridge-hotspot` is created on
   first use with a random password, which
   `sudo nmcli -s -g 802-11-wireless-security.psk connection show navbridge-hotspot`

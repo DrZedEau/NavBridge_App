@@ -11,6 +11,7 @@ pub struct CoreConfig {
     pub android_auto: AndroidAutoConfig,
     pub audio: AudioConfig,
     pub ibus: IbusConfig,
+    pub wireless: WirelessConfig,
 }
 impl Default for CoreConfig {
     fn default() -> Self {
@@ -20,6 +21,7 @@ impl Default for CoreConfig {
             android_auto: Default::default(),
             audio: Default::default(),
             ibus: Default::default(),
+            wireless: Default::default(),
         }
     }
 }
@@ -32,7 +34,56 @@ impl CoreConfig {
         if s.android_auto.certificate.is_some() != s.android_auto.private_key.is_some() {
             return Err("certificate and private_key must be supplied together".into());
         }
+        s.wireless.check()?;
         Ok(s)
+    }
+}
+/// The Wi-Fi that becomes wireless Android Auto's hotspot.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct WirelessConfig {
+    /// The Wi-Fi interface, as `ip link` names it.
+    pub interface: String,
+    /// The hotspot's channel, in the 5 GHz band.
+    pub channel: u32,
+}
+impl Default for WirelessConfig {
+    fn default() -> Self {
+        Self {
+            interface: "wlan0".into(),
+            // Usable in the EU without radar detection.
+            channel: 36,
+        }
+    }
+}
+impl WirelessConfig {
+    /// The 5 GHz band's 20 MHz channels.
+    const CHANNELS: [u32; 25] = [
+        36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144,
+        149, 153, 157, 161, 165,
+    ];
+
+    /// An interface name as Linux allows one, and a 5 GHz channel.
+    pub fn check(&self) -> Result<(), String> {
+        let name = &self.interface;
+        let named = (1..=15).contains(&name.len())
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+            && name != "."
+            && name != "..";
+        if !named {
+            return Err(format!(
+                "wireless.interface is not an interface name: {name:?}"
+            ));
+        }
+        if !Self::CHANNELS.contains(&self.channel) {
+            return Err(format!(
+                "wireless.channel must be a 5 GHz channel (36, 40, 44, 48, ... 165), not {}",
+                self.channel
+            ));
+        }
+        Ok(())
     }
 }
 #[derive(Clone, Debug, Deserialize)]
@@ -157,6 +208,13 @@ mod tests {
         assert_eq!(c.ibus.buttons, default_buttons());
         assert!(c.ibus.shutdown);
         assert_eq!(c.ibus.shutdown_delay_s, 0);
+        // The shipped Wi-Fi is the Pi's own, on the channel used so far.
+        assert_eq!(c.wireless, WirelessConfig::default());
+        assert_eq!(
+            (c.wireless.interface.as_str(), c.wireless.channel),
+            ("wlan0", 36)
+        );
+        assert_eq!(c.wireless.check(), Ok(()));
         let c: CoreConfig = toml::from_str("[ibus.buttons]\npreset_1 = \"home\"").unwrap();
         assert_eq!(
             c.ibus.buttons,
@@ -205,8 +263,39 @@ mod tests {
             "snapshot_ms = 500",
             // An address, not a host name: resolving one could stall startup.
             "[android_auto]\nhead_unit_server = \"phone:5277\"",
+            "[wireless]\nchanel = 44",
         ] {
             assert!(toml::from_str::<CoreConfig>(typo).is_err(), "{typo}");
+        }
+    }
+    #[test]
+    fn the_hotspot_takes_another_interface_or_5_ghz_channel() {
+        let c: CoreConfig =
+            toml::from_str("[wireless]\ninterface = \"wlx00c0caa5b7d1\"\nchannel = 149").unwrap();
+        assert_eq!(
+            (c.wireless.interface.as_str(), c.wireless.channel),
+            ("wlx00c0caa5b7d1", 149)
+        );
+        assert_eq!(c.wireless.check(), Ok(()));
+        // One of them alone keeps the other.
+        let c: CoreConfig = toml::from_str("[wireless]\nchannel = 44").unwrap();
+        assert_eq!(c.wireless.interface, "wlan0");
+        let wireless = |interface: &str, channel| WirelessConfig {
+            interface: interface.into(),
+            channel,
+        };
+        // A 2.4 GHz channel, and one the 5 GHz band does not have.
+        assert!(wireless("wlan0", 6).check().is_err());
+        assert!(wireless("wlan0", 37).check().is_err());
+        // Not names of an interface: the name goes into a path under /sys.
+        for name in [
+            "",
+            "..",
+            "wlan0/../eth0",
+            "wlan 0",
+            "an-interface-name-too-long",
+        ] {
+            assert!(wireless(name, 36).check().is_err(), "{name:?}");
         }
     }
 }

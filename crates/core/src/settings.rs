@@ -6,6 +6,7 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     sync::Mutex,
+    time::{Duration, Instant},
 };
 use tracing::warn;
 
@@ -63,6 +64,39 @@ impl Settings {
     }
 }
 
+/// How long a level stays unchanged before it is kept.
+pub const SETTLE: Duration = Duration::from_millis(500);
+
+/// A choice that a held key changes many times a second, such as a volume:
+/// it is kept once it has stayed the same for `SETTLE`, in one write for all
+/// its steps, and when its service stops.
+#[derive(Debug, Default)]
+pub struct Unsaved<T>(Option<(T, Instant)>);
+
+impl<T> Unsaved<T> {
+    /// The latest choice, due to be kept `SETTLE` from `now`.
+    pub fn set(&mut self, value: T, now: Instant) {
+        self.0 = Some((value, now + SETTLE));
+    }
+
+    /// When the choice is due to be kept, if one waits.
+    pub fn due(&self) -> Option<Instant> {
+        self.0.as_ref().map(|(_, due)| *due)
+    }
+
+    /// The choice to keep, once it has settled.
+    pub fn settled(&mut self, now: Instant) -> Option<T> {
+        self.due()
+            .filter(|due| now >= *due)
+            .and_then(|_| self.take())
+    }
+
+    /// The choice to keep, settled or not, as when the service stops.
+    pub fn take(&mut self) -> Option<T> {
+        self.0.take().map(|(value, _)| value)
+    }
+}
+
 fn read(path: &Path) -> Saved {
     fs::read_to_string(path)
         .ok()
@@ -84,6 +118,25 @@ fn write(path: &Path, saved: &Saved) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_level_is_kept_once_it_has_settled() {
+        let start = Instant::now();
+        let step = Duration::from_millis(40);
+        let mut level = Unsaved::default();
+        assert_eq!((level.due(), level.settled(start)), (None, None));
+        // A held key: each step puts the write off.
+        level.set(70u8, start);
+        level.set(71, start + step);
+        assert_eq!(level.due(), Some(start + step + SETTLE));
+        assert_eq!(level.settled(start + SETTLE), None);
+        // Settled: the last step is kept, once.
+        assert_eq!(level.settled(start + step + SETTLE), Some(71));
+        assert_eq!(level.settled(start + step + SETTLE), None);
+        // The service stops before it has settled: kept all the same.
+        level.set(72, start);
+        assert_eq!((level.take(), level.take()), (Some(72), None));
+    }
 
     #[test]
     fn each_change_keeps_the_others() {

@@ -18,7 +18,7 @@ use navbridge_common::{video_frame_path, AppSnapshot, ClientCommand, ServerEvent
 use services::android_auto::{CarBluetooth, ProjectionService};
 use services::audio::mixer::Gain;
 use services::system::SystemService;
-use settings::Settings;
+use settings::{Settings, Unsaved};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -48,7 +48,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let system = SystemService::start(config.audio.clone(), settings.clone());
     // Started first, so it stops last: a phone's session ends before the
     // Wi-Fi goes back to the home network.
-    let wifi = services::wifi::WifiService::start(args.wireless, settings.clone());
+    let wifi = services::wifi::WifiService::start(
+        args.wireless,
+        settings.clone(),
+        config.wireless.clone(),
+    );
     // Sends phones to the hotspot; up while wireless mode is on.
     let bluetooth =
         services::bluetooth::BluetoothService::start(wifi.watch(), settings.load().default_phone);
@@ -92,6 +96,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut next_snapshot = Instant::now();
     let mut powering_off = false;
     let mut theme = settings.load().theme;
+    // The call volume until it is kept: a held key steps it many times a
+    // second, and one write keeps where it ends.
+    let mut call_volume = Unsaved::default();
+    let keep_call_volume = |db: i8| settings.update(|saved| saved.call_volume_db = db);
     loop {
         server.accept_pending();
 
@@ -137,7 +145,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(calls) = &calls {
                         let db = calls.set_volume(db);
                         info!(db, "call volume");
-                        settings.update(|saved| saved.call_volume_db = db);
+                        call_volume.set(db, Instant::now());
                     }
                     next_snapshot = Instant::now();
                 }
@@ -235,23 +243,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             next_snapshot = Instant::now() + interval;
         }
         server.flush_pending();
-        if (&stop).read(&mut [0]).is_ok() {
-            break;
+        if let Some(db) = call_volume.settled(Instant::now()) {
+            keep_call_volume(db);
         }
+        let stopping = (&stop).read(&mut [0]).is_ok();
         // Rather than run on without video or phones: exit with an error, and
         // systemd starts the core again.
-        if let Some(reason) = projection.failure() {
-            return Err(format!("Android Auto stopped: {reason}").into());
+        let failure = projection.failure().filter(|_| !stopping);
+        if stopping || failure.is_some() {
+            if let Some(db) = call_volume.take() {
+                keep_call_volume(db);
+            }
+            break match failure {
+                Some(reason) => Err(format!("Android Auto stopped: {reason}").into()),
+                // Dropping the services closes the phone's session and stops
+                // their threads.
+                None => Ok(()),
+            };
         }
-        // Sleep until a client, the phone, a stop request or the next snapshot
-        // needs attention, so a command is forwarded the moment it arrives.
+        // Sleep until a client, the phone, a stop request, the next snapshot
+        // or a call volume to keep needs attention, so a command is forwarded
+        // the moment it arrives.
+        let wake = call_volume
+            .due()
+            .map_or(next_snapshot, |due| due.min(next_snapshot));
         server.wait(
             &[projection.event_fd(), ibus.event_fd(), stop.as_fd()],
-            next_snapshot.saturating_duration_since(Instant::now()),
+            wake.saturating_duration_since(Instant::now()),
         );
     }
-    // Dropping the services closes the phone's session and stops their threads.
-    Ok(())
 }
 
 /// SIGTERM or SIGINT makes the returned socket readable instead of killing the

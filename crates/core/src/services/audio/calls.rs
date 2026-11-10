@@ -12,10 +12,11 @@ use std::{
     collections::HashMap,
     sync::{
         atomic::{AtomicBool, AtomicI8, Ordering},
+        mpsc::{self, Receiver, RecvTimeoutError, Sender},
         Arc,
     },
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tracing::{info, warn};
 use zbus::{
@@ -53,7 +54,8 @@ struct Call {
 }
 
 pub struct CallService {
-    stop: Arc<AtomicBool>,
+    /// Dropped to stop the thread, which then wakes from its wait at once.
+    stop: Option<Sender<()>>,
     /// The call volume, in dB over the codec's volume.
     volume: Arc<AtomicI8>,
     worker: Option<JoinHandle<()>>,
@@ -63,17 +65,17 @@ impl CallService {
     /// Calls play on `audio`'s devices: the caller on its playback device at
     /// `volume_db` over its volume, and its capture device to the caller.
     pub fn start(audio: AudioConfig, volume_db: i8) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
+        let (stop, stopped) = mpsc::channel();
         let volume = Arc::new(AtomicI8::new(
             volume_db.clamp(*CALL_VOLUME_DB.start(), *CALL_VOLUME_DB.end()),
         ));
-        let (stopped, level) = (stop.clone(), volume.clone());
+        let level = volume.clone();
         let worker = thread::Builder::new()
             .name("calls".into())
             .spawn(move || run(&audio, &level, &stopped))
             .expect("start the calls thread");
         Self {
-            stop,
+            stop: Some(stop),
             volume,
             worker: Some(worker),
         }
@@ -94,28 +96,22 @@ impl CallService {
 
 impl Drop for CallService {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.stop.take();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
     }
 }
 
-fn run(audio: &AudioConfig, volume: &Arc<AtomicI8>, stop: &AtomicBool) {
-    let mut connection = None;
+/// Runs until `stopped`'s sender is dropped.
+fn run(audio: &AudioConfig, volume: &Arc<AtomicI8>, stopped: &Receiver<()>) {
+    // Where bluez-alsa lists its devices, on the system bus: made once.
+    let mut devices = None;
     // Whether bluez-alsa answered last time, so that only changes are logged.
     let mut present = None;
     let mut active: Option<(Call, Relay)> = None;
-    while !stop.load(Ordering::Relaxed) {
-        if connection.is_none() {
-            connection = Connection::system()
-                .inspect_err(|e| warn!(%e, "no system D-Bus for calls"))
-                .ok();
-        }
-        let answer = match &connection {
-            Some(connection) => running_call(connection),
-            None => Err(zbus::Error::Failure("no system D-Bus".into())),
-        };
+    loop {
+        let answer = running_call(&mut devices);
         let now_present = answer.is_ok();
         if present.replace(now_present) != Some(now_present) {
             if now_present {
@@ -142,23 +138,36 @@ fn run(audio: &AudioConfig, volume: &Arc<AtomicI8>, stop: &AtomicBool) {
                 active = Some((call, relay));
             }
         }
+        // One sleep until the next question, which stopping ends at once.
         let wait = if now_present { POLL } else { ABSENT_POLL };
-        let until = Instant::now() + wait;
-        while Instant::now() < until && !stop.load(Ordering::Relaxed) {
-            thread::sleep(Duration::from_millis(50));
+        if !matches!(stopped.recv_timeout(wait), Err(RecvTimeoutError::Timeout)) {
+            return;
         }
     }
 }
 
 /// The call whose audio bluez-alsa runs, if any; an error while bluez-alsa
-/// cannot be asked.
-fn running_call(connection: &Connection) -> zbus::Result<Option<Call>> {
-    let objects = ObjectManagerProxy::builder(connection)
-        .destination(SERVICE)?
-        .path(DEVICES)?
-        .build()?
-        .get_managed_objects()?;
-    Ok(objects.into_values().find_map(|interfaces| {
+/// cannot be asked. `devices` is made at the first question and kept for the
+/// next ones.
+fn running_call(devices: &mut Option<ObjectManagerProxy<'static>>) -> zbus::Result<Option<Call>> {
+    let asked = match devices.take() {
+        Some(asked) => asked,
+        None => ObjectManagerProxy::builder(&Connection::system()?)
+            .destination(SERVICE)?
+            .path(DEVICES)?
+            .build()?,
+    };
+    let objects = asked.get_managed_objects();
+    // A lost connection to the bus is made again at the next question;
+    // bluez-alsa not running is no reason to.
+    let lost = matches!(
+        objects,
+        Err(zbus::fdo::Error::ZBus(zbus::Error::InputOutput(_)))
+    );
+    if !lost {
+        *devices = Some(asked);
+    }
+    Ok(objects?.into_values().find_map(|interfaces| {
         let (_, pcm) = interfaces
             .into_iter()
             .find(|(name, _)| name.as_str() == PCM_INTERFACE)?;
@@ -412,7 +421,7 @@ mod tests {
     #[test]
     fn the_call_volume_stays_within_its_range() {
         let calls = CallService {
-            stop: Arc::new(AtomicBool::new(false)),
+            stop: None,
             volume: Arc::new(AtomicI8::new(0)),
             worker: None,
         };

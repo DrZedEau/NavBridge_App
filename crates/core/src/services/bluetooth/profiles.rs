@@ -76,7 +76,7 @@ pub(super) fn setup(
     let up = hotspot.wait(HOTSPOT_WAIT);
     let waited_ms = started.elapsed().as_millis() as u64;
     let result = if up {
-        wifi::hotspot()
+        hotspot.details()
     } else {
         Err(format!(
             "the hotspot was not up within {} s",

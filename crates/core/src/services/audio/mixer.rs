@@ -2,11 +2,12 @@
 //! ALSA devices name, the rates its hardware runs at and its mixer levels,
 //! which Settings also changes.
 use crate::config::AudioConfig;
-use crate::settings::Settings;
+use crate::settings::{Settings, Unsaved};
 use alsa::mixer::{Mixer, Selem, SelemChannelId};
 use navbridge_common::{AudioSnapshot, StreamFormat};
 use std::fs;
 use std::sync::Arc;
+use std::time::Instant;
 use tracing::{info, warn};
 
 /// A sound card, from a line of /proc/asound/cards such as
@@ -148,6 +149,9 @@ pub struct ChosenLevels {
     chosen: (Option<u8>, Option<u8>),
     /// Whether the codec was there when last looked at.
     present: bool,
+    /// The chosen levels until they are kept: a held key steps one many
+    /// times a second, and one write keeps where it ends.
+    unsaved: Unsaved<(Option<u8>, Option<u8>)>,
 }
 
 impl ChosenLevels {
@@ -158,6 +162,7 @@ impl ChosenLevels {
             settings,
             chosen: (saved.volume, saved.microphone),
             present: false,
+            unsaved: Unsaved::default(),
         }
     }
 
@@ -182,14 +187,37 @@ impl ChosenLevels {
         snapshot
     }
 
-    /// Sets a level chosen in Settings, and keeps it.
+    /// Sets a level chosen in Settings at once; it is kept once it has
+    /// settled (`keep_settled`), or when the service stops (`keep`).
     pub fn set(&mut self, gain: Gain, percent: u8) {
         apply(&self.audio, gain, percent);
         match gain {
             Gain::Speaker => self.chosen.0 = Some(percent),
             Gain::Microphone => self.chosen.1 = Some(percent),
         }
-        let chosen = self.chosen;
+        self.unsaved.set(self.chosen, Instant::now());
+    }
+
+    /// When levels set since they were last kept are due to be.
+    pub fn keep_due(&self) -> Option<Instant> {
+        self.unsaved.due()
+    }
+
+    /// Keeps the levels if they have stayed the same for long enough.
+    pub fn keep_settled(&mut self) {
+        if let Some(chosen) = self.unsaved.settled(Instant::now()) {
+            self.write(chosen);
+        }
+    }
+
+    /// Keeps the levels now, settled or not.
+    pub fn keep(&mut self) {
+        if let Some(chosen) = self.unsaved.take() {
+            self.write(chosen);
+        }
+    }
+
+    fn write(&self, chosen: (Option<u8>, Option<u8>)) {
         self.settings
             .update(|saved| (saved.volume, saved.microphone) = chosen);
     }

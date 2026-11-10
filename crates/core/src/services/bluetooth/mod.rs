@@ -108,7 +108,7 @@ impl BluetoothService {
             ..Shared::default()
         }));
         let (requests, received) = mpsc::channel();
-        let name = wifi::unit_name();
+        let name = hotspot.unit_name();
         let worker = Worker {
             shared: shared.clone(),
             connection: None,
