@@ -112,6 +112,15 @@ wheel_previous = "previous_track"
 wheel_send_end = "voice_assistant"
 wheel_rt = "answer_call"
 
+# The Wi-Fi that becomes the hotspot for wireless Android Auto.
+[wireless]
+# The interface, as `ip link` names it: the Pi's own Wi-Fi is wlan0.
+interface = "wlan0"
+# The hotspot's 5 GHz channel. 36, 40, 44 and 48 need no radar detection;
+# which others an access point may use depends on the country. A hotspot
+# created earlier moves here, keeping its name and password.
+channel = 36
+
 [audio]
 enabled = true
 # plug converts rates/channels; dmix mixes music and navigation/assistant streams.

@@ -44,7 +44,7 @@ LICENSE
 LICENSE-LGPL-3.0
 ```
 
-Publish the complete archive. It contains the binaries, config and installation assets; users do not need source code, Cargo, Rust or development headers. Separate builds are required for Bookworm and Trixie because their FFmpeg/glibc versions differ. The installer checks the release's OS label, ARM64 ELF headers and available dynamic libraries. Existing unpacked bundles are moved aside on repeat builds.
+Publish the complete archive. It contains the binaries, config and installation assets; users do not need source code, Cargo, Rust or development headers. Separate builds are required for Bookworm and Trixie because their FFmpeg/glibc versions differ. The installer checks the release's OS label, ARM64 ELF headers and available dynamic libraries. Existing unpacked bundles are moved aside on repeat builds, and the three newest of them are kept.
 
 ## Install a published release
 
@@ -115,6 +115,7 @@ GNSS receiver's position is sent to Android Auto.
 The core reads the car's I-Bus from the carrier board's ATmega32U4 through the
 `dialout` group; `[ibus] device` in core.toml names its serial port.
 
-The Android USB rule grants plugdev access to AOA and common phone vendors; add
-your phone vendor if absent, then replug the phone.
+The Android USB rules grant plugdev access to AOA, to any device showing a
+file-transfer or ADB interface, and to common phone vendors; for a phone that is
+still refused, add its vendor, then replug the phone.
 OpenSSL runtime libraries are included in the runtime dependency installer.

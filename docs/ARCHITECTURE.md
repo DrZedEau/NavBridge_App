@@ -173,8 +173,9 @@ the phone opens the microphone, then blocks on each 20 ms read.
 
 ## Wireless mode
 
-The Wi-Fi service switches `wlan0` with `nmcli` on its own thread, so the main
-loop never waits for NetworkManager. On, it activates the `navbridge-hotspot`
+The Wi-Fi service switches `wlan0` (core.toml's `[wireless] interface`, with
+the hotspot's channel) with `nmcli` on its own thread, so the main loop never
+waits for NetworkManager. On, it activates the `navbridge-hotspot`
 profile: a 5 GHz access point in NetworkManager's shared mode, whose DHCP server
 gives phones an address. The profile is created on first use and never
 autoconnects. Off, and when the core stops, it deactivates the profile, and

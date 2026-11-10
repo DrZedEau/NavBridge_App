@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use navbridge_common::SystemSnapshot;
 
@@ -37,15 +37,41 @@ impl SystemService {
         let thread = thread::spawn(move || {
             let mut previous_cpu = None;
             let mut levels = ChosenLevels::new(audio, settings);
+            let mut next_refresh = Instant::now();
             loop {
-                let next = collect(&mut previous_cpu, &mut levels);
-                if let Ok(mut guard) = snapshot_thread.write() {
-                    *guard = next;
+                // Every REFRESH, whatever Settings asks in between: a held
+                // key sets a level many times a second.
+                if Instant::now() >= next_refresh {
+                    let next = collect(&mut previous_cpu, &mut levels);
+                    if let Ok(mut guard) = snapshot_thread.write() {
+                        *guard = next;
+                    }
+                    next_refresh = Instant::now() + REFRESH;
                 }
-                match requests.recv_timeout(REFRESH) {
-                    Ok((gain, percent)) => levels.set(gain, percent),
+                levels.keep_settled();
+                let wake = levels
+                    .keep_due()
+                    .map_or(next_refresh, |due| due.min(next_refresh));
+                match requests.recv_timeout(wake.saturating_duration_since(Instant::now())) {
+                    Ok((gain, percent)) => {
+                        levels.set(gain, percent);
+                        // Shown at once, where the codec has the level; the
+                        // next refresh reads the mixer back.
+                        if let Ok(mut guard) = snapshot_thread.write() {
+                            let shown = match gain {
+                                Gain::Speaker => &mut guard.audio.volume_percent,
+                                Gain::Microphone => &mut guard.audio.microphone_percent,
+                            };
+                            if shown.is_some() {
+                                *shown = Some(percent);
+                            }
+                        }
+                    }
                     Err(RecvTimeoutError::Timeout) => {}
-                    Err(RecvTimeoutError::Disconnected) => return,
+                    Err(RecvTimeoutError::Disconnected) => {
+                        levels.keep();
+                        return;
+                    }
                 }
             }
         });
@@ -61,8 +87,8 @@ impl SystemService {
         self.snapshot.read().map(|s| s.clone()).unwrap_or_default()
     }
 
-    /// Sets the codec's output volume or microphone gain, in percent, and
-    /// keeps it; the snapshot shows it at once.
+    /// Sets the codec's output volume or microphone gain, in percent; the
+    /// snapshot shows it at once, and it is kept once it has settled.
     pub fn set_gain(&self, gain: Gain, percent: u8) {
         if let Some(gains) = &self.gains {
             let _ = gains.send((gain, percent.min(100)));
