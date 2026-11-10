@@ -98,7 +98,7 @@ sudo systemctl enable --now getty@tty1
 
 Package installation requires internet access. A full clean-OS install and reboot test remains necessary before publishing a release.
 
-## Wired Android Auto
+## Android Auto
 
 Connect the Android phone directly to the Pi USB host port using a data cable.
 iPhone CarPlay is not present in this release. Wireless Android Auto is switched
@@ -108,8 +108,9 @@ Bluetooth, with a code shown on screen, then connect over NavBridge's 5 GHz
 hotspot. Configure `[android_auto]`
 in core.toml; unknown settings stop
 the core with an error. Music, navigation and assistant audio use the USB codec.
-Bluetooth telephone call audio is not implemented. A connected GNSS receiver's
-position is sent to Android Auto.
+A paired phone's calls play on the car's speakers and microphone over Bluetooth
+hands-free: the installer runs bluez-alsa for that profile only. A connected
+GNSS receiver's position is sent to Android Auto.
 
 The core reads the car's I-Bus from the carrier board's ATmega32U4 through the
 `dialout` group; `[ibus] device` in core.toml names its serial port.

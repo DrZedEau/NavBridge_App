@@ -1,7 +1,7 @@
 # NavBridge
 
-NavBridge is a wired Android Auto head unit for Raspberry Pi 5 / Compute Module 5,
-with a Rust backend and a separate Slint KMS interface. Connect an Android phone
+NavBridge is a wired and wireless Android Auto head unit for Raspberry Pi 5 /
+Compute Module 5, with a Rust backend and a separate Slint KMS interface. Connect an Android phone
 directly with a USB data cable, unlock it, and accept Android Auto setup prompts.
 
 Wireless Android Auto works over NavBridge's own 5 GHz hotspot once the phone
@@ -238,7 +238,7 @@ buttons).
 | Escape/Home | NavBridge menu without disconnecting |
 | N / B | Next / previous track |
 | V | Android Auto voice assistant |
-| A / E | Answer / end or reject a call (phone-dependent; Bluetooth call audio is not implemented) |
+| A / E | Answer / end or reject a call (phone-dependent; the call's audio plays in the car, see Calls) |
 | H | Android Auto home |
 | M / S | Open the navigation app / media in Android Auto |
 | P | Pause or resume music (the phone knows which) |
