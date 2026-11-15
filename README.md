@@ -146,6 +146,7 @@ display manager unless given `--force`, for a dedicated kiosk PC.
 | `run_desktop.sh` | Run the local build in a window on a desktop PC. |
 | `install_systemd.sh` | Deploy existing binaries, runtime packages, udev rules and two services. Never builds. |
 | `install_runtime_deps.sh` | Runtime packages, GPSD and udev rules only. |
+| `install_splash.sh` | The boot splash on the panel, and the boot settings that keep text off it. `--uninstall` removes it. |
 
 See [installation guide](docs/installation-lite.md) for releases and systemd.
 

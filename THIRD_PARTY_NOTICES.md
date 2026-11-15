@@ -53,6 +53,11 @@ https://github.com/f-io/LIVI
 The menu's icons in `crates/ui/ui/icons`, a phone, a settings gear and a
 system monitor, were supplied by the project owner and scaled down.
 
+## Boot splash
+
+The boot splash image, `packaging/splash.png`, was supplied by the project
+owner.
+
 ## Accessory TLS identity
 
 `crates/core/src/services/android_auto/identity.rs` contains the public Google

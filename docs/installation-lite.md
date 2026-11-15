@@ -28,15 +28,19 @@ The build produces `dist/navbridge-<bookworm-or-trixie>-arm64.tar.gz` and an unp
 ```text
 bin/navbridge-core
 bin/navbridge-ui
+bin/navbridge-splash
 config/*.toml
 packaging/*.service
 packaging/70-navbridge-android.rules
 packaging/71-navbridge-ibus.rules
 packaging/50-navbridge-wifi.rules
 packaging/51-navbridge-power.rules
+packaging/60-navbridge-splash.rules
 packaging/bluealsa-navbridge.conf
+packaging/splash.png
 scripts/install_systemd.sh
 scripts/install_runtime_deps.sh
+scripts/install_splash.sh
 release.info
 README.md
 THIRD_PARTY_NOTICES.md
@@ -73,7 +77,20 @@ The installer also adds `/etc/polkit-1/rules.d/50-navbridge-wifi.rules`, which l
 
 Existing config under `/opt/navbridge/config` is preserved. For upgrades from the previous layout, existing `/etc/navbridge/*.toml` files are copied into the new directory if it has no corresponding file. Future edits belong under `/opt/navbridge/config`. Both core and frontend socket paths must be `/run/navbridge/core.sock`. Previous installed binaries and units are saved under `/var/backups/navbridge/`.
 
-The UI reserves tty1 and disables its login console. SSH and other terminals remain available. Installation from tty1 automatically defers app startup until reboot. Panel overlays, timings and boot configuration are not modified.
+The UI reserves tty1 and disables its login console. SSH and other terminals remain available. Installation from tty1 automatically defers app startup until reboot. Panel overlays, timings and boot configuration are not modified (the boot splash, below, is installed separately).
+
+## Boot splash
+
+```bash
+./scripts/install_splash.sh --dry-run
+./scripts/install_splash.sh
+```
+
+Shows `packaging/splash.png` (400x240) on the panel from the moment the display driver starts, a few seconds into the boot, until the UI draws over it. Run it after `install_systemd.sh`, from the release bundle or a checkout built with `./scripts/build_kms.sh`. It installs `/opt/navbridge/bin/navbridge-splash` and `/opt/navbridge/splash.png`, `navbridge-splash.service`, and a udev rule (`60-navbridge-splash.rules`) that starts it as soon as `/dev/fb0` appears. The program reads the framebuffer's size and pixel format, stretches the image to fill the panel, and stops the kernel's text console from drawing over it. The image stays in the framebuffer, so it should also come back whenever the UI gives the display up, such as while the Pi shuts down.
+
+It also edits the boot configuration so that nothing shows before the splash: in `cmdline.txt` the kernel's console moves from `tty1` to `tty3`, and `quiet`, `loglevel=3`, `logo.nologo` and `vt.global_cursor_default=0` are set; `config.txt` gets `disable_splash=1`, which removes the firmware's rainbow square. The originals are kept in `/var/backups/navbridge/splash/`. Use `--no-boot-config` to leave both files alone.
+
+Use another image with `--image my-splash.png`; make it the panel's size (320x240 for a 4:3 panel) so that it is not stretched. To see it without rebooting, over SSH: `sudo systemctl stop navbridge-ui`, `sudo systemctl start navbridge-splash`, then `sudo systemctl start navbridge-ui`. `./scripts/install_splash.sh --uninstall` removes it, puts the boot files back unless they were edited since, and lets the text console draw on the panel again.
 
 ## Preview, defer startup, and manage services
 

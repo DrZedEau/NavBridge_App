@@ -36,10 +36,10 @@ mkdir -p "$ROOT/dist"
 STAGE=$(mktemp -d "$ROOT/dist/.navbridge.XXXXXX")
 trap 'rm -rf -- "$STAGE"' EXIT
 mkdir -p "$STAGE"/{bin,config,packaging,scripts}
-install -m 0755 target/release/navbridge-core target/release/navbridge-ui "$STAGE/bin/"
+install -m 0755 target/release/navbridge-core target/release/navbridge-ui target/release/navbridge-splash "$STAGE/bin/"
 install -m 0644 config/*.toml "$STAGE/config/"
-install -m 0644 packaging/*.service packaging/*.rules packaging/*.conf "$STAGE/packaging/"
-install -m 0755 scripts/install_systemd.sh scripts/install_runtime_deps.sh "$STAGE/scripts/"
+install -m 0644 packaging/*.service packaging/*.rules packaging/*.conf packaging/splash.png "$STAGE/packaging/"
+install -m 0755 scripts/install_systemd.sh scripts/install_runtime_deps.sh scripts/install_splash.sh "$STAGE/scripts/"
 install -m 0644 docs/installation-lite.md "$STAGE/README.md"
 install -m 0644 LICENSE "$STAGE/LICENSE"
 install -m 0644 THIRD_PARTY_NOTICES.md "$STAGE/THIRD_PARTY_NOTICES.md"

@@ -1,0 +1,3 @@
+# Shows the NavBridge splash as soon as the display driver creates the
+# framebuffer. Installed by scripts/install_splash.sh.
+ACTION=="add", SUBSYSTEM=="graphics", KERNEL=="fb0", TAG+="systemd", ENV{SYSTEMD_WANTS}+="navbridge-splash.service"

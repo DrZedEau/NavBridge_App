@@ -1,0 +1,11 @@
+[Unit]
+Description=NavBridge boot splash on the panel
+# Started by udev (60-navbridge-splash.rules) as soon as the display driver
+# creates /dev/fb0, early in the boot; the UI later draws over it.
+DefaultDependencies=no
+Before=navbridge-ui.service
+ConditionPathExists=/opt/navbridge/splash.png
+
+[Service]
+Type=oneshot
+ExecStart=/opt/navbridge/bin/navbridge-splash /opt/navbridge/splash.png

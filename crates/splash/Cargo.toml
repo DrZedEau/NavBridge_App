@@ -1,0 +1,12 @@
+[package]
+name = "navbridge-splash"
+description = "Shows the NavBridge splash image on the panel while the Pi boots"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+libc = "0.2"
+png = "0.18"
