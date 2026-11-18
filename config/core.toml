@@ -20,20 +20,23 @@ left_hand_drive = true
 
 [ibus]
 enabled = true
-# The carrier board's ATmega32U4, which passes on each I-Bus frame it hears.
-# Its by-id name stays the same whichever ttyACM number it gets.
-device = "/dev/serial/by-id/usb-Arduino_LLC_Arduino_Micro_HIDPC-if00"
+# The carrier board's microcontroller (NavBridge CM4: STM32C071), which passes
+# on each I-Bus frame it hears, and says which picture the screen shows: the
+# car's buttons act only while it is NavBridge's ("RGB RPI"), not the factory
+# navigation's ("RGB NAV"). Its by-id name stays the same whichever ttyACM
+# number it gets.
+device = "/dev/serial/by-id/usb-NavBridge_NavBridge_CM4_MCU-if00"
 # Shut the Pi down when the cluster reports the ignition off: at once, or after
 # shutdown_delay_s seconds unless it comes back on first (an engine restart,
-# say). The board passes the ignition-off message on whatever the screen shows.
+# say). The ignition counts whatever the screen shows.
 shutdown = true
 shutdown_delay_s = 0
 
 # What each of the car's buttons does, as button = "command", while the core
-# reads the I-Bus. A button left out does nothing. A button takes one command,
-# but a command can be on several buttons, and a misspelt name stops the core
-# at start. The commands are named as in keyboard.toml, which alone has quit.
-# The table below is the keys the firmware types.
+# reads the I-Bus and NavBridge's picture shows. A button left out does
+# nothing. A button takes one command, but a command can be on several
+# buttons, and a misspelt name stops the core at start. The commands are named
+# as in keyboard.toml, which alone has quit.
 #
 # A button acts once, when it is pressed: holding it or letting it go does
 # nothing more. Each detent of the knob counts as one press.
@@ -51,8 +54,9 @@ shutdown_delay_s = 0
 #   wheel_next, wheel_previous  the + and - keys
 #   wheel_send_end              the send/end key
 #   wheel_rt                    the R/T key
-# The board itself uses telephone and the radio's own buttons to switch the
-# screen, which is why the table leaves them out.
+# The board itself uses telephone, the radio's own buttons, menu and info to
+# switch the screen, which is why the table leaves them out: their presses
+# always come while the factory navigation's picture shows, and are dropped.
 #
 # Commands for Android Auto, which act only while its screen shows a phone:
 #   next_track, previous_track  the next or previous track

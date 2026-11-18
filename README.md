@@ -12,7 +12,7 @@ Music, navigation/assistant playback and assistant microphone capture use the
 PCM2912A USB codec. An external GNSS receiver shows on the System page and, when
 connected as the phone connects, gives Android Auto the car's position. The
 last System page shows the car's speed, engine speed, temperatures, range and
-consumption from its I-Bus, through the carrier board's ATmega32U4.
+consumption from its I-Bus, through the carrier board's microcontroller.
 
 ## Screenshots
 
@@ -166,7 +166,7 @@ left_hand_drive = true
 
 [ibus]
 enabled = true
-device = "/dev/serial/by-id/usb-Arduino_LLC_Arduino_Micro_HIDPC-if00"
+device = "/dev/serial/by-id/usb-NavBridge_NavBridge_CM4_MCU-if00"
 
 [wireless]
 interface = "wlan0"
@@ -239,9 +239,8 @@ accessories.
 
 ## Keyboard
 
-Bindings live in `config/keyboard.toml`. The keyboard acts while the core
-reads no I-Bus, as on a PC; in the car, the car's buttons do (see The car's
-buttons).
+Bindings live in `config/keyboard.toml`. The keyboard acts at all times, as on
+a PC; in the car, the car's buttons act alongside it (see The car's buttons).
 
 | Key | Action |
 | --- | --- |
@@ -390,13 +389,15 @@ connection.
 
 ## IBUS (System page 4)
 
-The carrier board's ATmega32U4 hears the car's I-Bus (BMW E46 and E85
-electrics) and passes each frame to the Pi over USB serial, one line each, such
-as `IBUS1 RX 7323494 8004BF110329`: bus, direction, its milliseconds since it
-started, and the frame in hex. The core reads `[ibus] device` in core.toml, the
-board's stable `/dev/serial/by-id/` name, checks each frame's length and
-checksum, and reopens the port whenever the board is unplugged and back. It
-never sends anything towards the car.
+The carrier board's microcontroller (the NavBridge CM4's STM32C071) hears the
+car's I-Bus (BMW E46 and E85 electrics) and passes each frame to the Pi over
+USB serial, one line each, such as `IBUS1 RX 7323494 8004BF110329`: bus,
+direction, its milliseconds since it started, and the frame in hex. The core
+reads `[ibus] device` in core.toml, the board's stable `/dev/serial/by-id/`
+name (`usb-NavBridge_NavBridge_CM4_MCU-if00` by default), checks each frame's
+length and checksum, and reopens the port whenever the board is unplugged and
+back. It only reads the port: it sends nothing to the board, nor towards the
+car.
 
 From the instrument cluster's broadcasts, System page 4 shows:
 
@@ -464,37 +465,38 @@ the radio panel's presets and arrows, its knob, and the steering wheel's
 buttons. The core reads them from the I-Bus frames, and the UI acts on each as
 on the key of the same action. `[ibus.buttons]` in core.toml says what each
 button does, with the action names of keyboard.toml; the shipped table is the
-keys the board's firmware types. The panel's select key is left out: the
-firmware typed Tab, which NavBridge no longer uses.
+keys the previous board's (ATmega32U4) firmware typed. The panel's select key
+is left out: that firmware typed Tab, which NavBridge no longer uses.
 
 - A button acts when it is pressed, once, also for buttons the UI passes to
   Android Auto; holding it or letting it go does nothing more for now.
 - Each detent of the knob is one Left or Right.
-- Telephone and the radio's own buttons switch the screen on the board; they
-  stay unmapped.
+- Telephone, the radio's own buttons, MENU and INFO switch the screen on the
+  board; they stay unmapped.
 - Nine commands send the phone further keys: `phone_menu`, `phone_music`,
   `phone_contacts`, `phone_calendar`, `phone_settings`, `phone_notification`,
   `phone_app_switch`, `phone_radio` and `phone_tel`. They have no button or
   keyboard key until you give them one. What the phone does with each is not
   documented, and may be nothing.
 
-The keyboard acts only while the core reads no I-Bus, as on a PC without the
-board: in the car, the board's firmware still types keys for the same buttons,
-which would act twice.
+The buttons act only while the screen shows NavBridge's picture. The board
+switches the picture itself, and says which one shows with a line of its own:
+`RGB RPI` for NavBridge's, `RGB NAV` for the factory navigation's, as soon as
+the core opens the port, then at each change. Under `RGB NAV`, and until the
+board has said which picture shows, the core drops every button press: they
+are for the navigation and the radio. The board announces a switch to the
+navigation before the press that caused it, and a switch to NavBridge after
+it, so the buttons that switch the picture never act on NavBridge. Readings
+count whatever the picture: the ignition off (`80 04 BF 11 00`) still shuts
+the Pi down (see Shutdown). The core logs `the display's picture` at each
+change.
 
-The board's firmware is to:
+The core sends the board nothing: its firmware types no keys, so a USB
+keyboard acts alongside the car's buttons without any of them acting twice.
 
-- stop typing keys when NavBridge sends the line `KEYS OFF` (on opening the
-  port), until the port closes, so that it types them again whenever
-  NavBridge stops;
-- pass frames on only while NavBridge's screen shows, so that the buttons are
-  the radio's while the BMW navigation shows, except the cluster's ignition
-  off (`80 04 BF 11 00`), which it always passes on (see Shutdown);
-- not drop frames while the port is open.
-
-Until it does, the buttons also act while the BMW navigation shows. With
-`RUST_LOG=debug`, the core logs `I-Bus button` with each one it decodes,
-pressed, held or released, to check the codes in the car.
+With `RUST_LOG=debug`, the core logs `I-Bus button` with each one it decodes,
+pressed, held or released, to check the codes in the car, and `I-Bus button
+dropped` for those that come under `RGB NAV`.
 
 ### Shutdown
 

@@ -3,6 +3,9 @@
 //! microcontroller's milliseconds since it started, and the frame in hex:
 //! source, length of what follows, destination, message id and data, and a
 //! checksum that makes the XOR of all the bytes zero.
+//!
+//! The microcontroller also says which picture the display shows: "RGB RPI"
+//! or "RGB NAV", as soon as NavBridge opens its port, then at each change.
 use navbridge_common::Ignition;
 use serde::Deserialize;
 
@@ -49,6 +52,28 @@ pub enum Reading {
     },
     /// The headlights' low beam is on, from the light module's lamp status.
     LowBeam(bool),
+}
+
+/// The picture the display shows, which the microcontroller switches: the
+/// car's buttons are NavBridge's only while it shows the Pi's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Picture {
+    /// "RGB RPI": NavBridge's, so the buttons are for it.
+    Pi,
+    /// "RGB NAV": the factory navigation's, so the buttons are for it and
+    /// the radio.
+    Navigation,
+}
+
+/// The picture one of the microcontroller's lines announces, if it is such a
+/// line.
+pub fn picture(line: &str) -> Option<Picture> {
+    let mut fields = line.split_whitespace();
+    match (fields.next(), fields.next(), fields.next()) {
+        (Some("RGB"), Some("RPI"), None) => Some(Picture::Pi),
+        (Some("RGB"), Some("NAV"), None) => Some(Picture::Navigation),
+        _ => None,
+    }
 }
 
 /// The frame on one of the microcontroller's lines. Lines that are not

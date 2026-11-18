@@ -1,11 +1,13 @@
-//! The car's I-Bus, through the carrier board's ATmega32U4, which passes on
-//! each frame it hears as a line on its USB serial port. Read only: nothing is
-//! ever sent towards the car.
+//! The car's I-Bus, through the carrier board's microcontroller, which passes
+//! on each frame it hears as a line on its USB serial port. Read only: nothing
+//! is ever sent, to the board or towards the car.
 //!
-//! The car's buttons become UI inputs, as from keys: the service asks the board
-//! to stop typing keys for them ("KEYS OFF", which holds until the port
-//! closes). The board passes frames on only while NavBridge's screen shows,
-//! except the cluster's ignition-off, after which the Pi shuts down.
+//! The car's buttons become UI inputs, as from keys, but only while the board
+//! says the display shows NavBridge's picture ("RGB RPI"). While it shows the
+//! factory navigation's ("RGB NAV"), and until the board says which, the
+//! buttons are for the navigation and the radio, and are dropped. Readings
+//! count whatever the picture, among them the cluster's ignition-off, after
+//! which the Pi shuts down.
 mod frame;
 mod serial;
 #[cfg(test)]
@@ -14,7 +16,7 @@ mod tests;
 use crate::config::IbusConfig;
 use crate::services::events::{self, EventReceiver, EventSender};
 pub use frame::Button;
-use frame::{Phase, Press, Reading};
+use frame::{Phase, Picture, Press, Reading};
 use navbridge_common::{Ignition, InputAction, VehicleSnapshot};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -170,9 +172,6 @@ fn run(device: &Path, state: &Mutex<State>, stop: &AtomicBool, buttons: &Buttons
             Ok(mut port) => {
                 info!(device = %device.display(), "reading the I-Bus");
                 state.lock().unwrap().opened();
-                if let Err(e) = port.send_line("KEYS OFF") {
-                    warn!(%e, "could not ask the board to stop typing keys");
-                }
                 let Some(e) = listen(&mut port, state, stop, &mut undecoded, buttons) else {
                     return;
                 };
@@ -245,14 +244,29 @@ fn received(
     undecoded: &mut HashSet<(u8, u8, u8)>,
     buttons: &Buttons,
 ) {
+    if let Some(picture) = frame::picture(line) {
+        if state.lock().unwrap().picture.replace(picture) != Some(picture) {
+            info!(?picture, "the display's picture");
+        }
+        return;
+    }
     match frame::parse_line(line) {
         Ok(Some(frame)) => {
             let reading = frame::decode(&frame);
             let press = frame::button(&frame);
             if let Some(press) = press {
-                debug!(?press, "I-Bus button");
-                for input in inputs(press, &buttons.bindings) {
-                    let _ = buttons.events.send(Event::Input(input));
+                let picture = state.lock().unwrap().picture;
+                if picture == Some(Picture::Pi) {
+                    debug!(?press, "I-Bus button");
+                    for input in inputs(press, &buttons.bindings) {
+                        let _ = buttons.events.send(Event::Input(input));
+                    }
+                } else {
+                    debug!(
+                        ?press,
+                        ?picture,
+                        "I-Bus button dropped: not NavBridge's picture"
+                    );
                 }
             }
             let kind = (frame.source, frame.destination, frame.message[0]);
@@ -309,6 +323,9 @@ fn inputs(press: Press, bindings: &BTreeMap<Button, InputAction>) -> Vec<ButtonI
 struct State {
     /// Why the interface is not open; `None` while it is.
     problem: Option<String>,
+    /// The picture the board last said the display shows; `None` until it
+    /// says, which drops the buttons as for the navigation's.
+    picture: Option<Picture>,
     /// When the cluster said the ignition went off, until it says otherwise;
     /// it outlasts the bus falling asleep and the interface going away.
     ignition_off_at: Option<Instant>,

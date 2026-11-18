@@ -17,8 +17,8 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use crate::actions::{
-    answer_pairing, core_hello, handle_key_event, keyboard_active, swipe_system, tap_back,
-    tap_pair, tap_setting, tap_tile,
+    answer_pairing, core_hello, handle_key_event, swipe_system, tap_back, tap_pair, tap_setting,
+    tap_tile,
 };
 use crate::config::{KeyboardConfig, UiConfig};
 use crate::input::KeyMap;
@@ -118,10 +118,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             };
 
+            // The keyboard acts alongside the car's buttons: the board types
+            // no keys for them, so none acts twice.
             let mut state = state.borrow_mut();
-            if !keyboard_active(&state) {
-                return;
-            }
             handle_key_event(&mut state, action, pressed, repeat, &command_tx);
             render_state(&ui, &state);
         });

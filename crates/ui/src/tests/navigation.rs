@@ -1122,13 +1122,6 @@ fn car_buttons_act_as_the_keyboard_bindings_of_the_same_name() {
     let mut state = UiState::default();
     handle_key_event(&mut state, Select.into(), true, false, &tx);
     assert_eq!(state.screen, Screen::Phone);
-    // The keyboard acts while there is no I-Bus, as on a PC, and not
-    // while the core reads it.
-    assert!(keyboard_active(&state));
-    state.core_connected = true;
-    assert!(keyboard_active(&state));
-    state.snapshot.vehicle.interface = true;
-    assert!(!keyboard_active(&state));
 }
 
 #[test]

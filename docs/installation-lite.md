@@ -129,7 +129,7 @@ A paired phone's calls play on the car's speakers and microphone over Bluetooth
 hands-free: the installer runs bluez-alsa for that profile only. A connected
 GNSS receiver's position is sent to Android Auto.
 
-The core reads the car's I-Bus from the carrier board's ATmega32U4 through the
+The core reads the car's I-Bus from the carrier board's microcontroller through the
 `dialout` group; `[ibus] device` in core.toml names its serial port.
 
 The Android USB rules grant plugdev access to AOA, to any device showing a

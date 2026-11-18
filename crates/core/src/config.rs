@@ -166,14 +166,15 @@ impl Default for IbusConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            device: "/dev/serial/by-id/usb-Arduino_LLC_Arduino_Micro_HIDPC-if00".into(),
+            device: "/dev/serial/by-id/usb-NavBridge_NavBridge_CM4_MCU-if00".into(),
             buttons: default_buttons(),
             shutdown: true,
             shutdown_delay_s: 0,
         }
     }
 }
-/// The keys the board's firmware typed for each button.
+/// What each button does unless core.toml says otherwise: the keys the
+/// previous board's firmware typed for them.
 fn default_buttons() -> BTreeMap<Button, InputAction> {
     BTreeMap::from([
         (Button::Preset1, InputAction::PhoneHome),
@@ -204,7 +205,7 @@ mod tests {
         assert_eq!(c.android_auto.decoder, DecoderChoice::Auto);
         assert!(c.ibus.enabled);
         assert_eq!(c.ibus.device, IbusConfig::default().device);
-        // The shipped table is the keys the board's firmware types.
+        // The shipped table is the built-in one.
         assert_eq!(c.ibus.buttons, default_buttons());
         assert!(c.ibus.shutdown);
         assert_eq!(c.ibus.shutdown_delay_s, 0);

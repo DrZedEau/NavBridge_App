@@ -66,7 +66,7 @@ fn wait_for_inputs(ibus: &IbusService, count: usize) -> Vec<ButtonInput> {
 }
 
 #[test]
-fn buttons_reach_the_ui_and_the_board_stops_typing_keys() {
+fn buttons_reach_the_ui_only_while_navbridges_picture_shows() {
     let (mut board, device) = pseudo_terminal();
     let ibus = IbusService::start(IbusConfig {
         enabled: true,
@@ -74,11 +74,16 @@ fn buttons_reach_the_ui_and_the_board_stops_typing_keys() {
         ..IbusConfig::default()
     });
     wait_for(&ibus, |v| v.status == "No I-Bus traffic");
-    // The board is asked to stop typing keys itself.
-    assert_eq!(sent_to_board(&mut board), "KEYS OFF\n");
-    // The knob pressed, and turned two detents to the left.
+    // Before the board says which picture shows, and while it shows the
+    // factory navigation's, the knob is the navigation's. The cluster's
+    // readings count all the same.
     board
-        .write_all(b"IBUS1 RX 1 F0043B480582\r\nIBUS1 RX 2 F0043B490284\r\n")
+        .write_all(b"IBUS1 RX 1 F0043B480582\r\nRGB NAV\r\nIBUS1 RX 2 F0043B480582\r\nIBUS1 RX 3 8004BF110329\r\n")
+        .unwrap();
+    wait_for(&ibus, |v| v.ignition == Some(Ignition::On));
+    // NavBridge's: the knob pressed, and turned two detents to the left.
+    board
+        .write_all(b"RGB RPI\r\nIBUS1 RX 4 F0043B480582\r\nIBUS1 RX 5 F0043B490284\r\n")
         .unwrap();
     let taken = wait_for_inputs(&ibus, 6);
     let presses = taken
@@ -90,7 +95,43 @@ fn buttons_reach_the_ui_and_the_board_stops_typing_keys() {
         presses,
         [InputAction::Select, InputAction::Left, InputAction::Left]
     );
+    // Back to the navigation's, which the board says before the press that
+    // switched it: that press is dropped, the ignition going off is not.
+    board
+        .write_all(b"RGB NAV\r\nIBUS1 RX 6 F0043B480582\r\nIBUS1 RX 7 8004BF11002A\r\n")
+        .unwrap();
+    wait_for(&ibus, |v| v.ignition == Some(Ignition::Off));
+    assert!(ibus.shutdown_due());
+    assert!(ibus.take().inputs.is_empty());
     assert_eq!(ibus.snapshot().bad_lines, 0);
+}
+
+#[test]
+fn the_picture_is_forgotten_with_the_interface() {
+    let mut state = State {
+        picture: Some(Picture::Pi),
+        ..State::default()
+    };
+    // Reopened, the board says again which picture shows; until then, the
+    // buttons are dropped.
+    state.closed("Interface lost".into());
+    assert_eq!(state.picture, None);
+}
+
+#[test]
+fn navbridge_sends_the_board_nothing() {
+    let (mut board, device) = pseudo_terminal();
+    let ibus = IbusService::start(IbusConfig {
+        enabled: true,
+        device: device.display().to_string(),
+        ..IbusConfig::default()
+    });
+    wait_for(&ibus, |v| v.status == "No I-Bus traffic");
+    board
+        .write_all(b"RGB RPI\r\nIBUS1 RX 1 8004BF110329\r\n")
+        .unwrap();
+    wait_for(&ibus, |v| v.ignition == Some(Ignition::On));
+    assert_eq!(sent_to_board(&mut board), "");
 }
 
 #[test]
@@ -566,4 +607,22 @@ fn damaged_frames_are_errors_and_other_lines_are_skipped() {
     ] {
         assert_eq!(parse_line(other), Ok(None), "{other}");
     }
+}
+
+#[test]
+fn the_board_says_which_picture_shows() {
+    assert_eq!(picture("RGB RPI"), Some(Picture::Pi));
+    assert_eq!(picture("RGB NAV\r"), Some(Picture::Navigation));
+    for other in [
+        "",
+        "RGB",
+        "RGB TV",
+        "RGB RPI NAV",
+        "rgb rpi",
+        "IBUS1 RX 1 8004BF110329",
+    ] {
+        assert_eq!(picture(other), None, "{other}");
+    }
+    // They are no frames, nor damaged ones.
+    assert_eq!(parse_line("RGB RPI"), Ok(None));
 }

@@ -1,4 +1,6 @@
-# The carrier board's ATmega32U4, which passes on the car's I-Bus. ModemManager
+# The carrier board's microcontroller, which passes on the car's I-Bus: the
+# NavBridge CM4's STM32C071, and the previous board's ATmega32U4. ModemManager
 # (installed on desktop Ubuntu) would otherwise probe it with AT commands when
 # it appears. NavBridge reads its serial port through the dialout group.
+ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", ATTRS{product}=="NavBridge CM4", ENV{ID_MM_DEVICE_IGNORE}="1"
 ATTRS{idVendor}=="2341", ATTRS{idProduct}=="8037", ENV{ID_MM_DEVICE_IGNORE}="1"

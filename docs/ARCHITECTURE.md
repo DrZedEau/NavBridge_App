@@ -40,7 +40,7 @@ menu, Settings, System <--------->    H.264/H.265 decode, scale (FFmpeg)
 projection view                       ALSA playback and microphone
        ^                              GPSD client, system metrics
        |                              Wi-Fi hotspot, BlueZ (wireless)
-       |                              I-Bus (ATmega32U4 serial)
+       |                              I-Bus (MCU USB serial)
        | /run/navbridge RGBA frames
        +----------------------------------------------
 ```
@@ -217,7 +217,7 @@ Both services require a paired phone over an encrypted link.
 
 ## I-Bus
 
-The I-Bus service reads the carrier board's ATmega32U4 on its own thread: one
+The I-Bus service reads the carrier board's microcontroller on its own thread: one
 line per frame the board hears, which the service checks (length, XOR
 checksum) and decodes when the instrument cluster sends it: ignition (`11`),
 road and engine speed (`18`), outside and coolant temperature (`19`), the
@@ -243,13 +243,16 @@ The service also decodes the board monitor's buttons (`48`, its soft keys
 pressed, held or released, and maps them through `[ibus.buttons]` to the UI's
 actions. Each press becomes a tap for the UI (holds and releases are not used
 yet), sent through an event channel that wakes the main loop, which passes it on as
-`ServerEvent::Input`; the UI handles it as a key, and ignores the keyboard
-while the I-Bus is read. The port is opened for writing too, only to send the
-board `KEYS OFF`. The board passes frames on only while NavBridge's screen
-shows, except the cluster's ignition off: from that, the state keeps when the
-ignition went off, through the bus falling quiet, and the main loop shuts the
-Pi down through logind's `PowerOff` at its next snapshot, or once the ignition
-has stayed off for `shutdown_delay_s`.
+`ServerEvent::Input`; the UI handles it as a key, alongside the keyboard's.
+The port is opened read only: nothing is sent to the board. The board says
+which picture the screen shows, `RGB RPI` (NavBridge's) or `RGB NAV` (the
+factory navigation's), on opening and at each change; the
+state keeps the last one until the interface goes away, and buttons count only
+under `RGB RPI`. Readings count whatever the picture, among them the cluster's
+ignition off: from that, the state keeps when the ignition went off, through
+the bus falling quiet, and the main loop shuts the Pi down through logind's
+`PowerOff` at its next snapshot, or once the ignition has stayed off for
+`shutdown_delay_s`.
 
 ## Keyboard
 

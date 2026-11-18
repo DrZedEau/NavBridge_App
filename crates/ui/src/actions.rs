@@ -32,13 +32,6 @@ pub(crate) fn core_hello(
     let _ = commands.send(ClientCommand::SetFrameSize { width, height });
 }
 
-/// The keyboard acts only while the core reads no I-Bus, as on a PC: in the
-/// car, the buttons come from the I-Bus, and the board's typed keys for them
-/// would act twice.
-pub(crate) fn keyboard_active(state: &UiState) -> bool {
-    !(state.core_connected && state.snapshot.vehicle.interface)
-}
-
 /// Releases a key or a finger the phone still holds.
 pub(crate) fn release_navigation(state: &mut UiState, commands: &Commands) {
     if let Some(key) = state.held_navigation.take() {

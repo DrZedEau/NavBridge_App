@@ -1,8 +1,7 @@
-//! The microcontroller's USB serial port. NavBridge never sends anything
-//! towards the car: only lines for the microcontroller itself.
+//! The microcontroller's USB serial port, which NavBridge only reads.
 use std::{
     fs::{File, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, Read},
     os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     path::Path,
     time::Duration,
@@ -14,7 +13,6 @@ impl Port {
     pub fn open(path: &Path) -> io::Result<Self> {
         let file = OpenOptions::new()
             .read(true)
-            .write(true)
             .custom_flags(libc::O_NOCTTY)
             .open(path)?;
         let fd = file.as_raw_fd();
@@ -26,8 +24,9 @@ impl Port {
             }
             // Bytes as they come, and nothing echoed back to the board.
             libc::cfmakeraw(&mut settings);
-            // A port closed at 1200 baud restarts the ATmega32U4 into its
-            // bootloader; USB ignores the rate otherwise.
+            // A port closed at 1200 baud restarts some boards, such as the
+            // previous one's ATmega32U4, into their bootloader; USB ignores
+            // the rate otherwise.
             libc::cfsetispeed(&mut settings, libc::B115200);
             libc::cfsetospeed(&mut settings, libc::B115200);
             if libc::tcsetattr(fd, libc::TCSANOW, &settings) < 0 {
@@ -37,11 +36,6 @@ impl Port {
             libc::ioctl(fd, libc::TIOCEXCL);
         }
         Ok(Self(file))
-    }
-
-    /// A line for the microcontroller, such as "KEYS OFF".
-    pub fn send_line(&mut self, line: &str) -> io::Result<()> {
-        self.0.write_all(format!("{line}\n").as_bytes())
     }
 
     /// Waits up to `limit` for bytes and returns how many arrived, perhaps
@@ -78,16 +72,5 @@ impl Port {
             )),
             n => Ok(n),
         }
-    }
-}
-
-impl Drop for Port {
-    /// Drops what the board has not read yet, such as "KEYS OFF" to firmware
-    /// that reads nothing: the kernel would otherwise wait up to 30 seconds
-    /// on close for it to drain, holding up the core's stop and the Pi's
-    /// shutdown.
-    fn drop(&mut self) {
-        // SAFETY: the descriptor `file` owns, still open.
-        unsafe { libc::tcflush(self.0.as_raw_fd(), libc::TCOFLUSH) };
     }
 }
