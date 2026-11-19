@@ -232,14 +232,6 @@ impl Worker {
             .into_iter()
             .map(|phone| phone.name)
             .collect();
-        shared.phones = self
-            .phones
-            .iter()
-            .map(|phone| BluetoothPhone {
-                address: phone.address.clone(),
-                name: phone.name.clone(),
-            })
-            .collect();
         let pairing_left = shared
             .pairing_until
             .map(|until| until.saturating_duration_since(now))
@@ -388,13 +380,25 @@ impl Worker {
         paired().unwrap_or(false)
     }
 
+    /// Lists the paired phones again, and publishes them for the snapshot.
+    /// Only here: between listings the snapshot keeps the phones it has, so a
+    /// tick does not rewrite them.
     pub(super) fn refresh_phones(&mut self) {
         self.next_refresh = Instant::now() + PHONES_REFRESH;
         let Some(connection) = &self.connection else {
             return;
         };
         match paired_phones(connection) {
-            Ok(phones) => self.phones = phones,
+            Ok(phones) => {
+                self.shared.lock().unwrap().phones = phones
+                    .iter()
+                    .map(|phone| BluetoothPhone {
+                        address: phone.address.clone(),
+                        name: phone.name.clone(),
+                    })
+                    .collect();
+                self.phones = phones;
+            }
             Err(e) => debug!(%e, "could not list paired phones"),
         }
     }

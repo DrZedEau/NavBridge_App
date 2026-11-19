@@ -167,7 +167,8 @@ fn only_the_default_phone_is_called_while_it_is_paired() {
 
 #[test]
 fn a_disconnected_phone_is_turned_away_until_connect() {
-    // Wireless mode stays off, so BlueZ is never contacted.
+    // Wireless mode stays off, so BlueZ is never contacted: the Bluetooth
+    // thread never lists phones, and leaves the ones set below alone.
     let service = BluetoothService::start(
         wifi::HotspotWatch::default(),
         Some("A0:B1:C2:D3:E4:F5".into()),
@@ -187,9 +188,17 @@ fn a_disconnected_phone_is_turned_away_until_connect() {
     service.disconnect();
     assert!(service.snapshot().paused);
     assert_eq!(service.shared.lock().unwrap().turned_away, Some(pixel));
+    // A tick of the Bluetooth thread, as for Connect phone's call, empties
+    // the status while wireless mode is off.
+    service.shared.lock().unwrap().status = "before the call".into();
     service.connect();
     assert!(!service.snapshot().paused);
     assert_eq!(service.shared.lock().unwrap().turned_away, None);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !service.snapshot().status.is_empty() {
+        assert!(Instant::now() < deadline, "the Bluetooth thread never ticked");
+        thread::sleep(Duration::from_millis(20));
+    }
     // In BlueZ's case; and a default phone that is not paired, as none.
     service.set_default_phone(Some("a0:b1:c2:d3:e4:f5".into()));
     assert_eq!(
