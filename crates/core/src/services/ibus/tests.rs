@@ -35,7 +35,7 @@ fn buttons_act_on_their_press_alone() {
         4
     );
     // A button with nothing to do.
-    assert!(inputs(press(Button::Telephone, Phase::Press, 1), &bindings).is_empty());
+    assert!(inputs(press(Button::Clock, Phase::Press, 1), &bindings).is_empty());
 }
 
 /// What the service sent the board, waiting up to a second for it.
@@ -399,13 +399,9 @@ fn the_board_monitor_and_steering_wheel_buttons_are_decoded() {
         (panel(0x68, 0x03), Button::Preset6),
         (panel(0x68, 0x00), Button::Next),
         (panel(0x68, 0x10), Button::Previous),
-        (panel(0x68, 0x21), Button::Am),
-        (panel(0x68, 0x31), Button::Fm),
-        (panel(0x68, 0x04), Button::Tone),
-        (panel(0x68, 0x23), Button::Mode),
-        (panel(0x68, 0x30), Button::RadioMenu),
         (panel(0xFF, 0x34), Button::Menu),
-        (panel(0xFF, 0x08), Button::Telephone),
+        (panel(0xFF, 0x07), Button::Clock),
+        (panel(0x68, 0x14), Button::TapeDirection),
         (panel(0x3B, 0x05), Button::KnobPress),
         ([0x50, 0x04, 0x68, 0x3B, 0x01], Button::WheelNext),
         ([0x50, 0x04, 0x68, 0x3B, 0x08], Button::WheelPrevious),
@@ -414,14 +410,17 @@ fn the_board_monitor_and_steering_wheel_buttons_are_decoded() {
     ] {
         assert_eq!(pressed(&frame), tap(expected), "{frame:02X?}");
     }
-    assert_eq!(
-        pressed(&[0xF0, 0x05, 0xFF, 0x47, 0x00, 0x0F]),
-        tap(Button::Select)
-    );
-    assert_eq!(
-        pressed(&[0xF0, 0x05, 0xFF, 0x47, 0x00, 0x38]),
-        tap(Button::Info)
-    );
+    // As heard in the car, checksum included.
+    let line = |hex: &str| button(&parse_line(&format!("IBUS1 RX 1 {hex}")).unwrap().unwrap());
+    assert_eq!(line("F004684814C0"), tap(Button::TapeDirection));
+    assert_eq!(line("F004FF480744"), tap(Button::Clock));
+    // The buttons that switch the picture are none of NavBridge's: telephone,
+    // AM, FM, TONE, MODE, RADIO, and the SELECT and INFO soft keys.
+    for code in [0x08, 0x21, 0x31, 0x04, 0x23, 0x30] {
+        assert_eq!(pressed(&panel(0x68, code)), None, "{code:02X}");
+    }
+    assert_eq!(pressed(&[0xF0, 0x05, 0xFF, 0x47, 0x00, 0x0F]), None);
+    assert_eq!(pressed(&[0xF0, 0x05, 0xFF, 0x47, 0x00, 0x38]), None);
     // Held and released, by their bits.
     let phase = |frame: &[u8]| pressed(frame).map(|p| (p.button, p.phase));
     assert_eq!(

@@ -13,7 +13,7 @@ use serde::Deserialize;
 const CLUSTER: u8 = 0x80;
 /// The light control module (LCM), which reports the lamps.
 const LIGHTS: u8 = 0xD0;
-/// The board monitor's panel (BMBT): radio presets, arrows, knob, soft keys.
+/// The board monitor's panel (BMBT): radio presets, arrows, knob, keys.
 const BOARD_MONITOR: u8 = 0xF0;
 /// The steering wheel's buttons (MFL).
 const STEERING_WHEEL: u8 = 0x50;
@@ -193,7 +193,11 @@ pub(super) fn tenths(text: &[u8], unit: &str) -> Option<u32> {
 }
 
 /// A button on the board monitor or the steering wheel, by the name
-/// core.toml's [ibus.buttons] gives it.
+/// core.toml's [ibus.buttons] gives it: those the carrier board leaves to
+/// NavBridge while its picture shows. The others (telephone, AM, FM, MODE,
+/// RADIO, TONE, SELECT and INFO) switch the picture to the factory
+/// navigation's, or toggle it, so they always come while it shows: NavBridge
+/// has no name for them, and they cannot be bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Button {
@@ -212,19 +216,13 @@ pub enum Button {
     /// The panel's arrows, > and <.
     Next,
     Previous,
-    Am,
-    Fm,
-    Mode,
-    Tone,
     Menu,
-    RadioMenu,
-    Telephone,
+    Clock,
+    /// The tape's direction key, ⇄.
+    TapeDirection,
     KnobPress,
     KnobLeft,
     KnobRight,
-    /// The board monitor's soft keys.
-    Select,
-    Info,
     /// The steering wheel's + and -, send/end, and R/T.
     WheelNext,
     WheelPrevious,
@@ -271,14 +269,6 @@ pub fn button(frame: &Frame) -> Option<Press> {
         (BOARD_MONITOR, &[0x48, code, ..]) => {
             Some(press(panel_button(code & 0x3F)?, code, 0x40, 0x80))
         }
-        (BOARD_MONITOR, &[0x47, _, code, ..]) => {
-            let button = match code & 0x3F {
-                0x0F => Button::Select,
-                0x38 => Button::Info,
-                _ => return None,
-            };
-            Some(press(button, code, 0x40, 0x80))
-        }
         // The knob: the top bit means clockwise, the low nibble counts detents.
         (BOARD_MONITOR, &[0x49, turn, ..]) if turn & 0x0F != 0 => Some(Press {
             button: if turn & 0x80 != 0 {
@@ -314,13 +304,9 @@ fn panel_button(id: u8) -> Option<Button> {
         0x02 => Button::Preset4,
         0x13 => Button::Preset5,
         0x03 => Button::Preset6,
-        0x04 => Button::Tone,
         0x05 => Button::KnobPress,
-        0x08 => Button::Telephone,
-        0x21 => Button::Am,
-        0x23 => Button::Mode,
-        0x30 => Button::RadioMenu,
-        0x31 => Button::Fm,
+        0x07 => Button::Clock,
+        0x14 => Button::TapeDirection,
         0x34 => Button::Menu,
         _ => return None,
     })

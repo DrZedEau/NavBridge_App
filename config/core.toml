@@ -44,19 +44,19 @@ shutdown_delay_s = 0
 # The car's buttons. On the board monitor:
 #   preset_1 to preset_6        the six preset keys
 #   next, previous              the arrows, > and <
-#   am, fm, mode, tone          the radio's keys of those names
-#   radio_menu, menu            the RADIO and MENU keys
-#   telephone                   the telephone key
+#   menu                        the MENU key
+#   clock                       the CLOCK key
+#   tape_direction              the tape direction key
 #   knob_press                  pressing the knob
 #   knob_left, knob_right       turning the knob anticlockwise or clockwise
-#   select, info                the SELECT and INFO soft keys
 # On the steering wheel:
 #   wheel_next, wheel_previous  the + and - keys
 #   wheel_send_end              the send/end key
 #   wheel_rt                    the R/T key
-# The board itself uses telephone, the radio's own buttons, menu and info to
-# switch the screen, which is why the table leaves them out: their presses
-# always come while the factory navigation's picture shows, and are dropped.
+# The board uses the others to switch the screen: telephone toggles it, and
+# AM, FM, MODE, RADIO, TONE, SELECT and INFO bring the factory navigation back
+# (the radio draws its menus there). Their presses always come while the
+# navigation's picture shows, so they have no name here and cannot be bound.
 #
 # Commands for Android Auto, which act only while its screen shows a phone:
 #   next_track, previous_track  the next or previous track
@@ -102,12 +102,15 @@ shutdown_delay_s = 0
 [ibus.buttons]
 preset_1 = "phone_home"
 preset_2 = "back"
-preset_3 = "play_pause"
+preset_3 = "open_maps"
 preset_4 = "open_media"
 preset_5 = "up"
 preset_6 = "down"
 next = "next_track"
 previous = "previous_track"
+menu = "phone_menu"
+clock = "home"
+tape_direction = "play_pause"
 knob_press = "select"
 knob_left = "left"
 knob_right = "right"

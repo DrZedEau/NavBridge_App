@@ -238,8 +238,9 @@ the snapshot carries the readings, the link's status and its frame counts. A
 changed reading wakes the main loop, which sends a snapshot at once rather than
 at the next 500 ms one.
 
-The service also decodes the board monitor's buttons (`48`, its soft keys
-`47` and knob `49`, from `F0`) and the steering wheel's (`3B` from `50`),
+The service also decodes the board monitor's buttons (`48`: presets, arrows,
+MENU, CLOCK, tape direction and the knob's press, and knob turns `49`, from
+`F0`) and the steering wheel's (`3B` from `50`),
 pressed, held or released, and maps them through `[ibus.buttons]` to the UI's
 actions. Each press becomes a tap for the UI (holds and releases are not used
 yet), sent through an event channel that wakes the main loop, which passes it on as

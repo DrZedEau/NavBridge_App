@@ -461,23 +461,40 @@ The systemd service reads the port through the `dialout` group.
 ### The car's buttons
 
 While the core reads the I-Bus, NavBridge acts on the car's buttons itself:
-the radio panel's presets and arrows, its knob, and the steering wheel's
-buttons. The core reads them from the I-Bus frames, and the UI acts on each as
-on the key of the same action. `[ibus.buttons]` in core.toml says what each
-button does, with the action names of keyboard.toml; the shipped table is the
-keys the previous board's (ATmega32U4) firmware typed. The panel's select key
-is left out: that firmware typed Tab, which NavBridge no longer uses.
+the radio panel's presets, arrows, MENU, CLOCK and tape direction keys, its
+knob, and the steering wheel's buttons. The core reads them from the I-Bus
+frames, and the UI acts on each as on the key of the same action.
+`[ibus.buttons]` in core.toml says what each button does, with the action
+names of keyboard.toml. The shipped table:
+
+| Button | Press frame | Command | In Android Auto |
+| --- | --- | --- | --- |
+| Preset 1 | `F0 .. .. 48 11` | `phone_home` | Its home screen |
+| Preset 2 | `F0 .. .. 48 01` | `back` | Back (NavBridge: back to the menu) |
+| Preset 3 | `F0 .. .. 48 12` | `open_maps` | The navigation app |
+| Preset 4 | `F0 .. .. 48 02` | `open_media` | The media screen |
+| Preset 5, 6 | `F0 .. .. 48 13`, `03` | `up`, `down` | Another region (NavBridge: previous, next) |
+| >, < | `F0 .. .. 48 00`, `10` | `next_track`, `previous_track` | Next, previous track |
+| MENU | `F0 .. .. 48 34` | `phone_menu` | The MENU key |
+| CLOCK | `F0 .. .. 48 07` | `home` | – (NavBridge's menu, the phone still connected) |
+| Tape direction | `F0 .. .. 48 14` | `play_pause` | Pause or resume |
+| Knob press | `F0 .. .. 48 05` | `select` | Click (NavBridge: open) |
+| Knob turn | `F0 .. .. 49 xx` | `left`, `right` | The previous or next item, one per detent |
+| Wheel +, − | `50 .. .. 3B 01`, `08` | `next_track`, `previous_track` | Next, previous track |
+| Wheel send/end | `50 .. .. 3B 80` | `voice_assistant` | The assistant |
+| Wheel R/T | `50 .. .. 3B 40` | `answer_call` | Answers a call |
 
 - A button acts when it is pressed, once, also for buttons the UI passes to
   Android Auto; holding it or letting it go does nothing more for now.
 - Each detent of the knob is one Left or Right.
-- Telephone, the radio's own buttons, MENU and INFO switch the screen on the
-  board; they stay unmapped.
+- Telephone, AM, FM, MODE, RADIO, TONE, SELECT and INFO switch the screen on
+  the board: their presses always come under `RGB NAV`, so they have no name
+  in `[ibus.buttons]` and cannot be bound.
 - Nine commands send the phone further keys: `phone_menu`, `phone_music`,
   `phone_contacts`, `phone_calendar`, `phone_settings`, `phone_notification`,
-  `phone_app_switch`, `phone_radio` and `phone_tel`. They have no button or
-  keyboard key until you give them one. What the phone does with each is not
-  documented, and may be nothing.
+  `phone_app_switch`, `phone_radio` and `phone_tel`. What the phone does with
+  each is not documented, and may be nothing: if MENU does nothing on yours,
+  try `phone_home` or another command.
 
 The buttons act only while the screen shows NavBridge's picture. The board
 switches the picture itself, and says which one shows with a line of its own:

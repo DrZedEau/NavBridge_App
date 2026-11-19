@@ -173,18 +173,20 @@ impl Default for IbusConfig {
         }
     }
 }
-/// What each button does unless core.toml says otherwise: the keys the
-/// previous board's firmware typed for them.
+/// What each button does unless core.toml says otherwise.
 fn default_buttons() -> BTreeMap<Button, InputAction> {
     BTreeMap::from([
         (Button::Preset1, InputAction::PhoneHome),
         (Button::Preset2, InputAction::Back),
-        (Button::Preset3, InputAction::PlayPause),
+        (Button::Preset3, InputAction::OpenMaps),
         (Button::Preset4, InputAction::OpenMedia),
         (Button::Preset5, InputAction::Up),
         (Button::Preset6, InputAction::Down),
         (Button::Next, InputAction::NextTrack),
         (Button::Previous, InputAction::PreviousTrack),
+        (Button::Menu, InputAction::PhoneMenu),
+        (Button::Clock, InputAction::Home),
+        (Button::TapeDirection, InputAction::PlayPause),
         (Button::KnobPress, InputAction::Select),
         (Button::KnobLeft, InputAction::Left),
         (Button::KnobRight, InputAction::Right),
@@ -234,10 +236,10 @@ mod tests {
             ("phone_tel", InputAction::PhoneTel),
         ] {
             let c: CoreConfig =
-                toml::from_str(&format!("[ibus.buttons]\ninfo = \"{name}\"")).unwrap();
+                toml::from_str(&format!("[ibus.buttons]\nclock = \"{name}\"")).unwrap();
             assert_eq!(
                 c.ibus.buttons,
-                BTreeMap::from([(Button::Info, action)]),
+                BTreeMap::from([(Button::Clock, action)]),
                 "{name}"
             );
         }
@@ -261,6 +263,15 @@ mod tests {
             "[ibus]\nport = \"/dev/ttyACM0\"",
             "[ibus.buttons]\npreset_7 = \"home\"",
             "[ibus.buttons]\npreset_1 = \"jump\"",
+            // The buttons that switch the picture have no name to bind.
+            "[ibus.buttons]\ntelephone = \"home\"",
+            "[ibus.buttons]\nam = \"home\"",
+            "[ibus.buttons]\nfm = \"home\"",
+            "[ibus.buttons]\nmode = \"home\"",
+            "[ibus.buttons]\nradio_menu = \"home\"",
+            "[ibus.buttons]\ntone = \"home\"",
+            "[ibus.buttons]\nselect = \"home\"",
+            "[ibus.buttons]\ninfo = \"home\"",
             "snapshot_ms = 500",
             // An address, not a host name: resolving one could stall startup.
             "[android_auto]\nhead_unit_server = \"phone:5277\"",
