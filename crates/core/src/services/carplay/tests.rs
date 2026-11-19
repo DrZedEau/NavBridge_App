@@ -88,8 +88,56 @@ fn challenges_the_coprocessor_cannot_sign_are_refused_before_it_is_asked() {
 
 #[test]
 fn a_bus_without_i2c_finds_no_coprocessor() {
-    let error = I2cRegisters::probe(Path::new("/dev/null")).err().unwrap();
+    let error = I2cRegisters::probe(Path::new("/dev/null"), &ADDRESSES)
+        .err()
+        .unwrap();
     assert_eq!(error.raw_os_error(), Some(libc::ENOTTY), "{error}");
+}
+
+#[test]
+fn the_coprocessor_is_looked_for_where_core_toml_says() {
+    use super::CarPlayConfig;
+    // The NavBridge CM4 board's, with a CM4 or a CM5: both addresses in turn.
+    let config = CarPlayConfig::default();
+    assert_eq!(config.mfi_bus, Path::new("/dev/i2c-10"));
+    assert_eq!(config.mfi_addresses(), [0x10, 0x11]);
+    assert_eq!(config.check(), Ok(()));
+    // A board whose coprocessor has another address: that one alone.
+    let config = CarPlayConfig {
+        mfi_address: Some(0x12),
+        ..CarPlayConfig::default()
+    };
+    assert_eq!(config.mfi_addresses(), [0x12]);
+    assert_eq!(config.check(), Ok(()));
+    for address in [0x00, 0x07, 0x78, 0x80, 0x110] {
+        let config = CarPlayConfig {
+            mfi_address: Some(address),
+            ..CarPlayConfig::default()
+        };
+        assert!(config.check().is_err(), "0x{address:02X}");
+    }
+}
+
+#[test]
+#[ignore = "requires the board's MFi coprocessor"]
+fn live_coprocessor_on_the_default_bus() {
+    use super::CarPlayConfig;
+    let config = CarPlayConfig::default();
+    let (registers, address) =
+        I2cRegisters::probe(&config.mfi_bus, &config.mfi_addresses()).unwrap();
+    let mut chip = Coprocessor::new(registers).unwrap();
+    let certificate = chip.certificate().unwrap();
+    println!(
+        "coprocessor at 0x{address:02X} on {}: protocol {}, certificate {} bytes",
+        config.mfi_bus.display(),
+        chip.protocol_major,
+        certificate.len()
+    );
+    assert_eq!(chip.protocol_major, 3);
+    // A signature, as an iPhone's challenge gets.
+    let signature = chip.sign(&[0x5A; 32]).unwrap();
+    println!("signed a 32-byte challenge: {} bytes", signature.len());
+    assert!(!signature.is_empty());
 }
 
 #[test]

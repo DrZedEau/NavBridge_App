@@ -2,7 +2,8 @@
 //! holds the accessory's certificate and signs the iPhone's challenges, which
 //! is how an iPhone tells a CarPlay head unit from anything else.
 //!
-//! The coprocessor answers at 0x10 or 0x11, as its address pin sets. It
+//! The coprocessor answers at 0x10 or 0x11, as its address pin sets, unless
+//! core.toml's [carplay] names another address. It
 //! refuses (NAKs) its address while busy, so every transfer is retried, every
 //! 500 µs, for up to 2 seconds. Registers are chosen by writing their number,
 //! then read in a transfer of their own; multi-byte lengths are big-endian.
@@ -123,9 +124,10 @@ pub struct I2cRegisters {
 }
 
 impl I2cRegisters {
-    /// Opens `bus` and finds the coprocessor at one of its two addresses.
-    pub fn probe(bus: &Path) -> io::Result<(Self, u16)> {
-        for address in ADDRESSES {
+    /// Opens `bus` and finds the coprocessor at the first of `addresses` it
+    /// answers at.
+    pub fn probe(bus: &Path, addresses: &[u16]) -> io::Result<(Self, u16)> {
+        for &address in addresses {
             let file = OpenOptions::new().read(true).write(true).open(bus)?;
             // SAFETY: I2C_SLAVE takes the address as its argument.
             if unsafe {
@@ -143,11 +145,13 @@ impl I2cRegisters {
                 return Ok((registers, address));
             }
         }
+        let tried: Vec<String> = addresses.iter().map(|a| format!("0x{a:02X}")).collect();
         Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!(
-                "no MFi coprocessor answers on {} at 0x10 or 0x11",
-                bus.display()
+                "no MFi coprocessor answers on {} at {}",
+                bus.display(),
+                tried.join(" or ")
             ),
         ))
     }

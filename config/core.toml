@@ -139,3 +139,14 @@ enabled = true
 # plug converts rates/channels; dmix mixes music and navigation/assistant streams.
 playback_device = 'plug:SLAVE="dmix:CARD=CODEC,DEV=0"'
 capture_device = "plughw:CARD=CODEC,DEV=0"
+
+# Native CarPlay, which the core does not start yet, and Apple's MFi
+# authentication coprocessor on the board, which signs the iPhone's challenges.
+[carplay]
+# Its I2C bus. On the NavBridge CM4 board it is on the module's SDA0/SCL0
+# (pins 82 and 80): /dev/i2c-10 with a CM4 (dtparam=i2c_vc=on) and with a
+# CM5 (dtparam=i2c_csi_dsi0=on), once i2c-dev is loaded.
+mfi_bus = "/dev/i2c-10"
+# Its address on the bus, 0x08 to 0x77: 0x10 on this board. Left out, the core
+# tries 0x10, then 0x11, the two its address pin can set.
+mfi_address = 0x10

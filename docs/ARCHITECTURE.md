@@ -292,8 +292,13 @@ ioctl numbers.
 
 ## CarPlay (prepared, not started yet)
 
-Native CarPlay, with Apple's MFi authentication coprocessor on the board's I²C
-(0x10 or 0x11). `services/carplay` has its bottom layers: the coprocessor
+Native CarPlay, with Apple's MFi authentication coprocessor on the board's I²C:
+the module's SDA0/SCL0 (pins 82 and 80), which a CM4 (`dtparam=i2c_vc=on`,
+GPIO44/45 behind the i2c0 mux) and a CM5 (`dtparam=i2c_csi_dsi0=on`, RP1's
+i2c6 on GPIO38/39) both show as `/dev/i2c-10`, at 0x10. core.toml's
+`[carplay]` names the bus and the address (`mfi_bus`, `mfi_address`); without
+an address the core tries 0x10, then 0x11. `services/carplay` has its bottom
+layers: the coprocessor
 (certificate and challenge signatures), iAP2's link packets and control
 session messages, the authentication exchange, and putting a wired iPhone in
 its CarPlay USB configuration through sysfs, which adds an NCM network link;

@@ -1,3 +1,4 @@
+use crate::services::carplay::CarPlayConfig;
 use crate::services::ibus::Button;
 use navbridge_common::{InputAction, VideoCodec, DEFAULT_SOCKET_PATH, MEDIA_DPI};
 use serde::{de::IgnoredAny, Deserialize};
@@ -12,6 +13,7 @@ pub struct CoreConfig {
     pub audio: AudioConfig,
     pub ibus: IbusConfig,
     pub wireless: WirelessConfig,
+    pub carplay: CarPlayConfig,
 }
 impl Default for CoreConfig {
     fn default() -> Self {
@@ -22,6 +24,7 @@ impl Default for CoreConfig {
             audio: Default::default(),
             ibus: Default::default(),
             wireless: Default::default(),
+            carplay: Default::default(),
         }
     }
 }
@@ -36,6 +39,7 @@ impl CoreConfig {
             return Err("certificate and private_key must be supplied together".into());
         }
         s.wireless.check()?;
+        s.carplay.check()?;
         Ok(s)
     }
 }
@@ -233,6 +237,11 @@ mod tests {
         assert!(c.ibus.phone_keys().is_empty());
         assert!(c.ibus.shutdown);
         assert_eq!(c.ibus.shutdown_delay_s, 0);
+        // The shipped coprocessor is the board's, with a CM4 or a CM5, at the
+        // address it has; without one, it is looked for at both.
+        assert_eq!(c.carplay.mfi_bus, CarPlayConfig::default().mfi_bus);
+        assert_eq!(c.carplay.mfi_addresses(), [0x10]);
+        assert!(!c.carplay.enabled);
         // The shipped Wi-Fi is the Pi's own, on the channel used so far.
         assert_eq!(c.wireless, WirelessConfig::default());
         assert_eq!(
@@ -323,6 +332,32 @@ mod tests {
         ] {
             assert!(toml::from_str::<CoreConfig>(typo).is_err(), "{typo}");
         }
+    }
+    #[test]
+    fn carplay_takes_another_bus_or_address_for_the_coprocessor() {
+        let c: CoreConfig =
+            toml::from_str("[carplay]\nmfi_bus = \"/dev/i2c-1\"\nmfi_address = 0x11").unwrap();
+        assert_eq!(c.carplay.mfi_bus, Path::new("/dev/i2c-1"));
+        assert_eq!(c.carplay.mfi_addresses(), [0x11]);
+        // One of them alone keeps the other.
+        let c: CoreConfig = toml::from_str("[carplay]\nmfi_address = 0x12").unwrap();
+        assert_eq!(c.carplay.mfi_bus, CarPlayConfig::default().mfi_bus);
+        for typo in [
+            "[carplay]\nmfi_adress = 0x10",
+            "[carplay]\nmfi_address = \"0x10\"",
+            "[carplay]\nmfi_address = -1",
+        ] {
+            assert!(toml::from_str::<CoreConfig>(typo).is_err(), "{typo}");
+        }
+        // An address I2C cannot have stops the core at start.
+        let path = std::env::temp_dir().join(format!(
+            "navbridge-core-carplay-test-{}.toml",
+            std::process::id()
+        ));
+        fs::write(&path, "[carplay]\nmfi_address = 0x80").unwrap();
+        let loaded = CoreConfig::load(&path);
+        fs::remove_file(&path).unwrap();
+        assert!(loaded.unwrap_err().to_string().contains("mfi_address"));
     }
     #[test]
     fn a_loaded_config_offers_its_buttons_key_codes_to_the_phone() {

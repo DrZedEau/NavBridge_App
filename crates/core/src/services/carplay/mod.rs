@@ -26,7 +26,11 @@
 //!
 //! Hardware, for the board: the MFi coprocessor (Apple's MFi programme
 //! supplies the part and its datasheet) on one of the Pi's I²C buses, at 3.3 V,
-//! its address pin setting 0x10 or 0x11. A GPIO that can power-cycle or reset
+//! its address pin setting 0x10 or 0x11. On the NavBridge CM4 board it is on
+//! the module's SDA0/SCL0 (pins 82 and 80), which a CM4 and a CM5 both show as
+//! /dev/i2c-10: GPIO44/45 behind the i2c0 mux on a CM4 (dtparam=i2c_vc=on),
+//! RP1's i2c6 on GPIO38/39 on a CM5 (dtparam=i2c_csi_dsi0=on). core.toml's
+//! [carplay] names another bus or address. A GPIO that can power-cycle or reset
 //! it lets the core recover a coprocessor that stops answering. The iPhone's
 //! USB port stays on the Pi's USB host, as for Android Auto.
 //!
@@ -61,13 +65,39 @@ pub struct CarPlayConfig {
     pub enabled: bool,
     /// The I²C bus the coprocessor is on.
     pub mfi_bus: PathBuf,
+    /// The coprocessor's address on it; without one, 0x10 then 0x11, as its
+    /// address pin sets.
+    pub mfi_address: Option<u16>,
 }
 
 impl Default for CarPlayConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            mfi_bus: PathBuf::from("/dev/i2c-1"),
+            mfi_bus: PathBuf::from("/dev/i2c-10"),
+            mfi_address: None,
+        }
+    }
+}
+
+impl CarPlayConfig {
+    /// I²C's 7-bit addresses, less those the bus reserves.
+    const ADDRESSES: std::ops::RangeInclusive<u16> = 0x08..=0x77;
+
+    pub fn check(&self) -> Result<(), String> {
+        match self.mfi_address {
+            Some(address) if !Self::ADDRESSES.contains(&address) => Err(format!(
+                "carplay.mfi_address must be a 7-bit I2C address, 0x08 to 0x77, not 0x{address:02X}"
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// The addresses the coprocessor is looked for at, in turn.
+    pub fn mfi_addresses(&self) -> Vec<u16> {
+        match self.mfi_address {
+            Some(address) => vec![address],
+            None => mfi::ADDRESSES.to_vec(),
         }
     }
 }
