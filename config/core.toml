@@ -36,7 +36,7 @@ shutdown_delay_s = 0
 # reads the I-Bus and NavBridge's picture shows. A button left out does
 # nothing. A button takes one command, but a command can be on several
 # buttons, and a misspelt name stops the core at start. The commands are named
-# as in keyboard.toml, which alone has quit.
+# as in keyboard.toml, which alone has quit; phone_key_<code> is here alone.
 #
 # A button acts once, when it is pressed: holding it or letting it go does
 # nothing more. Each detent of the knob counts as one press.
@@ -79,6 +79,12 @@ shutdown_delay_s = 0
 #   phone_app_switch            the APP_SWITCH key
 #   phone_radio                 Android Auto's RADIO car key
 #   phone_tel                   Android Auto's TEL car key
+#   phone_key_<code>            any key, by its Android or Android Auto code,
+#                               which the car then also says it has: say,
+#                               phone_key_2 (SOFT_RIGHT), phone_key_126 (PLAY),
+#                               phone_key_127 (PAUSE), phone_key_65541 to
+#                               phone_key_65543 (PRIMARY, SECONDARY, TERTIARY
+#                               button), phone_key_65544 (TURN_CARD)
 #
 # Commands that move around, on Android Auto's screen and on NavBridge's pages:
 #   up, down        Android Auto: to another region of its screen. NavBridge:
@@ -100,7 +106,7 @@ shutdown_delay_s = 0
 #                       no effect here: while the I-Bus is read, the car's
 #                       handbrake is the parking brake
 [ibus.buttons]
-preset_1 = "phone_home"
+preset_1 = "voice_assistant"
 preset_2 = "back"
 preset_3 = "open_maps"
 preset_4 = "open_media"
@@ -108,7 +114,7 @@ preset_5 = "up"
 preset_6 = "down"
 next = "next_track"
 previous = "previous_track"
-menu = "phone_menu"
+menu = "phone_home"
 clock = "home"
 tape_direction = "play_pause"
 knob_press = "select"

@@ -3,7 +3,7 @@
 use super::discovery::discovery;
 use super::generated::aa as p;
 use super::protocol::{
-    audio_stream, codec, msg, parse, sensor_type, BLUETOOTH, FOCUS_NATIVE, INPUT, KEYS, MEDIA, MIC,
+    audio_stream, codec, msg, parse, sensor_type, BLUETOOTH, FOCUS_NATIVE, INPUT, MEDIA, MIC,
     SENSOR, SPEECH, SYSTEM, VIDEO,
 };
 use super::sensors::FRESH_FIX;
@@ -146,7 +146,7 @@ impl Session {
                     self.status(
                         INPUT,
                         msg::input::BINDING_RESPONSE,
-                        r.scan_codes.iter().all(|k| KEYS.contains(&(*k as u32))),
+                        r.scan_codes.iter().all(|k| self.has_key(*k as u32)),
                     )?;
                 }
             }

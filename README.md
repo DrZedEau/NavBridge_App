@@ -469,13 +469,13 @@ names of keyboard.toml. The shipped table:
 
 | Button | Press frame | Command | In Android Auto |
 | --- | --- | --- | --- |
-| Preset 1 | `F0 .. .. 48 11` | `phone_home` | Its home screen |
+| Preset 1 | `F0 .. .. 48 11` | `voice_assistant` | The assistant |
 | Preset 2 | `F0 .. .. 48 01` | `back` | Back (NavBridge: back to the menu) |
 | Preset 3 | `F0 .. .. 48 12` | `open_maps` | The navigation app |
 | Preset 4 | `F0 .. .. 48 02` | `open_media` | The media screen |
 | Preset 5, 6 | `F0 .. .. 48 13`, `03` | `up`, `down` | Another region (NavBridge: previous, next) |
 | >, < | `F0 .. .. 48 00`, `10` | `next_track`, `previous_track` | Next, previous track |
-| MENU | `F0 .. .. 48 34` | `phone_menu` | The MENU key |
+| MENU | `F0 .. .. 48 34` | `phone_home` | Its home screen |
 | CLOCK | `F0 .. .. 48 07` | `home` | – (NavBridge's menu, the phone still connected) |
 | Tape direction | `F0 .. .. 48 14` | `play_pause` | Pause or resume |
 | Knob press | `F0 .. .. 48 05` | `select` | Click (NavBridge: open) |
@@ -493,8 +493,11 @@ names of keyboard.toml. The shipped table:
 - Nine commands send the phone further keys: `phone_menu`, `phone_music`,
   `phone_contacts`, `phone_calendar`, `phone_settings`, `phone_notification`,
   `phone_app_switch`, `phone_radio` and `phone_tel`. What the phone does with
-  each is not documented, and may be nothing: if MENU does nothing on yours,
-  try `phone_home` or another command.
+  each is not documented, and may be nothing.
+- `phone_key_<code>` sends any key by its Android or Android Auto code, such
+  as `phone_key_2` (SOFT_RIGHT) or `phone_key_65544` (TURN_CARD), and the car
+  then also tells the phone it has that key, for trying the keys that have no
+  name here. It is for `[ibus.buttons]` alone, not keyboard.toml.
 
 The buttons act only while the screen shows NavBridge's picture. The board
 switches the picture itself, and says which one shows with a line of its own:

@@ -56,6 +56,8 @@ impl From<InputAction> for KeyAction {
             InputAction::PhoneAppSwitch => Self::Phone(PhoneAction::PhoneAppSwitch),
             InputAction::PhoneRadio => Self::Phone(PhoneAction::PhoneRadio),
             InputAction::PhoneTel => Self::Phone(PhoneAction::PhoneTel),
+            // core.toml's alone: keyboard.toml names no key codes.
+            InputAction::PhoneKey(code) => Self::Phone(PhoneAction::Key(code)),
         }
     }
 }

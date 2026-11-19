@@ -26,6 +26,7 @@ pub fn phone_key(action: PhoneAction) -> u32 {
         PhoneAction::PhoneAppSwitch => keycode::APP_SWITCH,
         PhoneAction::PhoneRadio => keycode::RADIO,
         PhoneAction::PhoneTel => keycode::TEL,
+        PhoneAction::Key(code) => code,
     }
 }
 
@@ -92,8 +93,13 @@ impl Session {
         self.send(INPUT, msg::input::EVENT, &input)
     }
 
+    /// A key the car told the phone it has, which alone the phone acts on.
+    pub(super) fn has_key(&self, key: u32) -> bool {
+        KEYS.contains(&key) || self.config.phone_keys.contains(&key)
+    }
+
     pub fn key(&mut self, key: u32, pressed: bool) -> Result<(), String> {
-        if self.opened[INPUT as usize] && KEYS.contains(&key) {
+        if self.opened[INPUT as usize] && self.has_key(key) {
             let mut b = p::Button::new();
             b.set_keycode(key);
             b.set_pressed(pressed);

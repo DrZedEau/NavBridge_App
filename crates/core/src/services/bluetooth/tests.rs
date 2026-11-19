@@ -196,7 +196,10 @@ fn a_disconnected_phone_is_turned_away_until_connect() {
     assert_eq!(service.shared.lock().unwrap().turned_away, None);
     let deadline = Instant::now() + Duration::from_secs(3);
     while !service.snapshot().status.is_empty() {
-        assert!(Instant::now() < deadline, "the Bluetooth thread never ticked");
+        assert!(
+            Instant::now() < deadline,
+            "the Bluetooth thread never ticked"
+        );
         thread::sleep(Duration::from_millis(20));
     }
     // In BlueZ's case; and a default phone that is not paired, as none.

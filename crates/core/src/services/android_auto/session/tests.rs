@@ -153,6 +153,57 @@ fn horizontal_navigation_uses_signed_rotary_and_vertical_uses_dpad() {
     assert_eq!(phone_key(PhoneAction::VoiceAssistant), 84);
 }
 #[test]
+fn core_tomls_key_codes_are_offered_and_sent_as_they_are() {
+    let mut config = AndroidAutoConfig::default();
+    config.phone_keys = vec![2, 85, 65544];
+    // Offered once each, after the car's own keys.
+    let d = discovery(&config, false, false, None);
+    let keycodes = &d.channels[0]
+        .input_channel
+        .as_ref()
+        .unwrap()
+        .supported_keycodes;
+    assert_eq!(keycodes.iter().filter(|&&k| k == 85).count(), 1);
+    assert_eq!(keycodes[keycodes.len() - 2..], [2, 65544]);
+    let (tls, mut peer) = super::super::tls::tests::pair();
+    let mut s = connected_session();
+    s.config = config;
+    s.tls = tls;
+    s.opened[INPUT as usize] = true;
+    // The phone binds them, as it does the car's own; one never offered, no.
+    let binding = |codes: &[i32]| {
+        let mut b = p::Binding::new();
+        b.scan_codes = codes.to_vec();
+        b.write_to_bytes().unwrap()
+    };
+    s.message(INPUT, 0x8002, &binding(&[2, 65544, 19])).unwrap();
+    s.message(INPUT, 0x8002, &binding(&[1])).unwrap();
+    let statuses = sent(&mut s, &mut peer)
+        .into_iter()
+        .map(|(id, body)| (id, parse::<p::Status>(&body).unwrap().status()))
+        .collect::<Vec<_>>();
+    assert_eq!(statuses, [(0x8003, 0), (0x8003, 1)]);
+    // Pressed and released as it is; one never offered is not sent.
+    let key = phone_key(PhoneAction::Key(2));
+    assert_eq!(key, 2);
+    for code in [key, 1] {
+        s.key(code, true).unwrap();
+        s.key(code, false).unwrap();
+    }
+    let buttons = sent_inputs(&mut s, &mut peer)
+        .iter()
+        .map(|input| {
+            let button = &input.buttons.as_ref().unwrap().events[0];
+            (button.keycode(), button.pressed())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(buttons, [(2, true), (2, false)]);
+    // Without them, the car has its own keys alone.
+    let d = discovery(&AndroidAutoConfig::default(), false, false, None);
+    let input = d.channels[0].input_channel.as_ref().unwrap();
+    assert_eq!(input.supported_keycodes, super::protocol::KEYS);
+}
+#[test]
 fn select_and_back_send_the_whole_tap_on_press() {
     let (tls, mut peer) = super::super::tls::tests::pair();
     let mut s = connected_session();

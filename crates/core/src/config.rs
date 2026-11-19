@@ -27,7 +27,8 @@ impl Default for CoreConfig {
 }
 impl CoreConfig {
     pub fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
-        let s: Self = toml::from_str(&fs::read_to_string(path)?)?;
+        let mut s: Self = toml::from_str(&fs::read_to_string(path)?)?;
+        s.android_auto.phone_keys = s.ibus.phone_keys();
         if s.android_auto.dpi == 0 || s.android_auto.dpi > 1000 {
             return Err("android_auto.dpi must be 1..1000".into());
         }
@@ -107,6 +108,10 @@ pub struct AndroidAutoConfig {
     /// shape, set for each session from the size the UI asks for.
     #[serde(skip)]
     pub margin_width: u32,
+    /// Not from [android_auto]: the key codes [ibus.buttons] sends as they
+    /// are, by phone_key_<code>, which the car also tells the phone it has.
+    #[serde(skip)]
+    pub phone_keys: Vec<u32>,
 }
 impl Default for AndroidAutoConfig {
     fn default() -> Self {
@@ -120,6 +125,7 @@ impl Default for AndroidAutoConfig {
             private_key: None,
             head_unit_server: None,
             margin_width: 0,
+            phone_keys: Vec::new(),
         }
     }
 }
@@ -173,10 +179,24 @@ impl Default for IbusConfig {
         }
     }
 }
+impl IbusConfig {
+    /// The key codes the buttons send as they are, each once.
+    pub fn phone_keys(&self) -> Vec<u32> {
+        let mut codes = Vec::new();
+        for action in self.buttons.values() {
+            if let InputAction::PhoneKey(code) = *action {
+                if !codes.contains(&code) {
+                    codes.push(code);
+                }
+            }
+        }
+        codes
+    }
+}
 /// What each button does unless core.toml says otherwise.
 fn default_buttons() -> BTreeMap<Button, InputAction> {
     BTreeMap::from([
-        (Button::Preset1, InputAction::PhoneHome),
+        (Button::Preset1, InputAction::VoiceAssistant),
         (Button::Preset2, InputAction::Back),
         (Button::Preset3, InputAction::OpenMaps),
         (Button::Preset4, InputAction::OpenMedia),
@@ -184,7 +204,7 @@ fn default_buttons() -> BTreeMap<Button, InputAction> {
         (Button::Preset6, InputAction::Down),
         (Button::Next, InputAction::NextTrack),
         (Button::Previous, InputAction::PreviousTrack),
-        (Button::Menu, InputAction::PhoneMenu),
+        (Button::Menu, InputAction::PhoneHome),
         (Button::Clock, InputAction::Home),
         (Button::TapeDirection, InputAction::PlayPause),
         (Button::KnobPress, InputAction::Select),
@@ -209,6 +229,8 @@ mod tests {
         assert_eq!(c.ibus.device, IbusConfig::default().device);
         // The shipped table is the built-in one.
         assert_eq!(c.ibus.buttons, default_buttons());
+        // No key codes: the car offers the phone its own keys alone.
+        assert!(c.ibus.phone_keys().is_empty());
         assert!(c.ibus.shutdown);
         assert_eq!(c.ibus.shutdown_delay_s, 0);
         // The shipped Wi-Fi is the Pi's own, on the channel used so far.
@@ -243,6 +265,26 @@ mod tests {
                 "{name}"
             );
         }
+        // Any key by its code, which the car then also offers the phone.
+        assert!(c.ibus.phone_keys().is_empty());
+        let c: CoreConfig = toml::from_str(
+            "[ibus.buttons]\nmenu = \"phone_key_2\"\nclock = \"phone_key_65544\"\n\
+             preset_1 = \"phone_key_2\"\npreset_2 = \"back\"",
+        )
+        .unwrap();
+        assert_eq!(
+            c.ibus.buttons.get(&Button::Menu),
+            Some(&InputAction::PhoneKey(2))
+        );
+        assert_eq!(c.ibus.phone_keys(), [2, 65544]);
+        // A wrong one is shown where core.toml has it.
+        for wrong in ["phone_key_x", "phone_soft_right"] {
+            let error =
+                toml::from_str::<CoreConfig>(&format!("[ibus.buttons]\nmenu = \"{wrong}\""))
+                    .unwrap_err()
+                    .to_string();
+            assert!(error.contains("line 2"), "{error}");
+        }
         let c: CoreConfig = toml::from_str("[android_auto]\ndecoder = \"software\"").unwrap();
         assert_eq!(c.android_auto.decoder, DecoderChoice::Software);
         let c: CoreConfig = toml::from_str("[android_auto]\ncodec = \"h265\"").unwrap();
@@ -263,6 +305,8 @@ mod tests {
             "[ibus]\nport = \"/dev/ttyACM0\"",
             "[ibus.buttons]\npreset_7 = \"home\"",
             "[ibus.buttons]\npreset_1 = \"jump\"",
+            "[ibus.buttons]\npreset_1 = \"phone_key_\"",
+            "[ibus.buttons]\npreset_1 = \"phone_key_-1\"",
             // The buttons that switch the picture have no name to bind.
             "[ibus.buttons]\ntelephone = \"home\"",
             "[ibus.buttons]\nam = \"home\"",
@@ -279,6 +323,21 @@ mod tests {
         ] {
             assert!(toml::from_str::<CoreConfig>(typo).is_err(), "{typo}");
         }
+    }
+    #[test]
+    fn a_loaded_config_offers_its_buttons_key_codes_to_the_phone() {
+        let path = std::env::temp_dir().join(format!(
+            "navbridge-core-config-test-{}.toml",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            "[ibus.buttons]\nmenu = \"phone_key_2\"\nclock = \"home\"",
+        )
+        .unwrap();
+        let loaded = CoreConfig::load(&path);
+        fs::remove_file(&path).unwrap();
+        assert_eq!(loaded.unwrap().android_auto.phone_keys, [2]);
     }
     #[test]
     fn the_hotspot_takes_another_interface_or_5_ghz_channel() {

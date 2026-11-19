@@ -33,6 +33,11 @@ pub fn discovery(
     input.set_channel_id(INPUT as u32);
     let mut ic = p::InputChannel::new();
     ic.supported_keycodes = KEYS.to_vec();
+    for &code in &config.phone_keys {
+        if !ic.supported_keycodes.contains(&code) {
+            ic.supported_keycodes.push(code);
+        }
+    }
     // Touch and the mouse work on the projection, in its own pixels: the part
     // the phone draws in, between its margins.
     let mut touch = p::TouchConfig::new();

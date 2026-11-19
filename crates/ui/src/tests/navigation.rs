@@ -989,6 +989,26 @@ fn the_phones_further_keys_act_as_its_other_commands_do() {
 }
 
 #[test]
+fn a_car_buttons_key_code_goes_to_the_phone_as_its_other_keys_do() {
+    use navbridge_common::{InputAction, PhoneAction};
+    let input = InputAction::PhoneKey(2);
+    let (tx, rx) = mpsc::channel();
+    let mut state = connected_projection();
+    handle_key_event(&mut state, input.into(), true, false, &tx);
+    handle_key_event(&mut state, input.into(), false, false, &tx);
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(ClientCommand::PhoneAction {
+            action: PhoneAction::Key(2)
+        })
+    ));
+    assert!(rx.try_recv().is_err());
+    state.screen = Screen::Menu;
+    handle_key_event(&mut state, input.into(), true, false, &tx);
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
 fn touches_on_the_projection_reach_the_phone_in_its_pixels() {
     let (tx, rx) = mpsc::channel();
     let mut state = connected_projection();

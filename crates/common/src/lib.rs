@@ -404,6 +404,8 @@ pub enum PhoneAction {
     PhoneAppSwitch,
     PhoneRadio,
     PhoneTel,
+    /// Any key, by its Android or Android Auto code, sent as it is.
+    Key(u32),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -505,9 +507,11 @@ pub enum ServerEvent {
     },
 }
 
-/// What a car button does, named as keyboard.toml names the UI's actions.
+/// What a car button does, named as keyboard.toml names the UI's actions;
+/// PhoneKey is "phone_key_" and its code, such as "phone_key_2".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+// The derived names, which the impls below call for all but PhoneKey.
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum InputAction {
     Up,
     Down,
@@ -538,6 +542,52 @@ pub enum InputAction {
     PhoneAppSwitch,
     PhoneRadio,
     PhoneTel,
+    /// Any key, by its Android or Android Auto code, sent to the phone as it
+    /// is: for trying the keys that have no name here.
+    #[serde(skip)]
+    PhoneKey(u32),
+}
+
+const PHONE_KEY: &str = "phone_key_";
+
+impl Serialize for InputAction {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::PhoneKey(code) => serializer.serialize_str(&format!("{PHONE_KEY}{code}")),
+            _ => InputAction::serialize(self, serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for InputAction {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // A visitor, so that an error points at the name in core.toml.
+        struct Name;
+        impl serde::de::Visitor<'_> for Name {
+            type Value = InputAction;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a command's name")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, name: &str) -> Result<InputAction, E> {
+                use serde::de::{IntoDeserializer, Unexpected};
+                let Some(code) = name.strip_prefix(PHONE_KEY) else {
+                    return InputAction::deserialize(name.into_deserializer());
+                };
+                // Digits alone: the number's own parser takes a leading +.
+                let digits = code.bytes().all(|b| b.is_ascii_digit());
+                match code.parse() {
+                    Ok(code) if digits => Ok(InputAction::PhoneKey(code)),
+                    _ => Err(E::invalid_value(
+                        Unexpected::Str(name),
+                        &"phone_key_ and a key code, such as phone_key_2",
+                    )),
+                }
+            }
+        }
+        deserializer.deserialize_str(Name)
+    }
 }
 
 #[cfg(test)]
@@ -591,6 +641,41 @@ mod tests {
             assert_eq!(format!("\"{}\"", aspect_ratio.name()), json);
             assert_eq!(aspect_ratio.ui_width(), width);
         }
+    }
+
+    #[test]
+    fn a_car_buttons_command_is_named_or_a_key_code() {
+        let read = |name: &str| serde_json::from_str::<InputAction>(&format!("\"{name}\""));
+        assert_eq!(read("phone_menu").unwrap(), InputAction::PhoneMenu);
+        assert_eq!(read("phone_key_2").unwrap(), InputAction::PhoneKey(2));
+        assert_eq!(
+            read("phone_key_65544").unwrap(),
+            InputAction::PhoneKey(65544)
+        );
+        for name in [
+            "phone_key_",
+            "phone_key_x",
+            "phone_key_+2",
+            "phone_key_-1",
+            "phone_key_4294967296",
+            "phone_soft_right",
+            "phone_key",
+        ] {
+            assert!(read(name).is_err(), "{name}");
+        }
+        // As the core sends it to the UI.
+        for action in [InputAction::PhoneTel, InputAction::PhoneKey(65541)] {
+            let json = serde_json::to_string(&action).unwrap();
+            assert_eq!(serde_json::from_str::<InputAction>(&json).unwrap(), action);
+        }
+        assert_eq!(
+            serde_json::to_string(&InputAction::PhoneKey(2)).unwrap(),
+            "\"phone_key_2\""
+        );
+        assert_eq!(
+            serde_json::to_string(&InputAction::PhoneTel).unwrap(),
+            "\"phone_tel\""
+        );
     }
 
     #[test]
