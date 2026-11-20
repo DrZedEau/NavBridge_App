@@ -101,7 +101,8 @@ pub(crate) fn answer_pairing(state: &mut UiState, accept: bool, commands: &Comma
 }
 
 /// A Settings row tapped, its place in `SETTINGS`: the hotspot, the default
-/// phone, the theme, the aspect ratio, the DPI and the codec change at once,
+/// phone, the theme, the aspect ratio, the automatic switch, the DPI and the
+/// codec change at once,
 /// and Disconnect acts; a level opens, then its value's halves (`half` -1 and
 /// 1) step it down and up, and a tap on its label closes it.
 pub(crate) fn tap_setting(state: &mut UiState, index: usize, half: i32, commands: &Commands) {
@@ -128,7 +129,8 @@ pub(crate) fn tap_setting(state: &mut UiState, index: usize, half: i32, commands
         | Setting::Dpi
         | Setting::Codec
         | Setting::Theme
-        | Setting::AspectRatio => change_setting(state, true, commands),
+        | Setting::AspectRatio
+        | Setting::AutoSwitch => change_setting(state, true, commands),
         Setting::Volume | Setting::CallVolume | Setting::Microphone => {
             state.settings_editing = true
         }
@@ -257,8 +259,9 @@ pub(crate) fn handle_action(
             _ => (),
         },
         // Left/Right choose a row and Enter opens it; then Left/Right change
-        // its value and Enter or Back close it again. Enter flips the hotspot's
-        // switch at once, and disconnects or connects the phone.
+        // its value and Enter or Back close it again. Enter flips a switch, the
+        // hotspot's or the automatic switch's, at once, and disconnects or
+        // connects the phone.
         Screen::Settings => {
             let rows = SETTINGS.len();
             let index = settings_index(state);
@@ -272,7 +275,7 @@ pub(crate) fn handle_action(
                 (false, KeyAction::Select) if state.core_connected => {
                     if matches!(
                         selected_setting(state),
-                        Setting::Hotspot | Setting::Disconnect
+                        Setting::Hotspot | Setting::AutoSwitch | Setting::Disconnect
                     ) {
                         change_setting(state, true, commands)
                     } else {

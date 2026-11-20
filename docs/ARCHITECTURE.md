@@ -245,7 +245,10 @@ pressed, held or released, and maps them through `[ibus.buttons]` to the UI's
 actions. Each press becomes a tap for the UI (holds and releases are not used
 yet), sent through an event channel that wakes the main loop, which passes it on as
 `ServerEvent::Input`; the UI handles it as a key, alongside the keyboard's.
-The port is opened read only: nothing is sent to the board. The board says
+The board gets one command at most: with Settings' Automatic switch on
+(`auto_switch` in settings.toml, passed in `IbusConfig`), `RGB RPI` the first
+time the port opens after the core starts; the switch applies at the next
+start, and a port that opens again later gets nothing. The board says
 which picture the screen shows, `RGB RPI` (NavBridge's) or `RGB NAV` (the
 factory navigation's), on opening and at each change; the
 state keeps the last one until the interface goes away, and buttons count only

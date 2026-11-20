@@ -164,8 +164,9 @@ fn preview() {
     state.settings_editing = false;
     render_state(&ui, &state);
     tap(40.0, 15.0);
-    // Every row of the first box, and rows in each other: the microphone,
-    // the codec, the theme and the aspect ratio.
+    // Every row of the first box and of the last, and rows in each other: the
+    // microphone, the codec, then the theme, the aspect ratio and the
+    // automatic switch.
     for (x, y) in [
         (100.0, 60.0),
         (100.0, 89.0),
@@ -174,6 +175,7 @@ fn preview() {
         (100.0, 190.0),
         (250.0, 167.0),
         (250.0, 191.0),
+        (250.0, 215.0),
     ] {
         tap(x, y);
     }
@@ -188,7 +190,7 @@ fn preview() {
         *taps.borrow(),
         [
             "tile 1", "back", "row 0 0", "row 1 0", "row 2 0", "row 7 0", "row 4 0", "row 8 0",
-            "row 9 0", "row 5 0", "row 5 -1", "row 5 1"
+            "row 9 0", "row 10 0", "row 5 0", "row 5 -1", "row 5 1"
         ]
     );
     state.settings_editing = false;
@@ -263,12 +265,18 @@ fn preview() {
     state.screen = Screen::Settings;
     render_state(&ui, &state);
     // The left column's first box, then the right column's two.
-    for (x, y) in [(80.0, 60.0), (240.0, 60.0), (240.0, 167.0), (240.0, 191.0)] {
+    for (x, y) in [
+        (80.0, 60.0),
+        (240.0, 60.0),
+        (240.0, 167.0),
+        (240.0, 191.0),
+        (240.0, 215.0),
+    ] {
         tap(x, y);
     }
     assert_eq!(
         *taps.borrow(),
-        ["tile 0", "tile 1", "tile 2", "row 0 0", "row 5 0", "row 8 0", "row 9 0"]
+        ["tile 0", "tile 1", "tile 2", "row 0 0", "row 5 0", "row 8 0", "row 9 0", "row 10 0"]
     );
 
     // And back while the UI runs: the page's width follows the state.

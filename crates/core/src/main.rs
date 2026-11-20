@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use config::CoreConfig;
+use config::{CoreConfig, IbusConfig};
 use ipc::IpcServer;
 use navbridge_common::{video_frame_path, AppSnapshot, ClientCommand, ServerEvent};
 use services::android_auto::{CarBluetooth, ProjectionService};
@@ -69,7 +69,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // While a receiver is connected, the phone gets the car's position.
     let gnss = services::gnss::GnssService::start(projection.gnss_input());
-    let ibus = services::ibus::IbusService::start(config.ibus.clone());
+    // Settings' Automatic switch: NavBridge's picture once the board's port
+    // opens, rather than the navigation's it starts on.
+    let mut auto_switch = settings.load().auto_switch;
+    let ibus = services::ibus::IbusService::start(IbusConfig {
+        auto_switch,
+        ..config.ibus.clone()
+    });
     // While bluez-alsa takes a phone's calls, they play in the car, at the
     // call volume Settings last chose.
     let calls = config.audio.enabled.then(|| {
@@ -155,6 +161,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     settings.update(|saved| saved.theme = chosen);
                     next_snapshot = Instant::now();
                 }
+                // For the next start: the picture shown now stays.
+                ClientCommand::SetAutoSwitch { enabled } => {
+                    info!(enabled, "automatic switch to NavBridge's picture at start");
+                    auto_switch = enabled;
+                    settings.update(|saved| saved.auto_switch = enabled);
+                    next_snapshot = Instant::now();
+                }
                 // Kept, and told to a UI that connects later; the UI has
                 // already asked for its frames in this shape.
                 ClientCommand::SetAspectRatio { aspect_ratio } => {
@@ -237,6 +250,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 bluetooth: bluetooth.snapshot(),
                 vehicle,
                 theme,
+                auto_switch,
             };
             server.broadcast_snapshot(snapshot);
 

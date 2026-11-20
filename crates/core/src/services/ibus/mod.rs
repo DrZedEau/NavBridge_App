@@ -1,6 +1,8 @@
 //! The car's I-Bus, through the carrier board's microcontroller, which passes
-//! on each frame it hears as a line on its USB serial port. Read only: nothing
-//! is ever sent, to the board or towards the car.
+//! on each frame it hears as a line on its USB serial port. Nothing is ever
+//! sent towards the car. The board gets one command at most: with Settings'
+//! Automatic switch on, "RGB RPI", for NavBridge's picture, the first time its
+//! port opens after the core starts.
 //!
 //! The car's buttons become UI inputs, as from keys, but only while the board
 //! says the display shows NavBridge's picture ("RGB RPI"). While it shows the
@@ -100,9 +102,10 @@ impl IbusService {
                 bindings: config.buttons,
                 events: sender,
             };
+            let auto_switch = config.auto_switch;
             let worker = thread::Builder::new()
                 .name("ibus".into())
-                .spawn(move || run(&device, &shared, &stopped, &buttons))
+                .spawn(move || run(&device, &shared, &stopped, &buttons, auto_switch))
                 .expect("start the I-Bus thread");
             Some(worker)
         } else {
@@ -163,8 +166,16 @@ impl Drop for IbusService {
 }
 
 /// Keeps the interface open, opening it again whenever it is missing or goes
-/// away, until the core stops.
-fn run(device: &Path, state: &Mutex<State>, stop: &AtomicBool, buttons: &Buttons) {
+/// away, until the core stops. With `auto_switch`, the first time it opens,
+/// asks the board for NavBridge's picture; later openings leave the picture
+/// as it is.
+fn run(
+    device: &Path,
+    state: &Mutex<State>,
+    stop: &AtomicBool,
+    buttons: &Buttons,
+    mut auto_switch: bool,
+) {
     let mut reported: Option<String> = None;
     let mut undecoded = HashSet::new();
     while !stop.load(Ordering::Relaxed) {
@@ -172,6 +183,17 @@ fn run(device: &Path, state: &Mutex<State>, stop: &AtomicBool, buttons: &Buttons
             Ok(mut port) => {
                 info!(device = %device.display(), "reading the I-Bus");
                 state.lock().unwrap().opened();
+                // The board replies with the picture's line, as at each change.
+                if auto_switch {
+                    match port.send("RGB RPI") {
+                        Ok(()) => {
+                            info!("asked the board for NavBridge's picture");
+                            auto_switch = false;
+                        }
+                        // Again when the port opens next.
+                        Err(e) => warn!(%e, "could not ask the board for NavBridge's picture"),
+                    }
+                }
                 let Some(e) = listen(&mut port, state, stop, &mut undecoded, buttons) else {
                     return;
                 };

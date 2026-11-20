@@ -1,7 +1,8 @@
-//! The microcontroller's USB serial port, which NavBridge only reads.
+//! The microcontroller's USB serial port, which NavBridge reads, and which
+//! takes the board's commands.
 use std::{
     fs::{File, OpenOptions},
-    io::{self, Read},
+    io::{self, Read, Write},
     os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     path::Path,
     time::Duration,
@@ -13,6 +14,7 @@ impl Port {
     pub fn open(path: &Path) -> io::Result<Self> {
         let file = OpenOptions::new()
             .read(true)
+            .write(true)
             .custom_flags(libc::O_NOCTTY)
             .open(path)?;
         let fd = file.as_raw_fd();
@@ -36,6 +38,11 @@ impl Port {
             libc::ioctl(fd, libc::TIOCEXCL);
         }
         Ok(Self(file))
+    }
+
+    /// Sends the board one of its commands, such as "RGB RPI", as a line.
+    pub fn send(&mut self, command: &str) -> io::Result<()> {
+        self.0.write_all(format!("{command}\n").as_bytes())
     }
 
     /// Waits up to `limit` for bytes and returns how many arrived, perhaps

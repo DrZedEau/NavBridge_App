@@ -20,6 +20,8 @@ pub(crate) enum Setting {
     Theme,
     /// The UI's shape: 400x240, or 320x240 for a 4:3 panel.
     AspectRatio,
+    /// Whether the core asks the board for NavBridge's picture when it starts.
+    AutoSwitch,
     Dpi,
     /// The video codec the phone is asked for.
     Codec,
@@ -29,7 +31,7 @@ pub(crate) enum Setting {
     Microphone,
 }
 
-pub(crate) const SETTINGS: [Setting; 10] = [
+pub(crate) const SETTINGS: [Setting; 11] = [
     Setting::Hotspot,
     Setting::DefaultPhone,
     Setting::Disconnect,
@@ -40,6 +42,7 @@ pub(crate) const SETTINGS: [Setting; 10] = [
     Setting::Microphone,
     Setting::Theme,
     Setting::AspectRatio,
+    Setting::AutoSwitch,
 ];
 
 /// The themes Settings offers, in the order it steps through them.
@@ -78,8 +81,8 @@ pub(crate) fn settings_sections() -> Vec<(&'static str, std::ops::Range<usize>)>
 /// Changes the open row's value, up or down: the hotspot, the DPI and the
 /// video codec switch, the audio codec's levels move by 1%, the call volume by
 /// 1 dB, the theme and the default phone step to the next or previous one, the
-/// aspect ratio switches, and Disconnect ends the wireless session, or once
-/// ended calls phones again.
+/// aspect ratio and the automatic switch switch, and Disconnect ends the
+/// wireless session, or once ended calls phones again.
 pub(crate) fn change_setting(
     state: &mut UiState,
     up: bool,
@@ -181,6 +184,12 @@ pub(crate) fn change_setting(
             let _ = commands.send(ClientCommand::SetFrameSize { width, height });
             let _ = commands.send(ClientCommand::SetAspectRatio { aspect_ratio });
         }
+        // For the core's next start: the picture shown now stays.
+        Setting::AutoSwitch => {
+            let enabled = !snapshot.auto_switch;
+            let _ = commands.send(ClientCommand::SetAutoSwitch { enabled });
+            snapshot.auto_switch = enabled;
+        }
     }
 }
 
@@ -217,7 +226,16 @@ pub(crate) fn section(row: Setting) -> &'static str {
         Setting::Hotspot | Setting::DefaultPhone | Setting::Disconnect => "WIRELESS",
         Setting::Dpi | Setting::Codec => "PROJECTION",
         Setting::Volume | Setting::CallVolume | Setting::Microphone => "AUDIO",
-        Setting::Theme | Setting::AspectRatio => "UI",
+        Setting::Theme | Setting::AspectRatio | Setting::AutoSwitch => "UI",
+    }
+}
+
+/// Whether a row shows a switch, and whether it is on.
+pub(crate) fn setting_switch(state: &UiState, row: Setting) -> Option<bool> {
+    match row {
+        Setting::Hotspot => Some(state.snapshot.wireless.enabled),
+        Setting::AutoSwitch => Some(state.snapshot.auto_switch),
+        _ => None,
     }
 }
 
@@ -232,7 +250,8 @@ pub(crate) fn default_phone(state: &UiState) -> Option<&str> {
         .map(|phone| phone.name.as_str())
 }
 
-/// A row's label and value; the hotspot's switch shows its value instead.
+/// A row's label and value; a switch, as the hotspot's, shows its value
+/// instead.
 pub(crate) fn setting_text(state: &UiState, row: Setting) -> (&'static str, String) {
     let snapshot = &state.snapshot;
     let percent = |level: Option<u8>| level.map_or_else(|| "n/a".into(), |p| format!("{p}%"));
@@ -291,6 +310,15 @@ pub(crate) fn setting_text(state: &UiState, row: Setting) -> (&'static str, Stri
             .into(),
         ),
         Setting::AspectRatio => ("Aspect ratio", state.aspect_ratio().name().into()),
+        // A 4:3 panel's narrower box leaves the switch the room.
+        Setting::AutoSwitch => (
+            if state.ui_width() < UI_WIDTH {
+                "Auto switch"
+            } else {
+                "Automatic switch"
+            },
+            String::new(),
+        ),
     }
 }
 

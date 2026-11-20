@@ -3,7 +3,7 @@
 use crate::actions::reversing;
 use crate::projection::{read_frame_header, refresh_projection};
 use crate::settings_page::{
-    default_phone, setting_text, settings_index, settings_sections, Setting, SETTINGS,
+    default_phone, setting_switch, setting_text, settings_index, settings_sections, SETTINGS,
 };
 use crate::state::{Screen, UiState, VideoSettings, USB_ROWS};
 use crate::{AppWindow, LedState, Palette, SettingsRow, SettingsSection, Theme};
@@ -80,12 +80,13 @@ pub(crate) fn render_state(ui: &AppWindow, state: &UiState) {
                 .map(|index| {
                     let row = SETTINGS[index];
                     let (label, value) = setting_text(state, row);
+                    let switch = setting_switch(state, row);
                     SettingsRow {
                         index: index as i32,
                         label: label.into(),
                         value: value.into(),
-                        toggle: row == Setting::Hotspot,
-                        on: state.snapshot.wireless.enabled,
+                        toggle: switch.is_some(),
+                        on: switch.unwrap_or(false),
                     }
                 })
                 .collect();

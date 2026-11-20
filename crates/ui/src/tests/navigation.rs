@@ -349,7 +349,8 @@ fn settings_rows_are_chosen_with_left_right_and_enter_opens_or_switches_them() {
     assert_eq!(selected_setting(&state), Setting::DefaultPhone);
     press(&mut state, KeyAction::Left, false);
     press(&mut state, KeyAction::Left, false);
-    assert_eq!(selected_setting(&state), Setting::AspectRatio);
+    // The last row, the UI box's last.
+    assert_eq!(selected_setting(&state), Setting::AutoSwitch);
     press(&mut state, KeyAction::Right, false);
     assert_eq!(selected_setting(&state), Setting::Hotspot);
     assert!(rx.try_recv().is_err(), "choosing a row changed it");
@@ -776,9 +777,59 @@ fn settings_fill_four_boxes_in_the_keys_order() {
             ("WIRELESS", vec![Hotspot, DefaultPhone, Disconnect]),
             ("PROJECTION", vec![Dpi, Codec]),
             ("AUDIO", vec![Volume, CallVolume, Microphone]),
-            ("UI", vec![Theme, AspectRatio]),
+            ("UI", vec![Theme, AspectRatio, AutoSwitch]),
         ]
     );
+}
+
+#[test]
+fn the_automatic_switch_flips_at_once_for_the_cores_next_start() {
+    let (tx, rx) = mpsc::channel();
+    let mut state = UiState {
+        screen: Screen::Settings,
+        core_connected: true,
+        ..UiState::default()
+    };
+    // Off unless chosen, as a switch in the UI's box.
+    assert_eq!(section(Setting::AutoSwitch), "UI");
+    assert_eq!(
+        setting_text(&state, Setting::AutoSwitch).0,
+        "Automatic switch"
+    );
+    assert_eq!(setting_switch(&state, Setting::AutoSwitch), Some(false));
+    // A tap flips it, without opening the row.
+    let row = place(Setting::AutoSwitch);
+    tap_setting(&mut state, row, 0, &tx);
+    assert_eq!(selected_setting(&state), Setting::AutoSwitch);
+    assert!(!state.settings_editing, "a tap changes it at once");
+    assert_eq!(setting_switch(&state, Setting::AutoSwitch), Some(true));
+    // Enter flips it back, at once too.
+    handle_key_event(&mut state, KeyAction::Select, true, false, &tx);
+    assert!(!state.settings_editing);
+    let sent: Vec<_> = rx
+        .try_iter()
+        .map(|command| match command {
+            ClientCommand::SetAutoSwitch { enabled } => enabled,
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect();
+    assert_eq!(sent, [true, false]);
+    // The core's snapshot says what it keeps.
+    state.snapshot.auto_switch = true;
+    assert_eq!(setting_switch(&state, Setting::AutoSwitch), Some(true));
+    // On a 4:3 panel, a shorter label leaves the switch its room.
+    state.set_aspect_ratio(navbridge_common::AspectRatio::FourThree);
+    assert_eq!(setting_text(&state, Setting::AutoSwitch).0, "Auto switch");
+    // Without the core, it does nothing.
+    state.core_connected = false;
+    tap_setting(&mut state, row, 0, &tx);
+    assert!(rx.try_recv().is_err());
+    // Only the hotspot's row and this one are switches.
+    let switches: Vec<_> = SETTINGS
+        .into_iter()
+        .filter(|&row| setting_switch(&state, row).is_some())
+        .collect();
+    assert_eq!(switches, [Setting::Hotspot, Setting::AutoSwitch]);
 }
 
 #[test]

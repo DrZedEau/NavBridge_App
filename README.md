@@ -292,7 +292,8 @@ PC window works alongside the keyboard:
   phone (640x480, the part it draws in, on a 4:3 panel); Exit in Android Auto's
   launcher returns to the menu.
 - **Settings**: every row is on screen. A tap switches Hotspot, Default
-  phone, Theme, Aspect ratio, DPI and Codec, and Disconnect or Connect acts at once. A tap
+  phone, Theme, Aspect ratio, Automatic switch, DPI and Codec, and Disconnect
+  or Connect acts at once. A tap
   opens a level (Speakers, Calls, Microphone); then a tap on
   the left or right half of its value steps it (by 1%, or 1 dB for Calls),
   repeating while held, and a tap on its label closes it.
@@ -313,7 +314,8 @@ returns:
   phone's name), "Disconnected" once Settings disconnected the phone, or while
   pairing is open, the name to pair with and the time left.
 - **Settings**: the hotspot for wireless Android Auto, the phone it connects
-  and the end of its session, the UI's theme and aspect ratio, the
+  and the end of its session, the UI's theme and aspect ratio, whether the
+  screen switches to NavBridge when it starts, the
   projection's DPI and video codec, the audio codec's speaker volume and
   microphone gain, and the call volume (see below).
 - **System**: the System pages.
@@ -328,7 +330,8 @@ The time is the Pi's local time. The tiles' icons are in `crates/ui/ui/icons`.
 One page of four boxes of equal size, one per section, two by two: Wireless
 above Projection on the left, Audio above UI on the right. Left/Right (or Up/Down)
 choose a row, down the left column, then the right. Enter flips
-the Hotspot switch, and disconnects or connects the phone, at once; on the
+a switch, Hotspot or Automatic switch, and disconnects or connects the phone,
+at once; on the
 other rows, it opens the row: it is outlined
 and its value takes arrows. Left/Right then change the value, which takes effect
 at once, and Enter or Back close the row again.
@@ -345,6 +348,7 @@ at once, and Enter or Back close the row again.
 | | Microphone | 0-100%, 1% steps | The codec's `Mic` capture gain; held keys repeat |
 | UI | Theme | Amber / Blue / Green | The UI's colours, on black; at once |
 | | Aspect ratio | 16:9 / 4:3 | The UI's shape, 400x240 or 320x240, at once; a phone in a session starts it again (see [A 4:3 panel](#a-43-panel)) |
+| | Automatic switch | Switch, off / on; off at first | On, the core asks the board for NavBridge's picture when it starts (see [The car's buttons](#the-cars-buttons)); off, the screen stays on the factory navigation until the telephone button. It applies at the next start; on a 4:3 panel the row reads Auto switch |
 
 The DPI and the codec apply when a phone next connects. A phone that cannot
 encode H.265 stays on H.264; System's Video box shows the decoder that runs
@@ -511,8 +515,13 @@ count whatever the picture: the ignition off (`80 04 BF 11 00`) still shuts
 the Pi down (see Shutdown). The core logs `the display's picture` at each
 change.
 
-The core sends the board nothing: its firmware types no keys, so a USB
-keyboard acts alongside the car's buttons without any of them acting twice.
+The board starts on the navigation's picture. With Settings' Automatic switch
+on, the core sends it `RGB RPI` the first time it opens the port after it
+starts, and logs `asked the board for NavBridge's picture`; the board replies
+with its `RGB RPI` line. A port that comes back later, as when the board is
+unplugged, gets nothing, and with the switch off the core sends the board
+nothing. Its firmware types no keys, so a USB keyboard acts alongside the
+car's buttons without any of them acting twice.
 
 With `RUST_LOG=debug`, the core logs `I-Bus button` with each one it decodes,
 pressed, held or released, to check the codes in the car, and `I-Bus button

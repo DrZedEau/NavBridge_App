@@ -26,6 +26,9 @@ pub struct Saved {
     pub call_volume_db: i8,
     /// The UI's colours.
     pub theme: Theme,
+    /// Whether the core asks the carrier board for NavBridge's picture when
+    /// it starts; off, the board's own choice, the navigation's, stays.
+    pub auto_switch: bool,
     /// The UI's shape, instead of frontend.toml's width.
     pub aspect_ratio: Option<AspectRatio>,
     /// The one phone called for wireless Android Auto, by its Bluetooth
@@ -151,6 +154,7 @@ mod tests {
         settings.update(|saved| saved.video_codec = Some(VideoCodec::H265));
         settings.update(|saved| saved.volume = Some(70));
         settings.update(|saved| saved.theme = Theme::Blue);
+        settings.update(|saved| saved.auto_switch = true);
         settings.update(|saved| saved.aspect_ratio = Some(AspectRatio::FourThree));
         settings.update(|saved| saved.call_volume_db = 6);
         settings.update(|saved| saved.default_phone = Some("64:9D:38:E1:B6:24".into()));
@@ -164,6 +168,7 @@ mod tests {
                 microphone: None,
                 call_volume_db: 6,
                 theme: Theme::Blue,
+                auto_switch: true,
                 aspect_ratio: Some(AspectRatio::FourThree),
                 default_phone: Some("64:9D:38:E1:B6:24".into()),
             }
@@ -187,6 +192,8 @@ mod tests {
             (None, None, None, 0)
         );
         assert_eq!(saved.theme, Theme::Amber);
+        // Off unless chosen: the board keeps the navigation's picture.
+        assert!(!saved.auto_switch);
         assert_eq!(saved.aspect_ratio, None);
         assert_eq!(saved.default_phone, None);
         fs::remove_dir_all(dir).unwrap();

@@ -313,6 +313,10 @@ pub struct AppSnapshot {
     /// The UI's colours, as chosen in Settings.
     #[serde(default)]
     pub theme: Theme,
+    /// Settings' Automatic switch: whether the core asks the carrier board
+    /// for NavBridge's picture when it starts.
+    #[serde(default)]
+    pub auto_switch: bool,
 }
 
 /// The UI's colours: amber, blue or green on black.
@@ -459,6 +463,11 @@ pub enum ClientCommand {
     },
     SetTheme {
         theme: Theme,
+    },
+    /// Whether the core asks the carrier board for NavBridge's picture when it
+    /// next starts.
+    SetAutoSwitch {
+        enabled: bool,
     },
     /// Keeps the UI's shape, for the hello of a UI that connects later. The
     /// frames' size follows from SetFrameSize.

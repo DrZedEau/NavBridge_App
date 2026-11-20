@@ -171,6 +171,10 @@ pub struct IbusConfig {
     /// for `shutdown_delay_s` seconds, unless it comes back first.
     pub shutdown: bool,
     pub shutdown_delay_s: u64,
+    /// Not from core.toml: Settings' Automatic switch, which asks the board
+    /// for NavBridge's picture the first time its port opens.
+    #[serde(skip)]
+    pub auto_switch: bool,
 }
 impl Default for IbusConfig {
     fn default() -> Self {
@@ -180,6 +184,7 @@ impl Default for IbusConfig {
             buttons: default_buttons(),
             shutdown: true,
             shutdown_delay_s: 0,
+            auto_switch: false,
         }
     }
 }

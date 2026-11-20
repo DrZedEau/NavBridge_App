@@ -119,7 +119,7 @@ fn the_picture_is_forgotten_with_the_interface() {
 }
 
 #[test]
-fn navbridge_sends_the_board_nothing() {
+fn with_the_automatic_switch_off_navbridge_sends_the_board_nothing() {
     let (mut board, device) = pseudo_terminal();
     let ibus = IbusService::start(IbusConfig {
         enabled: true,
@@ -129,6 +129,38 @@ fn navbridge_sends_the_board_nothing() {
     wait_for(&ibus, |v| v.status == "No I-Bus traffic");
     board
         .write_all(b"RGB RPI\r\nIBUS1 RX 1 8004BF110329\r\n")
+        .unwrap();
+    wait_for(&ibus, |v| v.ignition == Some(Ignition::On));
+    assert_eq!(sent_to_board(&mut board), "");
+}
+
+#[test]
+fn with_the_automatic_switch_on_the_board_is_asked_for_navbridges_picture_once() {
+    let (mut board, device) = pseudo_terminal();
+    let ibus = IbusService::start(IbusConfig {
+        enabled: true,
+        device: device.display().to_string(),
+        auto_switch: true,
+        ..IbusConfig::default()
+    });
+    // As soon as the port opens, one command line.
+    wait_for(&ibus, |v| v.status == "No I-Bus traffic");
+    assert_eq!(sent_to_board(&mut board), "RGB RPI\n");
+    // The board's reply makes the buttons NavBridge's.
+    board
+        .write_all(b"RGB NAV\r\nRGB RPI\r\nIBUS1 RX 1 F0043B480582\r\n")
+        .unwrap();
+    let presses: Vec<_> = wait_for_inputs(&ibus, 2)
+        .into_iter()
+        .map(|input| (input.action, input.pressed))
+        .collect();
+    assert_eq!(
+        presses,
+        [(InputAction::Select, true), (InputAction::Select, false)]
+    );
+    // Nothing more, whatever the board says next.
+    board
+        .write_all(b"RGB NAV\r\nIBUS1 RX 2 8004BF110329\r\n")
         .unwrap();
     wait_for(&ibus, |v| v.ignition == Some(Ignition::On));
     assert_eq!(sent_to_board(&mut board), "");
