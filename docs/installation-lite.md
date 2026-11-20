@@ -88,9 +88,7 @@ The UI reserves tty1 and disables its login console. SSH and other terminals rem
 
 Shows `packaging/splash.png` (400x240) on the panel from the moment the display driver starts, a few seconds into the boot, until the UI draws over it. Run it after `install_systemd.sh`, from the release bundle or a checkout built with `./scripts/build_kms.sh`. It installs `/opt/navbridge/bin/navbridge-splash` and `/opt/navbridge/splash.png`, `navbridge-splash.service`, and a udev rule (`60-navbridge-splash.rules`) that starts it as soon as `/dev/fb0` appears. The program reads the framebuffer's size and pixel format, stretches the image to fill the panel, and stops the kernel's text console from drawing over it. The image stays in the framebuffer, so it should also come back whenever the UI gives the display up, such as while the Pi shuts down.
 
-It leaves the boot files alone: whatever `cmdline.txt` lets the kernel show on the panel (boot messages, the Raspberry Pi logo, the cursor) stays until the splash starts, and `config.txt`'s `disable_splash=1`, if set, removes the firmware's rainbow square.
-
-Use another image with `--image my-splash.png`; make it the panel's size (320x240 for a 4:3 panel) so that it is not stretched. To see it without rebooting, over SSH: `sudo systemctl stop navbridge-ui`, `sudo systemctl start navbridge-splash`, then `sudo systemctl start navbridge-ui`. `./scripts/install_splash.sh --uninstall` removes it, puts back the boot files that earlier versions of the script changed (kept in `/var/backups/navbridge/splash/`) unless they were edited since, and lets the text console draw on the panel again.
+Use another image with `--image my-splash.png`; make it the panel's size (320x240 for a 4:3 panel) so that it is not stretched. To see it without rebooting, over SSH: `sudo systemctl stop navbridge-ui`, `sudo systemctl start navbridge-splash`, then `sudo systemctl start navbridge-ui`. `./scripts/install_splash.sh --uninstall` removes it and lets the text console draw on the panel again.
 
 ## Preview, defer startup, and manage services
 

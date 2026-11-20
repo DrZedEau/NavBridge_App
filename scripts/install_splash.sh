@@ -17,11 +17,9 @@ Usage: $0 [--image FILE.png] [--binary-dir DIR] [--dry-run]
        $0 --uninstall [--dry-run]
 
 Shows FILE.png (default: packaging/splash.png, 400x240) on the panel while the
-Pi boots, stretched to the panel's size if it differs. The boot files,
-cmdline.txt and config.txt, are left as they are.
+Pi boots, stretched to the panel's size if it differs.
 
---uninstall removes the splash and puts back the boot files that earlier
-versions of this script changed, unless they were edited since.
+--uninstall removes the splash.
 EOF
 }
 while (( $# )); do
@@ -39,26 +37,15 @@ SERVICE=/etc/systemd/system/navbridge-splash.service
 RULE=/etc/udev/rules.d/60-navbridge-splash.rules
 BINARY=/opt/navbridge/bin/navbridge-splash
 SPLASH=/opt/navbridge/splash.png
-# Where earlier versions of this script, which changed cmdline.txt and
-# config.txt, kept them as they were before and a checksum of what they wrote,
-# so --uninstall restores only unedited files.
-RECORD=/var/backups/navbridge/splash
-
-BOOT=""
-for dir in /boot/firmware /boot; do
-  if [[ -f $dir/config.txt ]]; then BOOT=$dir; break; fi
-done
 
 if (( DRY_RUN )); then
   if (( UNINSTALL )); then
     echo "Will remove $SERVICE, $RULE, $BINARY and $SPLASH."
-    echo "Will put back the boot files that earlier versions recorded in $RECORD, where they were not edited since."
     exit 0
   fi
   echo "Binary: $BIN_DIR/navbridge-splash -> $BINARY"
   echo "Image: $IMAGE -> $SPLASH"
   echo "Will install $SERVICE and $RULE (started by udev when /dev/fb0 appears)."
-  echo "Will leave cmdline.txt and config.txt as they are."
   exit 0
 fi
 if [[ $EUID != 0 ]]; then
@@ -70,16 +57,6 @@ if (( UNINSTALL )); then
   rm -f -- "$RULE" "$SERVICE" "$BINARY" "$SPLASH"
   systemctl daemon-reload
   udevadm control --reload-rules
-  for name in cmdline.txt config.txt; do
-    [[ -n $BOOT && -f $RECORD/$name ]] || continue
-    if [[ $(sha256sum < "$BOOT/$name" | cut -d' ' -f1) == "$(cat -- "$RECORD/$name.written" 2>/dev/null)" ]]; then
-      cat -- "$RECORD/$name" > "$BOOT/$name"
-      rm -f -- "$RECORD/$name" "$RECORD/$name.written" "$RECORD/$name.previous"
-      echo "Restored $BOOT/$name."
-    else
-      echo "$BOOT/$name was edited since the splash was installed: left as it is; the original is $RECORD/$name." >&2
-    fi
-  done
   # The text console draws on the panel again.
   for console in /sys/class/vtconsole/vtcon*; do
     if grep -q 'frame buffer' "$console/name" 2>/dev/null; then echo 1 > "$console/bind" || true; fi
@@ -114,9 +91,6 @@ udevadm control --reload-rules
 
 if [[ -r /sys/class/graphics/fb0/virtual_size ]]; then
   echo "The panel's framebuffer is $(tr ',' 'x' < /sys/class/graphics/fb0/virtual_size); the splash is stretched to it."
-fi
-if [[ -n $BOOT ]] && grep -qsw splash "$BOOT/cmdline.txt" && command -v plymouth >/dev/null; then
-  echo "Plymouth is installed and cmdline.txt asks for its splash: remove 'splash' from it to keep Plymouth off the panel." >&2
 fi
 echo "Splash installed: $SPLASH. Reboot to see it."
 echo "Try it now, over SSH: sudo systemctl stop navbridge-ui; sudo systemctl start navbridge-splash"
